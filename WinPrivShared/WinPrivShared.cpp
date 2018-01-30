@@ -1,0 +1,191 @@
+#define UMDF_USING_NTSTATUS
+#include <ntstatus.h>
+
+#include <windows.h>
+#include <winternl.h>
+#include <stdio.h>
+#include <wincred.h>
+
+#define _NTDEF_
+#include <ntsecapi.h>
+
+#include <map>
+#include <string>
+#include <vector>
+#include <cctype>
+#include <regex>
+
+#include "WinPrivShared.h"
+
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> vArgs)
+{
+	std::wstring sResult;
+
+	for (unsigned int iCurrent = iStart; iCurrent <= iEnd && iEnd < vArgs.size(); iCurrent++)
+	{
+		std::wstring sArg(vArgs.at(iCurrent));
+
+		if (std::count_if(sArg.begin(), sArg.end(),
+			[](wchar_t c) { return isblank(c); }) > 0)
+		{
+			// enclose the parameter in double quotes
+			sArg = L'"' + sArg + L'"';
+		}
+
+		sResult += sArg + L' ';
+	}
+
+	// trim off last character if space
+	if (!sResult.empty() && sResult.back() == L' ') sResult.pop_back();
+	
+	// append a space for the next param
+	return sResult;
+}
+
+std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
+{
+	// open the current token
+	HANDLE hToken = NULL;
+	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &hToken) == 0)
+	{
+		// error
+		PrintMessage(L"ERROR: Could not open process token for enabling privileges.\n");
+		return vRequestedPrivs;
+	}
+
+	// get the current user sid out of the token
+	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
+	DWORD iBytesFilled = 0;
+	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
+	{
+		// error
+		CloseHandle(hToken);
+		PrintMessage(L"ERROR: Could retrieve process token information.\n");
+		return vRequestedPrivs;
+	}
+
+	// vector to store privileges we had issues with
+	std::vector<std::wstring> vUnavailablePrivs;
+
+	// tokenize the string
+	for (std::wstring sPrivilege : vRequestedPrivs)
+	{
+		// populate the privilege adjustment structure
+		TOKEN_PRIVILEGES tPrivEntry;
+		tPrivEntry.PrivilegeCount = 1;
+		tPrivEntry.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+		// rights do not have to be enabled since they are automatically established
+		std::wstring sRight(L"Right");
+		if (std::equal(sRight.rbegin(), sRight.rend(), sPrivilege.rbegin())) continue;
+
+		// translate the privilege name into the binary representation
+		if (LookupPrivilegeValue(NULL, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
+		{
+			PrintMessage(L"ERROR: Could not lookup privilege: %s\n", sPrivilege.c_str());
+			continue;
+		}
+
+		// adjust the process to change the privilege
+		if (AdjustTokenPrivileges(hToken, FALSE, &tPrivEntry, sizeof(TOKEN_PRIVILEGES),
+			NULL, NULL) == 0 || GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+		{
+			// add to list of privileges we had issues with
+			vUnavailablePrivs.push_back(sPrivilege.c_str());
+		}
+	}
+
+	CloseHandle(hToken);
+	return vUnavailablePrivs;
+}
+
+BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRights)
+{
+	// open the current token
+	HANDLE hToken = NULL;
+	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) == 0)
+	{
+		// error
+		PrintMessage(L"ERROR: Could not open process token for enabling privileges.\n");
+		return FALSE;
+	}
+
+	// get the current user sid out of the token
+	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
+	DWORD iBytesFilled = 0;
+	BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
+	CloseHandle(hToken); 
+	if (bRet == 0)
+	{
+		// error
+		PrintMessage(L"ERROR: Could retrieve process token information.\n");
+		return FALSE;
+	}
+
+	// object attributes are reserved, so initialize to zeros.
+	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
+	ZeroMemory(&ObjectAttributes, sizeof(ObjectAttributes));
+
+	// get a handle to the policy object.
+	LSA_HANDLE hPolicyHandle;
+	NTSTATUS iResult = 0;
+	if ((iResult = LsaOpenPolicy(NULL, &ObjectAttributes,
+		POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT, &hPolicyHandle)) != STATUS_SUCCESS)
+	{
+		PrintMessage(L"ERROR: Local security policy could not be opened with error '%lu'\n",
+			LsaNtStatusToWinError(iResult));
+		return FALSE;
+	}
+
+	// grant policy to all users
+	BOOL bSuccessful = TRUE;
+	for (std::wstring sPrivilege : vPrivsToGrant)
+	{
+		// populate the privilege adjustment structure
+		TOKEN_PRIVILEGES tPrivEntry;
+		tPrivEntry.PrivilegeCount = 1;
+		tPrivEntry.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+		// translate the privilege name into the binary representation
+		if (LookupPrivilegeValue(NULL, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
+		{
+			PrintMessage(L"ERROR: Could not lookup privilege: %s\n", sPrivilege.c_str());
+			bSuccessful = FALSE;
+			continue;
+		}
+
+		// convert the privilege name to a unicode string format
+		LSA_UNICODE_STRING sUnicodePrivilege;
+		sUnicodePrivilege.Buffer = (PWSTR)sPrivilege.c_str();
+		sUnicodePrivilege.Length = (USHORT)(wcslen(sPrivilege.c_str()) * sizeof(WCHAR));
+		sUnicodePrivilege.MaximumLength = (USHORT)((wcslen(sPrivilege.c_str()) + 1) * sizeof(WCHAR));
+
+		// attempt to add the account to policy
+		if (bAddRights)
+		{
+			if ((iResult = LsaAddAccountRights(hPolicyHandle,
+				tTokenUser->User.Sid, &sUnicodePrivilege, 1)) != STATUS_SUCCESS)
+			{
+				bSuccessful = FALSE;
+				PrintMessage(L"ERROR: Privilege '%s' was not able to be added with error '%lu'\n",
+					sPrivilege.c_str(), LsaNtStatusToWinError(iResult));
+			}
+		}
+		else
+		{
+			if ((iResult = LsaRemoveAccountRights(hPolicyHandle,
+				tTokenUser->User.Sid, FALSE, &sUnicodePrivilege, 1)) != STATUS_SUCCESS)
+			{
+				bSuccessful = FALSE;
+				PrintMessage(L"ERROR: Privilege '%s' was not able to be remove with error '%lu'\n",
+					sPrivilege.c_str(), LsaNtStatusToWinError(iResult));
+			}
+		}
+	}
+
+	// cleanup
+	LsaClose(hPolicyHandle);
+	return bSuccessful;
+}
