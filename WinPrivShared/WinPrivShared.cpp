@@ -116,7 +116,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
-	CloseHandle(hToken); 
+	CloseHandle(hToken);
 	if (bRet == 0)
 	{
 		// error

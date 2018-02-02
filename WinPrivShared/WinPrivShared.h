@@ -5,14 +5,14 @@
 #include <vector>
 #include <string>
 
-// 
+//
 // Shared Functions
 //
 
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
 BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRights);
 
-// 
+//
 // Environment Variables Used For Interprocess Communication
 //
 
@@ -22,6 +22,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 #define WINPRIV_EV_BACKUP_RESTORE L"_WINPRIV_BACKUPRESTORE_"
 #define WINPRIV_EV_PRIVLIST L"_WINPRIV_PRIVILEGE_LIST_"
 #define WINPRIV_EV_PARENT_PID L"_WINPRIV_EV_PARENT_PID_"
+#define WINPRIV_EV_HOST_OVERRIDE L"_WINPRIV_EV_HOST_OVERRIDE_"
 
 //
 // Miscellaneous Unicode String Helper Functions
@@ -62,7 +63,7 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vect
 #define EndsWith(x,y) ((x).size() >= (y).size() && \
 	(x).compare(mainStr.size() - (y).size(), (x).size(), (x)) == 0)
 
-// generic print message that resembles printf() syntax with 
+// generic print message that resembles printf() syntax with
 // vardiac variables but will also output to a message box
 // if not compiled on a console
 #define PrintMessage(format, ...) do { \

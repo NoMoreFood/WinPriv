@@ -1,7 +1,11 @@
+#define _WINSOCKAPI_
+
 #include <windows.h>
 #include <rpc.h>
 #include <stdio.h>
 #include <shlobj.h>
+#include <ws2tcpip.h>
+#include <mstcpip.h>
 
 #include <map>
 #include <string>
@@ -40,7 +44,10 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// registry override parameters populated by command line args
 	std::wstring sRegistryOverride;
-	
+
+	// host override parameters populated by command line args
+	std::wstring sHostOverride;
+
 	// target executable and options provided by command line args
 	std::wstring sProcessParams;
 
@@ -59,7 +66,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			break;
 		}
 
-		// this switch is only called by winpriv to instructed itself to relaunch 
+		// this switch is only called by winpriv to instructed itself to relaunch
 		// itself as an elevated process.  this is done after establishing a new
 		// logon following new privs have been granted
 		else if (_wcsicmp(sArg.c_str(), L"/RelaunchElevated") == 0)
@@ -68,11 +75,11 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			return LaunchElevated(iArgc, aArgv);
 		}
 
-		// this switch is only called by winpriv to instruct itself that is has 
+		// this switch is only called by winpriv to instruct itself that is has
 		// been launched with a new, privileged logon and it now should be able
-		// to launch the target process with the newly acquired privileges.  
+		// to launch the target process with the newly acquired privileges.
 		// this is used to control whether an exit prompt appears in command line
-		// programs and to prevent infinite relaunching if the new privileges can 
+		// programs and to prevent infinite relaunching if the new privileges can
 		// not be enabled
 		else if (_wcsicmp(sArg.c_str(), L"/RelaunchComplete") == 0)
 		{
@@ -161,7 +168,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// append the registry key override data which should be four params:
 			// <key name> <value name> <value type> <value data>
-			// currently no error checking is being done for the proper structure 
+			// currently no error checking is being done for the proper structure
 			sRegistryOverride += ArgvToCommandLine(iArg + 1, (iArg += 4),
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" ";
 		}
@@ -177,7 +184,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 				return __LINE__;
 			}
 
-			// this capability is implemented by the registry override code 
+			// this capability is implemented by the registry override code
 			// block by indicating a winpriv proprietary type called REG_BLOCK
 			sRegistryOverride += ArgvToCommandLine(iArg + 1, iArg += 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" N/A REG_BLOCK N/A ";
@@ -207,6 +214,42 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			sRegistryOverride += L"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies ";
 			sRegistryOverride += L"N/A REG_BLOCK N/A ";
+		}
+
+		// instructs winpriv to override all host name lookups
+		else if (_wcsicmp(sArg.c_str(), L"/HostOverride") == 0)
+		{
+			// four additional parameters are required
+			if (iArg + 2 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// initialize winsock
+			WSADATA tWSAData;
+			if (WSAStartup(MAKEWORD(2, 2), &tWSAData) != 0)
+			{
+				return __LINE__;
+			}
+
+			// first lookup the address
+			PADDRINFOW tResult;
+			INT iGetAddrInfoResult = GetAddrInfoW(aArgv[iArg + 2], NULL, NULL, &tResult);
+			WSACleanup();
+			if (iGetAddrInfoResult != 0)
+			{
+				return __LINE__;
+			}
+
+			// convert the address to a string
+			WCHAR sAddress[16];
+			InetNtop(AF_INET, &((PSOCKADDR_IN)tResult->ai_addr)->sin_addr, sAddress, _countof(sAddress));
+
+			// append the host override data which should be two params:
+			// <host name to override> <host override value>
+			sHostOverride += std::wstring(aArgv[iArg + 1]) + L" " + sAddress + L" ";
+			iArg += 2;
 		}
 
 		// instruct winpriv to enable backup and restore privileges and send in
@@ -245,6 +288,10 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// setup the registry override and block values to pass to child processes
 	TrimString(sRegistryOverride, L' ');
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, sRegistryOverride.c_str());
+
+	// setup the host override values to pass to child processes
+	TrimString(sHostOverride, L' ');
+	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, sHostOverride.c_str());
 
 	// sort privs, remove duplicate privs, and reconstruct into a list of privs
 	// that can be set as an environment variable and passed to a child process
@@ -407,10 +454,10 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	return iExitCode;
 }
 
-//   ___      ___  __          __   __         ___  __  
-//  |__  |\ |  |  |__) \ /    |__) /  \ | |\ |  |  /__` 
-//  |___ | \|  |  |  \  |     |    \__/ | | \|  |  .__/ 
-//                                                      
+//   ___      ___  __          __   __         ___  __
+//  |__  |\ |  |  |__) \ /    |__) /  \ | |\ |  |  /__`
+//  |___ | \|  |  |  \  |     |    \__/ | | \|  |  .__/
+//
 
 #ifdef _CONSOLE
 int wmain(int iArgc, wchar_t *aArgv[])
