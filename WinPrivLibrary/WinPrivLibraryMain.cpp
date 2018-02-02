@@ -9,7 +9,6 @@ EXTERN_C VOID WINAPI DllExtraDetach();
 
 static CHAR sDetourLibrary[MAX_PATH + 1] = "";
 
-decltype(&GetProcAddress) TrueGetProcAddress = GetProcAddress;
 decltype(&CreateProcessA) TrueCreateProcessA = CreateProcessA;
 decltype(&CreateProcessW) TrueCreateProcessW = CreateProcessW;
 
@@ -31,7 +30,7 @@ EXTERN_C BOOL WINAPI DetourCreateProcessW(_In_opt_ LPCWSTR lpApplicationName, _I
 )
 {
 	return DetourCreateProcessWithDllExW(lpApplicationName, lpCommandLine, lpProcessAttributes,
-		lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, 
+		lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory,
 		lpStartupInfo, lpProcessInformation, sDetourLibrary, TrueCreateProcessW);
 }
 

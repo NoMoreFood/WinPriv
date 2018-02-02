@@ -90,7 +90,7 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 
 	// reconstruct a command line with a flag to indicate relaunch
 	std::vector<LPWSTR> sArgs({ aArgv, aArgv + iArgc });
-	std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) + 
+	std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) +
 		L" /RelaunchElevated " + ArgvToCommandLine(1, iArgc - 1, sArgs);
 
 	// get the current working directory to pass to the child process
@@ -99,8 +99,8 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 	
 	// relaunch process under altered security policy
 	LPWSTR sBlock = GetEnvironmentStrings();
-	if (CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE, 
-		NULL, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock, 
+	if (CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE,
+		NULL, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock,
 		sCurrentDir, &o_StartInfo, &o_ProcessInfo) == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting process (%d) (%s).\n", GetLastError(), sCommand.c_str());
