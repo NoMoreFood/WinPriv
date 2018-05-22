@@ -36,6 +36,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// initialize settings that will be inherited by subprocesses
 	SetEnvironmentVariable(WINPRIV_EV_PRIVLIST, L"");
+	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
@@ -142,25 +143,30 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to impersonate the mac address on the system
 		else if (_wcsicmp(sArg.c_str(), L"/MacOverride") == 0)
 		{
+			const int iArgsRequired = 1;
+
 			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
+			if (iArg + iArgsRequired >= iArgc)
 			{
 				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
 				return __LINE__;
 			}
 
 			// format the mac address to a consistent format by removing colons or dashes
-			std::wstring sMacAddr(aArgv[++iArg]);
+			std::wstring sMacAddr(aArgv[iArg + 1]);
 			sMacAddr.erase(std::remove(sMacAddr.begin(), sMacAddr.end(), ':'), sMacAddr.end());
 			sMacAddr.erase(std::remove(sMacAddr.begin(), sMacAddr.end(), '-'), sMacAddr.end());
 			SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str());
+			iArg += iArgsRequired;
 		}
 
 		// instructs winpriv to override all registry queries for a specific key
 		else if (_wcsicmp(sArg.c_str(), L"/RegOverride") == 0)
 		{
+			const int iArgsRequired = 4;
+
 			// four additional parameters are required
-			if (iArg + 4 >= iArgc)
+			if (iArg + iArgsRequired >= iArgc)
 			{
 				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
 				return __LINE__;
@@ -169,14 +175,17 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			// append the registry key override data which should be four params:
 			// <key name> <value name> <value type> <value data>
 			// currently no error checking is being done for the proper structure
-			sRegistryOverride += ArgvToCommandLine(iArg + 1, (iArg += 4),
+			sRegistryOverride += ArgvToCommandLine(iArg + 1, iArg + iArgsRequired,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" ";
+			iArg += iArgsRequired;
 		}
 
 		// instructs winpriv to report all accesses of the specified registry key or
 		// any subkeys as being not found to the target process
 		else if (_wcsicmp(sArg.c_str(), L"/RegBlock") == 0)
 		{
+			const int iArgsRequired = 1;
+
 			// one additional parameter is required
 			if (iArg + 1 >= iArgc)
 			{
@@ -186,8 +195,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// this capability is implemented by the registry override code
 			// block by indicating a winpriv proprietary type called REG_BLOCK
-			sRegistryOverride += ArgvToCommandLine(iArg + 1, iArg += 1,
+			sRegistryOverride += ArgvToCommandLine(iArg + 1, iArg + iArgsRequired,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" N/A REG_BLOCK N/A ";
+			iArg += iArgsRequired;
 		}
 		
 		// instructs winpriv to override the fips setting on the system
@@ -219,8 +229,10 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to override all host name lookups
 		else if (_wcsicmp(sArg.c_str(), L"/HostOverride") == 0)
 		{
+			const int iArgsRequired = 2;
+
 			// four additional parameters are required
-			if (iArg + 2 >= iArgc)
+			if (iArg + iArgsRequired >= iArgc)
 			{
 				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
 				return __LINE__;
@@ -249,7 +261,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			// append the host override data which should be two params:
 			// <host name to override> <host override value>
 			sHostOverride += std::wstring(aArgv[iArg + 1]) + L" " + sAddress + L" ";
-			iArg += 2;
+			iArg += iArgsRequired;
 		}
 
 		// instruct winpriv to enable backup and restore privileges and send in
