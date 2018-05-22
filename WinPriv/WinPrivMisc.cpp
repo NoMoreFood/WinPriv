@@ -160,8 +160,8 @@ Optional Switches
    will instead receive the specified replacement IP address. This is done by
    intercepting calls to WSALookupServiceNext() which nearly all address 
    lookups ultimately occur.  Be aware due to special security protections, 
-   this will not work for Internet Explorer but should work for most other
-   processes.
+   this will not work for Internet Explorer and programs that use Internet 
+   Explorer libraries but should work for most other processes.
 
    Examples:
 
