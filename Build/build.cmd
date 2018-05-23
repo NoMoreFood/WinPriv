@@ -1,7 +1,10 @@
 @ECHO OFF
+TITLE Building WinPriv...
+CLS
+SET PATH=%WINDIR%\system32;%WINDIR%\system32\WindowsPowerShell\v1.0
 
 :: cert info to use for signing
-SET CERT=9CC90E20ABF21CDEF09EE4C467A79FD454140C5A
+SET CERT=2FA35B20356EFEB88F9E9B5F20221693C57100E5
 set TSAURL=http://time.certum.pl/
 set LIBNAME=WinPriv
 set LIBURL=https://github.com/NoMoreFood/WinPriv
@@ -10,6 +13,7 @@ set LIBURL=https://github.com/NoMoreFood/WinPriv
 RD /S /Q "%~dp0.vs" >NUL 2>&1
 RD /S /Q "%~dp0x86\Temp" >NUL 2>&1
 RD /S /Q "%~dp0x64\Temp" >NUL 2>&1
+FORFILES /S /P "%~dp0." /M "*.*zip" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.*pdb" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.*obj" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.log" /C "CMD /C DEL /Q @path" >NUL 2>&1
@@ -22,15 +26,26 @@ FORFILES /S /P "%~dp0." /M "*.exp" /C "CMD /C DEL /Q @path" >NUL 2>&1
 IF DEFINED ProgramFiles SET PX86=%ProgramFiles%
 IF DEFINED ProgramFiles(x86) SET PX86=%ProgramFiles(x86)%
 
-:: setup paths
-SET PATH=%WINDIR%\system32;%WINDIR%\system32\WindowsPowerShell\v1.0
-SET PATH=%PATH%;%PX86%\Windows Kits\10\bin\x64
-SET PATH=%PATH%;%PX86%\Windows Kits\8.1\bin\x64
-SET PATH=%PATH%;%PX86%\Windows Kits\10\bin\10.0.16299.0\x64
+:: setup commands and paths
+SET POWERSHELL=POWERSHELL.EXE -NoProfile -NonInteractive -NoLogo
+FOR /F "USEBACKQ DELIMS=" %%X IN (`DIR /OD /B /S "%PX86%\Windows Kits\10\SIGNTOOL.exe" ^| FINDSTR x64`) DO SET SIGNTOOL="%%~X"
 
 :: sign the main executables
 SET BINDIR=%~dp0
-signtool sign /sha1 %CERT% /fd sha1 /tr %TSAURL% /td sha1 /d %LIBNAME% /du %LIBURL% "%BINDIR%\x86\*.exe" "%BINDIR%\x64\*.exe" 
-signtool sign /sha1 %CERT% /as /fd sha256 /tr %TSAURL% /td sha256 /d %LIBNAME% /du %LIBURL% "%BINDIR%\x86\*.exe" "%BINDIR%\x64\*.exe"
+%SIGNTOOL% sign /sha1 %CERT% /fd sha1 /tr %TSAURL% /td sha1 /d %LIBNAME% /du %LIBURL% "%BINDIR%\x86\*.exe" "%BINDIR%\x64\*.exe" 
+%SIGNTOOL% sign /sha1 %CERT% /as /fd sha256 /tr %TSAURL% /td sha256 /d %LIBNAME% /du %LIBURL% "%BINDIR%\x86\*.exe" "%BINDIR%\x64\*.exe"
+
+:: zip up executatables
+PUSHD "%BINDIR%"
+%POWERSHELL% -Command "Compress-Archive -LiteralPath @('x86','x64') -DestinationPath '%BINDIR%\WinPriv.zip'"
+POPD
+
+:: output hash information
+SET HASHFILE=%BINDIR%\WinPriv-hash.txt
+IF EXIST "%HASHFILE%" DEL /F "%HASHFILE%"
+FOR %%H IN (SHA256 SHA1 MD5) DO %POWERSHELL% -Command ^
+   "Get-ChildItem -Include @('*.zip','*.exe') -Path '%BINDIR%' -Recurse | Get-FileHash -Algorithm %%H | Out-File -Append '%HASHFILE%' -Width 256"
+%POWERSHELL% -Command "$Data = Get-Content '%HASHFILE%'; $Data.Replace((Get-Item -LiteralPath '%BINDIR%').FullName,'').Trim() | Set-Content '%HASHFILE%'"
 
 PAUSE
+C

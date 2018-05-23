@@ -1,0 +1,30 @@
+
+Algorithm       Hash                                                                   Path
+---------       ----                                                                   ----
+SHA256          50B093A48BF40FA720874CEA54BFFCC0D0027F93A510891AECFDD004F7620DB9       x64\WinPriv.exe
+SHA256          7FE09602BFEE40F61C99E4B22414247485F6053596302DF9B49486BF07A76F13       x64\WinPrivCmd.exe
+SHA256          57440A7E21F665AD71687FB9664551B35CF31ABC5BFD880B423A68B9A29885C9       x86\WinPriv.exe
+SHA256          B30311EACE41EDDBB4B1A84B4E299AD9CBC27FD72F36AB678FFF1A0CABDE3EE1       x86\WinPrivCmd.exe
+SHA256          F0472293747FB74F4027A0CA87D99731E3172D2EBC4CC7AE7EBB22A4CB70901A       WinPriv.zip
+
+
+
+Algorithm       Hash                                                                   Path
+---------       ----                                                                   ----
+SHA1            2B23DEB9B4D0C855FC01CCE456F3B4FF732BDC50                               x64\WinPriv.exe
+SHA1            5FD1ADD743237A144922282F5F59DAB46328F03B                               x64\WinPrivCmd.exe
+SHA1            A984F2084E349A54547136E5344BC61A451D71D5                               x86\WinPriv.exe
+SHA1            204EC8496C2B858BBA4ADEE8E1CB53AD90DAF10B                               x86\WinPrivCmd.exe
+SHA1            C4A5FC3E2A4FCC8C4F24B2D6A5CD35D41CB30529                               WinPriv.zip
+
+
+
+Algorithm       Hash                                                                   Path
+---------       ----                                                                   ----
+MD5             8E19586953AA868BBD4BEF1FC55787D5                                       x64\WinPriv.exe
+MD5             7395C5457E5B05E7B7D3486B8C2239AA                                       x64\WinPrivCmd.exe
+MD5             F4B4CBE55203F3356B3CB36C2069F134                                       x86\WinPriv.exe
+MD5             E5B7FCF8F53BD9854A208DB5F3710E3F                                       x86\WinPrivCmd.exe
+MD5             5F361C3804C5D5686811DBF293A4898E                                       WinPriv.zip
+
+
