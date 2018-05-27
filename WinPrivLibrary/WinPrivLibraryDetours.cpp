@@ -72,8 +72,7 @@ NTSTATUS(WINAPI * TrueNtQueryValueKey)(_In_ HANDLE KeyHandle, _In_ PUNICODE_STRI
 
 EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	_In_ PUNICODE_STRING ValueName, _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-	_Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength
-)
+	_Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength)
 {
 	static std::vector<RegInterceptInfo *> * vRegInterceptList = NULL;
 	if (vRegInterceptList == NULL)
@@ -128,7 +127,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			// fetch value name
 			LPWSTR sValueName = sParams[1];
 			tInterceptInfo->RegValueName = { (USHORT)wcslen(sValueName) * sizeof(WCHAR),
-				(USHORT)wcslen(sValueName) * sizeof(WCHAR), sValueName };
+				(USHORT)wcslen(sValueName) * sizeof(WCHAR), _wcsdup(sValueName) };
 
 			// match the aesthetic types to the typed enumerations
 			LPWSTR sType = sParams[2];
@@ -163,18 +162,22 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 		LocalFree(sParams);
 	}
 
-	// perform the real lookup
-	NTSTATUS iRealReturn = TrueNtQueryValueKey(KeyHandle, ValueName, KeyValueInformationClass,
-		KeyValueInformation, Length, ResultLength);
+	// sanity check
+	if (ResultLength == NULL)
+	{
+		return STATUS_INVALID_PARAMETER;
+	}
 
 	// lookup the size for the key name so we can allocate space for it
 	DWORD iKeyNameSize;
 	if (NtQueryKey(KeyHandle, KeyNameInformation, NULL, 0, &iKeyNameSize) != STATUS_BUFFER_TOO_SMALL)
 	{
-		return iRealReturn;
+		// should never happen
+		return STATUS_INVALID_PARAMETER;
 	}
 
 	// allocate space for name and lookup
+	NTSTATUS iStatus = -1;
 	PKEY_NAME_INFORMATION pNameInfo = (PKEY_NAME_INFORMATION)malloc(iKeyNameSize);
 	if (NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo, iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
 	{
@@ -188,9 +191,9 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			if (UnicodeStringPrefix(&tRegOverrideInfo->RegKeyName, &sKeyName) &&
 				tRegOverrideInfo->RegValueType == -1)
 			{
-				free(pNameInfo);
 				*ResultLength = 0;
-				return STATUS_OBJECT_NAME_NOT_FOUND;
+				iStatus = STATUS_OBJECT_NAME_NOT_FOUND;
+				break;
 			}
 
 			// handle registry override
@@ -200,35 +203,92 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 				if (KeyValueInformationClass == KeyValueFullInformation ||
 					KeyValueInformationClass == KeyValueFullInformationAlign64)
 				{
-					PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
-					if (tKeyInfo->Type == tRegOverrideInfo->RegValueType)
+					// calculated required size and return if not large enough
+					*ResultLength = offsetof(KEY_VALUE_FULL_INFORMATION, Name) +
+						tRegOverrideInfo->RegKeyName.Length + tRegOverrideInfo->RegValueDataSize;
+					if (*ResultLength > Length)
 					{
-						if (tRegOverrideInfo->RegValueDataSize <= tKeyInfo->DataLength)
-						{
-							LPVOID pData = (DWORD *)((LPBYTE)KeyValueInformation + tKeyInfo->DataOffset);
-							memcpy(pData, tRegOverrideInfo->RegValueData, tRegOverrideInfo->RegValueDataSize);
-							tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
-						}
-
+						iStatus = STATUS_BUFFER_TOO_SMALL;
+						break;
 					}
+
+					// populate type and name information
+					PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
+					tKeyInfo->TitleIndex = 0;
+					tKeyInfo->Type = tRegOverrideInfo->RegValueType;
+					tKeyInfo->NameLength = tRegOverrideInfo->RegKeyName.Length;
+					memcpy(tKeyInfo->Name, tRegOverrideInfo->RegValueName.Buffer, tRegOverrideInfo->RegKeyName.Length);
+
+					// populate data
+					tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
+					tKeyInfo->DataOffset = (ULONG)((LPBYTE)&tKeyInfo->Name - (LPBYTE)tKeyInfo) + tKeyInfo->NameLength;
+					LPVOID pData = (DWORD *)((LPBYTE)KeyValueInformation + tKeyInfo->DataOffset);
+					memcpy(pData, tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
+					iStatus = STATUS_SUCCESS;
 				}
 				else if (KeyValueInformationClass == KeyValuePartialInformation ||
 					KeyValueInformationClass == KeyValuePartialInformationAlign64)
 				{
-					PKEY_VALUE_PARTIAL_INFORMATION tKeyInfo = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
-					if (tKeyInfo->Type == tRegOverrideInfo->RegValueType)
+					// calculated required size and return if not large enough
+					*ResultLength = offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) +
+						tRegOverrideInfo->RegValueDataSize;
+					if (*ResultLength > Length)
 					{
-						LPVOID pData = (LPVOID)(tKeyInfo->Data);
-						memcpy(pData, tRegOverrideInfo->RegValueData, tRegOverrideInfo->RegValueDataSize);
-						tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
+						iStatus = STATUS_BUFFER_TOO_SMALL;
+						break;
 					}
+
+					// populate type information
+					PKEY_VALUE_PARTIAL_INFORMATION tKeyInfo = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
+					tKeyInfo->TitleIndex = 0;
+					tKeyInfo->Type = tRegOverrideInfo->RegValueType;
+
+					// populate data
+					tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
+					memcpy(tKeyInfo->Data, tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
+					iStatus = STATUS_SUCCESS;
 				}
 			}
 		}
 	}
 
+	// cleanup
 	free(pNameInfo);
-	return iRealReturn;
+
+	// return the real value if no match was found
+	if (iStatus == -1)
+	{
+		iStatus = TrueNtQueryValueKey(KeyHandle, ValueName, KeyValueInformationClass,
+			KeyValueInformation, Length, ResultLength);
+	}
+
+	return iStatus;
+}
+
+NTSTATUS(WINAPI * TrueNtEnumerateValueKey)(_In_ HANDLE KeyHandle, _In_ ULONG Index,
+	_In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass, _Out_opt_ PVOID KeyValueInformation,
+	_In_ ULONG Length, _Out_ PULONG ResultLength) = (decltype(TrueNtEnumerateValueKey))
+	GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtEnumerateValueKey");
+
+EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ ULONG Index,
+	_In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass, _Out_opt_ PVOID KeyValueInformation,
+	_In_ ULONG Length, _Out_ PULONG ResultLength)
+{
+	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+
+	if (iStatus == STATUS_SUCCESS &&
+		(KeyValueInformationClass == KeyValueFullInformation ||
+			KeyValueInformationClass == KeyValueFullInformationAlign64))
+	{
+		PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
+		UNICODE_STRING sValue = { (USHORT)tKeyInfo->NameLength, (USHORT)tKeyInfo->NameLength, tKeyInfo->Name };
+		iStatus = DetourNtQueryValueKey(KeyHandle, &sValue,
+			KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+		return iStatus;
+	}
+
+	return iStatus;
 }
 
 //   __   __   __   __   ___  __   __      ___       ___
@@ -341,11 +401,11 @@ void UpdateIpAddress(_In_ LPCWSTR sName, _Inout_ LPSOCKADDR tSockToUpdate)
 	for (int iParam = 0; iParam < iHostOverrideParams; iParam += 2)
 	{
 		if (_wcsicmp(sName, sHostOverride[iParam]) != 0) continue;
-		
+
 		IN_ADDR tReplace;
 		LPCWSTR sTerm = NULL;
 		RtlIpv4StringToAddressW(sHostOverride[iParam + 1], TRUE, &sTerm, &tReplace);
-		
+
 		if (tSockToUpdate->sa_family == AF_INET6)
 		{
 			SOCKADDR_IN6 * pAddr = (SOCKADDR_IN6 *)tSockToUpdate;
@@ -420,6 +480,7 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
 		DetourAttach(&(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
+		DetourAttach(&(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))
@@ -472,6 +533,7 @@ EXTERN_C VOID WINAPI DllExtraDetach()
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
 		DetourDetach(&(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
+		DetourDetach(&(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))
