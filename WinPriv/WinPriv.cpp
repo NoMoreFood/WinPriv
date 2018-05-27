@@ -116,24 +116,24 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			}
 		}
 
-		// instructs winpriv to create a list of privs and display it to th user
+		// instructs winpriv to create a list of privs and display it to the user
 		else if (_wcsicmp(sArg.c_str(), L"/ListPrivs") == 0)
 		{
 			// calculate column display size
-			int iColumnSize = 0;
+			size_t iColumnSize = 0;
 			for (std::pair<std::wstring, std::wstring> tPriv : vPrivMaps)
 			{
-				iColumnSize = max(iColumnSize, (int)tPriv.first.length());
+				iColumnSize = max(iColumnSize, tPriv.first.length());
 			}
 
 			// format the output into columns
 			std::wstringstream ss;
 			ss << std::setiosflags(std::ios::left);
-			ss << std::setw(iColumnSize + 1) << L"Privilege Constant" << L" " << L"Privilege Description\n";
-			ss << std::setw(iColumnSize + 1) << L"==================" << L" " << L"=====================\n";
+			ss << std::setw(iColumnSize + 1ULL) << L"Privilege Constant" << L" " << L"Privilege Description\n";
+			ss << std::setw(iColumnSize + 1ULL) << L"==================" << L" " << L"=====================\n";
 			for (std::pair<std::wstring, std::wstring> tPriv : vPrivMaps)
 			{
-				ss << std::setw(iColumnSize + 1) << tPriv.first.c_str() << L" " << tPriv.second.c_str() << L"\n";
+				ss << std::setw(iColumnSize + 1ULL) << tPriv.first.c_str() << L" " << tPriv.second.c_str() << L"\n";
 			}
 
 			PrintMessage(L"%s", ss.str().c_str());
@@ -364,8 +364,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// generate a uuid string to create the temporary file
 	RPC_WSTR sUUID;
 	UUID tUUID;
-	UuidCreate(&tUUID);
-	UuidToString(&tUUID, &sUUID);
+	if (UuidCreate(&tUUID) != RPC_S_OK ||
+		UuidToString(&tUUID, &sUUID) != RPC_S_OK)
+	{
+		PrintMessage(L"ERROR: Could not generate name for temporary file.\n");
+		return __LINE__;
+	}
 
 	// generate the files names to use for library names
 	CHAR sTempLibraryX86[_MAX_PATH + 1];
@@ -463,6 +467,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// return process exit code
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
+	CloseHandle(o_ProcessInfo.hProcess);
 	return iExitCode;
 }
 
@@ -477,7 +482,7 @@ int wmain(int iArgc, wchar_t *aArgv[])
 	RunProgram(iArgc, aArgv);
 }
 #else
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
+int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ PWSTR pCmdLine, _In_ int nCmdShow)
 {
 	return RunProgram(__argc, __wargv);
 }
