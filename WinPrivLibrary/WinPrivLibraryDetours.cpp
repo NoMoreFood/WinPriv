@@ -90,7 +90,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			// split the first argument into a root name and subkey name
 			LPWSTR sRootKeyName = sParams[iParam];
 			LPWSTR sSubKeyName = wcschr(sParams[iParam], L'\\');
-			*sSubKeyName++ = '\0';
+			if (sSubKeyName != NULL) *sSubKeyName++ = '\0';
 
 			// match the aesthetic name to the builtin roots
 			HKEY hRootKey = NULL;
@@ -179,7 +179,8 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	// allocate space for name and lookup
 	NTSTATUS iStatus = -1;
 	PKEY_NAME_INFORMATION pNameInfo = (PKEY_NAME_INFORMATION)malloc(iKeyNameSize);
-	if (NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo, iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
+	if (pNameInfo != NULL && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo, 
+		iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
 	{
 		// convert to unicode string structure for quick comparisons
 		UNICODE_STRING sKeyName = { (USHORT)pNameInfo->NameLength,
@@ -253,7 +254,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	}
 
 	// cleanup
-	free(pNameInfo);
+	if (pNameInfo != NULL) free(pNameInfo);
 
 	// return the real value if no match was found
 	if (iStatus == -1)
@@ -277,7 +278,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
 		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 
-	if (iStatus == STATUS_SUCCESS &&
+	if (iStatus == STATUS_SUCCESS && KeyValueInformation != NULL && 
 		(KeyValueInformationClass == KeyValueFullInformation ||
 			KeyValueInformationClass == KeyValueFullInformationAlign64))
 	{

@@ -95,7 +95,11 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 
 	// get the current working directory to pass to the child process
 	WCHAR sCurrentDir[MAX_PATH + 1];
-	_wgetcwd(sCurrentDir, _countof(sCurrentDir));
+	if (_wgetcwd(sCurrentDir, _countof(sCurrentDir)) == NULL)
+	{
+		PrintMessage(L"ERROR: Problem obtaining current directory.\n");
+		return __LINE__;
+	}
 	
 	// relaunch process under altered security policy
 	LPWSTR sBlock = GetEnvironmentStrings();
