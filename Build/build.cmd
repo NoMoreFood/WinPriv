@@ -13,14 +13,15 @@ set LIBURL=https://github.com/NoMoreFood/WinPriv
 RD /S /Q "%~dp0.vs" >NUL 2>&1
 RD /S /Q "%~dp0x86\Temp" >NUL 2>&1
 RD /S /Q "%~dp0x64\Temp" >NUL 2>&1
-FORFILES /S /P "%~dp0." /M "*.*zip" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.*pdb" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.*obj" /C "CMD /C DEL /Q @path" >NUL 2>&1
+FORFILES /S /P "%~dp0." /M "*.zip" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.log" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.lib" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.dll" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.bsc" /C "CMD /C DEL /Q @path" >NUL 2>&1
 FORFILES /S /P "%~dp0." /M "*.exp" /C "CMD /C DEL /Q @path" >NUL 2>&1
+FORFILES /S /P "%~dp0." /M "*.last*" /C "CMD /C DEL /Q @path" >NUL 2>&1
 
 :: determine 32-bit program files directory
 IF DEFINED ProgramFiles SET PX86=%ProgramFiles%
