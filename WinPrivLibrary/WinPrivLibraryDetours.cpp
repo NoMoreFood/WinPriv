@@ -24,6 +24,8 @@
 #include "WinPrivShared.h"
 #include "WinPrivLibrary.h"
 
+#define sizereq(x,y) (offsetof(x,y) + sizeof(((x*) NULL)->y))
+#define align(x,y) ((((uintptr_t) (x)) + (((y)/CHAR_BIT)-1)) & ~(((y)/CHAR_BIT)-1))
 //   ___         ___     __   __   ___
 //  |__  | |    |__     /  \ |__) |__  |\ |
 //  |    | |___ |___    \__/ |    |___ | \|
@@ -125,24 +127,31 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			if (tInterceptInfo->RegKeyName.Length == NULL) break;
 
 			// fetch value name
-			LPWSTR sValueName = sParams[1];
+			LPWSTR sValueName = sParams[iParam + 1];
 			tInterceptInfo->RegValueName = { (USHORT)wcslen(sValueName) * sizeof(WCHAR),
 				(USHORT)wcslen(sValueName) * sizeof(WCHAR), _wcsdup(sValueName) };
 
 			// match the aesthetic types to the typed enumerations
-			LPWSTR sType = sParams[2];
+			LPWSTR sType = sParams[iParam + 2];
 			if (_wcsicmp(sType, L"REG_DWORD") == 0) tInterceptInfo->RegValueType = REG_DWORD;
+			else if (_wcsicmp(sType, L"REG_QWORD") == 0) tInterceptInfo->RegValueType = REG_QWORD;
 			else if (_wcsicmp(sType, L"REG_SZ") == 0) tInterceptInfo->RegValueType = REG_SZ;
 			else if (_wcsicmp(sType, L"REG_BLOCK") == 0) tInterceptInfo->RegValueType = -1;
 			else break;
 
 			// decode the value string to a data blob
-			LPWSTR sData = sParams[3];
+			LPWSTR sData = sParams[iParam + 3];
 			if (tInterceptInfo->RegValueType == REG_DWORD)
 			{
 				tInterceptInfo->RegValueData = (DWORD *)malloc(sizeof(DWORD));
-				swscanf(sData, L"%lu", (DWORD *)tInterceptInfo->RegValueData);
+				swscanf(sData, L"%li", (DWORD *)tInterceptInfo->RegValueData);
 				tInterceptInfo->RegValueDataSize = sizeof(DWORD);
+			}
+			else if (tInterceptInfo->RegValueType == REG_QWORD)
+			{
+				tInterceptInfo->RegValueData = (unsigned __int64 *)malloc(sizeof(unsigned __int64));
+				swscanf(sData, L"%lli", (unsigned __int64 *)tInterceptInfo->RegValueData);
+				tInterceptInfo->RegValueDataSize = sizeof(unsigned __int64);
 			}
 			else if (tInterceptInfo->RegValueType == REG_SZ)
 			{
@@ -179,7 +188,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	// allocate space for name and lookup
 	NTSTATUS iStatus = -1;
 	PKEY_NAME_INFORMATION pNameInfo = (PKEY_NAME_INFORMATION)malloc(iKeyNameSize);
-	if (pNameInfo != NULL && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo, 
+	if (pNameInfo != NULL && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo,
 		iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
 	{
 		// convert to unicode string structure for quick comparisons
@@ -204,50 +213,78 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 				if (KeyValueInformationClass == KeyValueFullInformation ||
 					KeyValueInformationClass == KeyValueFullInformationAlign64)
 				{
-					// calculated required size and return if not large enough
-					*ResultLength = offsetof(KEY_VALUE_FULL_INFORMATION, Name) +
-						tRegOverrideInfo->RegKeyName.Length + tRegOverrideInfo->RegValueDataSize;
-					if (*ResultLength > Length)
+					const UINT_PTR alignment = (KeyValueInformationClass == KeyValueFullInformation) ? 32 : 64;
+					iStatus = Length >= sizeof(ULONG) ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
+					*ResultLength = (ULONG)align(offsetof(KEY_VALUE_FULL_INFORMATION, Name) +
+						tRegOverrideInfo->RegValueName.Length + tRegOverrideInfo->RegValueDataSize, alignment);
+
+					PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
+
+					if (sizereq(KEY_VALUE_FULL_INFORMATION, TitleIndex) <= Length)
 					{
-						iStatus = STATUS_BUFFER_TOO_SMALL;
-						break;
+						tKeyInfo->TitleIndex = 0;
+					}
+					if (sizereq(KEY_VALUE_FULL_INFORMATION, Type) <= Length)
+					{
+						tKeyInfo->Type = tRegOverrideInfo->RegValueType;
+					}
+					if (sizereq(KEY_VALUE_FULL_INFORMATION, NameLength) <= Length)
+					{
+						tKeyInfo->NameLength = tRegOverrideInfo->RegValueName.Length;
+					}
+					if (sizereq(KEY_VALUE_FULL_INFORMATION, DataLength) <= Length)
+					{
+						tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
 					}
 
-					// populate type and name information
-					PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
-					tKeyInfo->TitleIndex = 0;
-					tKeyInfo->Type = tRegOverrideInfo->RegValueType;
-					tKeyInfo->NameLength = tRegOverrideInfo->RegKeyName.Length;
-					memcpy(tKeyInfo->Name, tRegOverrideInfo->RegValueName.Buffer, tRegOverrideInfo->RegKeyName.Length);
+					// copy name payload
+					const ULONG iNameRequiredSize = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + tKeyInfo->NameLength;
+					if (iNameRequiredSize <= Length)
+					{
+						memcpy(tKeyInfo->Name, tRegOverrideInfo->RegValueName.Buffer, tKeyInfo->NameLength);
+					}
 
-					// populate data
-					tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
-					tKeyInfo->DataOffset = (ULONG)((LPBYTE)&tKeyInfo->Name - (LPBYTE)tKeyInfo) + tKeyInfo->NameLength;
-					LPVOID pData = (DWORD *)((LPBYTE)KeyValueInformation + tKeyInfo->DataOffset);
-					memcpy(pData, tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
-					iStatus = STATUS_SUCCESS;
+					// copy data payload
+					const ULONG iDataRequiredSize = (ULONG)align(iNameRequiredSize + tKeyInfo->DataLength, alignment);
+					if (iDataRequiredSize <= Length)
+					{
+						tKeyInfo->DataOffset = (ULONG)align(iNameRequiredSize, alignment);
+						LPVOID pData = (LPVOID)align(((LPBYTE)KeyValueInformation + tKeyInfo->DataOffset), alignment);
+						memcpy(pData, tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
+						iStatus = STATUS_SUCCESS;
+					}
 				}
 				else if (KeyValueInformationClass == KeyValuePartialInformation ||
 					KeyValueInformationClass == KeyValuePartialInformationAlign64)
 				{
-					// calculated required size and return if not large enough
-					*ResultLength = offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) +
-						tRegOverrideInfo->RegValueDataSize;
-					if (*ResultLength > Length)
+					// calculate required size and set default status
+					const UINT_PTR alignment = (KeyValueInformationClass == KeyValuePartialInformation) ? 32 : 64;
+					iStatus = Length >= sizeof(ULONG) ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
+					*ResultLength = (ULONG)align(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) +
+						tRegOverrideInfo->RegValueDataSize, alignment);
+
+					PKEY_VALUE_PARTIAL_INFORMATION tKeyInfo = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
+
+					if (sizereq(KEY_VALUE_PARTIAL_INFORMATION, TitleIndex) <= Length)
 					{
-						iStatus = STATUS_BUFFER_TOO_SMALL;
-						break;
+						tKeyInfo->TitleIndex = 0;
+					}
+					if (sizereq(KEY_VALUE_PARTIAL_INFORMATION, Type) <= Length)
+					{
+						tKeyInfo->Type = tRegOverrideInfo->RegValueType;
+					}
+					if (sizereq(KEY_VALUE_PARTIAL_INFORMATION, DataLength) <= Length)
+					{
+						tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
 					}
 
-					// populate type information
-					PKEY_VALUE_PARTIAL_INFORMATION tKeyInfo = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
-					tKeyInfo->TitleIndex = 0;
-					tKeyInfo->Type = tRegOverrideInfo->RegValueType;
-
-					// populate data
-					tKeyInfo->DataLength = tRegOverrideInfo->RegValueDataSize;
-					memcpy(tKeyInfo->Data, tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
-					iStatus = STATUS_SUCCESS;
+					// copy data payload
+					if (*ResultLength <= Length)
+					{
+						memcpy((PVOID)align(tKeyInfo->Data, alignment),
+							tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
+						iStatus = STATUS_SUCCESS;
+					}
 				}
 			}
 		}
@@ -278,7 +315,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
 		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 
-	if (iStatus == STATUS_SUCCESS && KeyValueInformation != NULL && 
+	if (iStatus == STATUS_SUCCESS && KeyValueInformation != NULL &&
 		(KeyValueInformationClass == KeyValueFullInformation ||
 			KeyValueInformationClass == KeyValueFullInformationAlign64))
 	{
@@ -397,7 +434,7 @@ void UpdateIpAddress(_In_ LPCWSTR sName, _Inout_ LPSOCKADDR tSockToUpdate)
 {
 	static INT iHostOverrideParams = 0;
 	static LPWSTR * sHostOverride = CommandLineToArgvW(_wgetenv(WINPRIV_EV_HOST_OVERRIDE), &iHostOverrideParams);
-	wprintf(L"\n\nLookup: %s\n\n", sName);
+
 	// parse the parameters to create the intercept list
 	for (int iParam = 0; iParam < iHostOverrideParams; iParam += 2)
 	{
