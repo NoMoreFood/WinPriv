@@ -1,3 +1,8 @@
+//
+// Copyright (c) Bryan Berns. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
+//
+
 #define UMDF_USING_NTSTATUS
 #include <ntstatus.h>
 
@@ -8,6 +13,7 @@
 #include <detours.h>
 #include <stdio.h>
 #include <conio.h>
+#include <shlobj.h>
 #include <lm.h>
 #include <winsock2.h>
 #include <iphlpapi.h>
@@ -491,6 +497,43 @@ INT WSAAPI DetourWSALookupServiceNextA(_In_ HANDLE hLookup, _In_ DWORD dwControl
 	return iRet;
 }
 
+//        __                           __   ___  __   __   __            ___  ___ 
+//   /\  |  \  |\/| | |\ |    |  |\/| |__) |__  |__) /__` /  \ |\ |  /\   |  |__  
+//  /~~\ |__/  |  | | | \|    |  |  | |    |___ |  \ .__/ \__/ | \| /~~\  |  |___ 
+//     
+
+decltype(&IsUserAnAdmin) TrueIsUserAnAdmin = IsUserAnAdmin;
+
+BOOL __stdcall DetourIsUserAnAdmin()
+{
+	return TRUE;
+}
+
+decltype(&CheckTokenMembership) TrueCheckTokenMembership = CheckTokenMembership;
+
+BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle, 
+	_In_ PSID SidToCheck, _Out_ PBOOL IsMember)
+{
+	// fetch and allocate the local admin structure
+	static SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
+	static PSID LocalAdministratorsGroup = NULL;
+	static BOOL bLocalAdmin = AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+		DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &LocalAdministratorsGroup);
+
+	// get the real value of the function - return if failure 
+	BOOL bRealResult = TrueCheckTokenMembership(TokenHandle, SidToCheck, IsMember);
+	if (bRealResult == 0) return bRealResult;
+
+	// check if the local admin group is being requested
+	if (EqualSid(SidToCheck, LocalAdministratorsGroup))
+	{
+		// unconditionally say this user is running as an admin
+		*IsMember = TRUE;
+	}
+
+	return bRealResult;
+}
+
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
@@ -533,6 +576,12 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 		DetourAttach(&(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
 	}
 
+	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
+	{
+		DetourAttach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
+		DetourAttach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
+	}
+
 	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
 	{
 		// tokenize the string
@@ -549,7 +598,7 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 			PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.");
 		}
 	}
-}
+}                                                                     
 
 EXTERN_C VOID WINAPI DllExtraDetach()
 {
@@ -584,5 +633,11 @@ EXTERN_C VOID WINAPI DllExtraDetach()
 	{
 		DetourDetach(&(PVOID&)TrueNtOpenFile, DetourNtOpenFile);
 		DetourDetach(&(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
+	}
+
+	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
+	{
+		DetourDetach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
+		DetourDetach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
 }
