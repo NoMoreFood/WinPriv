@@ -1,3 +1,8 @@
+//
+// Copyright (c) Bryan Berns. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
+//
+
 #define UMDF_USING_NTSTATUS
 #include <ntstatus.h>
 
@@ -198,6 +203,12 @@ Optional Switches
    Access detailed permissions under 'C:\System Volume Information':
    WinPrivCmd.exe /BypassFileSecurity icacls.exe
       "C:\System Volume Information" /T
+
+/AdminImpersonate
+
+   This option causes any local administrator check using IsUserAnAdmin() or
+   CheckTokenMembership() to unconditionally succeed regardless if the user is
+   actually a member of the local administrator group.
 
 /ListPrivileges
 

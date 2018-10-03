@@ -1,3 +1,8 @@
+//
+// Copyright (c) Bryan Berns. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for details.
+//
+
 #define UMDF_USING_NTSTATUS
 #include <ntstatus.h>
 
