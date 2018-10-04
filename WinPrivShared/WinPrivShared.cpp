@@ -22,7 +22,7 @@
 
 #include "WinPrivShared.h"
 
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> vArgs)
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> & vArgs)
 {
 	std::wstring sResult;
 
