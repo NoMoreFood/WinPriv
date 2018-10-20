@@ -58,6 +58,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// target executable and options provided by command line args
 	std::wstring sProcessParams;
 
+	// whether or not to provide execution time
+	bool bDisplayExecutionTime = false;
+
 	// enumerate arguments
 	for (int iArg = 1; iArg < iArgc; iArg++)
 	{
@@ -289,6 +292,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"1");
 		}
 
+		// instruct winpriv to display process execution time
+		else if (_wcsicmp(sArg.c_str(), L"/MeasureTime") == 0)
+		{
+			bDisplayExecutionTime = true;
+		}
+
 		// instructs to display help by break from the loop with causes no
 		// target process to be defined
 		else if (_wcsicmp(sArg.c_str(), L"/Help") == 0 || _wcsicmp(sArg.c_str(), L"/?") == 0)
@@ -456,6 +465,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	LoadLibraryA((sizeof(INT_PTR) == sizeof(LONGLONG)) ? sTempLibraryX64 : sTempLibraryX86);
 	
 	// create process and detour
+	ULONGLONG iTimeStart = GetTickCount64();;
 	if (CreateProcess(NULL, (LPWSTR)sProcessParams.c_str(), NULL, NULL, FALSE, 0, NULL, NULL,
 		&o_StartInfo, &o_ProcessInfo) == 0)
 	{
@@ -472,6 +482,13 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		DeleteFileA(sTempLibraryX86);
 		DeleteFileA(sTempLibraryX64);
 		return __LINE__;
+	}
+
+	// display execution time if requested
+	if (bDisplayExecutionTime)
+	{
+		ULONGLONG iTimeStop = GetTickCount64();
+		PrintMessage(L"Execution Time In Seconds: %.3f", ((double)(iTimeStop - iTimeStart)) / 1000.0);
 	}
 
 	// cleanup

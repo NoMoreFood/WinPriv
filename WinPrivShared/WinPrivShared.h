@@ -71,5 +71,5 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vect
 		std::wstring sString(_scwprintf(format, __VA_ARGS__), '\0'); \
 		_swprintf((LPWSTR) sString.data(), format, __VA_ARGS__); \
 		if (GetConsoleWindow() != NULL) wprintf(L"%s", sString.c_str()); else \
-			MessageBox(NULL, sString.c_str(), L"WinPriv Message", MB_OK); \
+			MessageBox(NULL, sString.c_str(), L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
 	} while (0)

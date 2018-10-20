@@ -95,7 +95,7 @@ std::wstring GetWinPrivHelp()
 	if (GetConsoleWindow() == NULL)
 	{
 		return std::wstring(PROJECT_NAME) +
-			L"(.exe [optional switches] <Command To Execute> \n" +
+			L".exe [optional switches] <Command To Execute> \n" +
 			L"\n" +
 			L"See WinPrivCmd /Help to view optional switch information.";
 	}
@@ -209,6 +209,11 @@ Optional Switches
    This option causes any local administrator check using IsUserAnAdmin() or
    CheckTokenMembership() to unconditionally succeed regardless if the user is
    actually a member of the local administrator group.
+
+/MeasureTime
+
+   This option measures the execution time of the target process and displays
+   it to the user.
 
 /ListPrivileges
 
