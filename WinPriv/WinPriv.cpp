@@ -46,6 +46,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
+	SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, L"");
 	SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_PARENT_PID, std::to_wstring(GetCurrentProcessId()).c_str());
 
@@ -77,7 +78,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		}
 
 		// this switch is only called by winpriv to instructed itself to relaunch
-		// itself as an elevated process.  this is done after establishing a new
+		// itself as an elevated process. this is done after establishing a new
 		// logon following new privs have been granted
 		else if (_wcsicmp(sArg.c_str(), L"/RelaunchElevated") == 0)
 		{
@@ -284,12 +285,42 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"1");
 		}
 
+
 		// instruct winpriv to tell the target process that the current user is
 		// an admin regardless of security tokens or group memberships
 		else if (_wcsicmp(sArg.c_str(), L"/AdminImpersonate") == 0)
 		{
 			SetEnvironmentVariable(L"__COMPAT_LAYER", L"RunAsInvoker");
 			SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"1");
+		}
+
+		// instructs winpriv to override all host name lookups
+		else if (_wcsicmp(sArg.c_str(), L"/RecordCrypto") == 0)
+		{
+			const int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// if not 'CON' then ensure the passed directory exists
+			std::wstring sRecordCrypto(aArgv[iArg + 1]);
+			if (_wcsicmp(sArg.c_str(), L"CON") != 0)
+			{
+				if (CreateDirectory(sRecordCrypto.c_str(), NULL) == FALSE &&
+					ERROR_ALREADY_EXISTS != GetLastError())
+				{
+					PrintMessage(L"ERROR: Could not create the specified directory for /CrytpoRecord");
+					return __LINE__;
+				}
+			}
+
+			// store the crypto variable in the environment variable to pass to child
+			SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, sRecordCrypto.c_str());
+			iArg += iArgsRequired;
 		}
 
 		// instruct winpriv to display process execution time

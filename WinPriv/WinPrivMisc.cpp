@@ -153,7 +153,7 @@ Optional Switches
    Specifies a physical network address that will be returned when the target
    application makes a query to the system to provide its MAC addresses. Any
    call to GetAdaptersAddresses, GetAdaptersInfo, and NetWkstaTransportEnum
-   is handled.  The hex octets can be delimited by dashes, colons, or nothing.
+   is handled. The hex octets can be delimited by dashes, colons, or nothing.
 
    Examples:
 
@@ -164,7 +164,7 @@ Optional Switches
    Specifies that any request to obtain the IP address for the specified target
    will instead receive the specified replacement IP address. This is done by
    intercepting calls to WSALookupServiceNext() which nearly all address 
-   lookups ultimately occur.  Be aware due to special security protections, 
+   lookups ultimately occur. Be aware due to special security protections, 
    this will not work for Internet Explorer and programs that use Internet 
    Explorer libraries but should work for most other processes.
 
@@ -209,6 +209,15 @@ Optional Switches
    This option causes any local administrator check using IsUserAnAdmin() or
    CheckTokenMembership() to unconditionally succeed regardless if the user is
    actually a member of the local administrator group.
+
+/RecordCrypto <Directory>
+
+   This option records the data being inputted to common Windows encryption 
+   functions and the data being outputted from common Windows decryption 
+   functions. A separate file will be created for each operation in the 
+   specified directory. If 'CON' is specified instead of a directory path, 
+   information is outputted to the console and message boxes, depending of the 
+   type of application.
 
 /MeasureTime
 

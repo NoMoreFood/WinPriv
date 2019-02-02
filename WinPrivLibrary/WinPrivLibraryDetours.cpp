@@ -20,18 +20,25 @@
 #include <ws2ipdef.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
+#include <dpapi.h>
+#include <wincrypt.h>
 
 #include <string>
 #include <vector>
 #include <regex>
 #include <locale>
 #include <codecvt>
+#include <fstream>
 
 #include "WinPrivShared.h"
 #include "WinPrivLibrary.h"
 
 #define sizereq(x,y) (offsetof(x,y) + sizeof(((x*) NULL)->y))
 #define align(x,y) ((((uintptr_t) (x)) + (((y)/CHAR_BIT)-1)) & ~(((y)/CHAR_BIT)-1))
+
+#pragma comment(lib,"crypt32.lib")
+#pragma comment(lib,"bcrypt.lib")
+
 //   ___         ___     __   __   ___
 //  |__  | |    |__     /  \ |__) |__  |\ |
 //  |    | |___ |___    \__/ |    |___ | \|
@@ -347,7 +354,7 @@ DECLSPEC_NORETURN EXTERN_C VOID NTAPI DetourRtlExitUserProcess(_In_ NTSTATUS Exi
 {
 	if (GetConsoleWindow() != NULL && VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
-		wprintf(L"\n\nWinPriv target process has finished execution.  Please any key to exit this window.\n");
+		wprintf(L"\n\nWinPriv target process has finished execution. Please any key to exit this window.\n");
 		_getch();
 	}
 
@@ -534,6 +541,129 @@ BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 	return bRealResult;
 }
 
+//   __   __      ___  __      __   ___  __   __   __   __  
+//  /  ` |__) \ /  |  /  \    |__) |__  /  ` /  \ |__) |  \ 
+//  \__, |  \  |   |  \__/    |  \ |___ \__, \__/ |  \ |__/ 
+// 
+
+void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
+{
+	LPWSTR sCryptoValue = _wgetenv(WINPRIV_EV_RECORD_CRYPTO);
+	if (_wcsicmp(sCryptoValue, L"CON") == 0)
+	{
+		if (IsTextUnicode(pData, iDataLen, NULL))
+		{
+			PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*s\n", 
+				sFunction, L"Unicode", iDataLen, (int) (iDataLen / sizeof(WCHAR)), (LPWSTR) pData);
+		}
+		else
+		{
+			PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*S\n", 
+				sFunction, L"Multibyte", iDataLen, (int) iDataLen, pData);
+		}
+	}
+	else
+	{
+		// formulate the file name to write to
+		static thread_local DWORD iEnumerator = 0;
+		std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\PID" + std::to_wstring(GetCurrentProcessId())
+			+ L"-TID" + std::to_wstring(GetCurrentThreadId()) + L"-" + std::to_wstring(iEnumerator++) + L"-" + sFunction + L".bin";
+
+		// create the crypto data file
+		HANDLE hFile = CreateFile(sFilePath.c_str(), GENERIC_ALL, FILE_SHARE_WRITE,
+			NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hFile == INVALID_HANDLE_VALUE)
+		{
+			PrintMessage(L"ERROR: Problem opening crypto data file.\n");
+			return;
+		}
+
+		// write the crypto data to the file
+		DWORD iSizeWritten = 0;
+		if (WriteFile(hFile, pData, iDataLen, &iSizeWritten, NULL) == 0)
+		{
+			PrintMessage(L"ERROR: Problem writing crypto data file.\n");
+			CloseHandle(hFile);
+			return;
+		}
+
+		// close the crypto data file
+		if (CloseHandle(hFile) == 0)
+		{
+			PrintMessage(L"ERROR: Problem closing crypto data file.\n");
+			return;
+		}
+	}
+}
+
+decltype(&BCryptEncrypt) TrueBCryptEncrypt = BCryptEncrypt;
+
+NTSTATUS WINAPI DetourBCryptEncrypt(_Inout_ BCRYPT_KEY_HANDLE hKey, _In_reads_bytes_opt_(cbInput) PUCHAR pbInput, _In_ ULONG cbInput, _In_opt_ VOID *pPaddingInfo, _Inout_updates_bytes_opt_(cbIV) PUCHAR pbIV, _In_ ULONG cbIV, _Out_writes_bytes_to_opt_(cbOutput, *pcbResult) PUCHAR pbOutput, _In_ ULONG cbOutput, _Out_ ULONG *pcbResult, _In_ ULONG dwFlags)
+{
+	RecordCryptoData(__FUNCTIONW__, pbInput, cbInput);
+	return TrueBCryptEncrypt(hKey, pbInput, cbInput, pPaddingInfo, pbIV, cbIV, pbOutput, cbOutput, pcbResult, dwFlags);
+}
+
+decltype(&BCryptDecrypt) TrueBCryptDecrypt = BCryptDecrypt;
+
+NTSTATUS WINAPI DetourBCryptDecrypt(_Inout_ BCRYPT_KEY_HANDLE hKey, _In_reads_bytes_opt_(cbInput) PUCHAR pbInput, _In_ ULONG cbInput, _In_opt_ VOID *pPaddingInfo, _Inout_updates_bytes_opt_(cbIV) PUCHAR pbIV, _In_ ULONG cbIV, _Out_writes_bytes_to_opt_(cbOutput, *pcbResult) PUCHAR pbOutput, _In_ ULONG cbOutput, _Out_ ULONG *pcbResult, _In_ ULONG dwFlags)
+{
+	NTSTATUS iResult = TrueBCryptDecrypt(hKey, pbInput, cbInput, pPaddingInfo, pbIV, cbIV, pbOutput, cbOutput, pcbResult, dwFlags);
+	if (iResult == STATUS_SUCCESS) RecordCryptoData(__FUNCTIONW__, pbInput, cbInput);
+	return iResult;
+}
+
+decltype(&CryptEncrypt) TrueCryptEncrypt = CryptEncrypt;
+
+BOOL WINAPI DetourCryptEncrypt(_In_ HCRYPTKEY hKey, _In_ HCRYPTHASH  hHash, _In_ BOOL Final, _In_ DWORD dwFlags, _Inout_updates_bytes_to_opt_(dwBufLen, *pdwDataLen) BYTE *pbData, _Inout_ DWORD *pdwDataLen, _In_ DWORD dwBufLen)
+{
+	RecordCryptoData(__FUNCTIONW__, pbData, *pdwDataLen);
+	return TrueCryptEncrypt(hKey, hHash, Final, dwFlags, pbData, pdwDataLen, dwBufLen);
+}
+
+decltype(&CryptDecrypt) TrueCryptDecrypt = CryptDecrypt;
+
+BOOL WINAPI DetourCryptDecrypt(_In_ HCRYPTKEY hKey, _In_ HCRYPTHASH hHash, _In_ BOOL Final, _In_ DWORD dwFlags, _Inout_updates_bytes_to_(*pdwDataLen, *pdwDataLen) BYTE *pbData, _Inout_ DWORD *pdwDataLen)
+{
+	BOOL iResult = TrueCryptDecrypt(hKey, hHash, Final, dwFlags, pbData, pdwDataLen);
+	if (iResult == TRUE) RecordCryptoData(__FUNCTIONW__, pbData, *pdwDataLen);
+	return iResult;
+}
+
+decltype(&CryptProtectData) TrueCryptProtectData = CryptProtectData;
+
+BOOL WINAPI DetourCryptProtectData(_In_ DATA_BLOB* pDataIn, _In_opt_ LPCWSTR szDataDescr, _In_opt_ DATA_BLOB* pOptionalEntropy, _Reserved_ PVOID pvReserved, _In_opt_ CRYPTPROTECT_PROMPTSTRUCT* pPromptStruct, _In_ DWORD dwFlags, _Out_ DATA_BLOB* pDataOut)
+{
+	RecordCryptoData(__FUNCTIONW__, pDataOut->pbData, pDataOut->cbData);
+	return TrueCryptProtectData(pDataIn, szDataDescr, pOptionalEntropy, pvReserved, pPromptStruct, dwFlags, pDataOut);
+}
+
+decltype(&CryptUnprotectData) TrueCryptUnprotectData = CryptUnprotectData;
+
+BOOL WINAPI DetourCryptUnprotectData(_In_ DATA_BLOB* pDataIn, _Outptr_opt_result_maybenull_ LPWSTR* ppszDataDescr, _In_opt_ DATA_BLOB* pOptionalEntropy, _Reserved_ PVOID pvReserved, _In_opt_ CRYPTPROTECT_PROMPTSTRUCT* pPromptStruct, _In_ DWORD dwFlags, _Out_ DATA_BLOB* pDataOut)
+{
+	BOOL iResult = TrueCryptUnprotectData(pDataIn, ppszDataDescr, pOptionalEntropy, pvReserved, pPromptStruct, dwFlags, pDataOut);
+	if (iResult == TRUE) RecordCryptoData(__FUNCTIONW__, pDataOut->pbData, pDataOut->cbData);
+	return iResult;
+}
+
+decltype(&CryptProtectMemory) TrueCryptProtectMemory = CryptProtectMemory;
+
+BOOL WINAPI DetourCryptProtectMemory(_Inout_ LPVOID pDataIn, _In_ DWORD cbDataIn, _In_ DWORD dwFlags)
+{
+	RecordCryptoData(__FUNCTIONW__, (PUCHAR) pDataIn, cbDataIn);
+	return TrueCryptProtectMemory(pDataIn, cbDataIn, dwFlags);
+}
+
+decltype(&CryptUnprotectMemory) TrueCryptUnprotectMemory = CryptUnprotectMemory;
+
+BOOL WINAPI DetourCryptUnprotectMemory(_Inout_ LPVOID pDataIn, _In_ DWORD cbDataIn, _In_ DWORD dwFlags)
+{
+	BOOL iResult = TrueCryptUnprotectMemory(pDataIn, cbDataIn, dwFlags);
+	if (iResult == TRUE) RecordCryptoData(__FUNCTIONW__, (PUCHAR)pDataIn, cbDataIn);
+	return iResult;
+}
+
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
@@ -580,6 +710,18 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 	{
 		DetourAttach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
 		DetourAttach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
+	}
+
+	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
+	{
+		DetourAttach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt); 
+		DetourAttach(&(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
+		DetourAttach(&(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
+		DetourAttach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
+		DetourAttach(&(PVOID&)TrueCryptProtectData, DetourCryptProtectData);
+		DetourAttach(&(PVOID&)TrueCryptUnprotectData, DetourCryptUnprotectData);
+		DetourAttach(&(PVOID&)TrueCryptProtectMemory, DetourCryptProtectMemory);
+		DetourAttach(&(PVOID&)TrueCryptUnprotectMemory, DetourCryptUnprotectMemory);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
@@ -639,5 +781,17 @@ EXTERN_C VOID WINAPI DllExtraDetach()
 	{
 		DetourDetach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
 		DetourDetach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
+	}
+
+	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
+	{
+		DetourDetach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt); 
+		DetourDetach(&(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
+		DetourDetach(&(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
+		DetourDetach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
+		DetourDetach(&(PVOID&)TrueCryptProtectData, DetourCryptProtectData);
+		DetourDetach(&(PVOID&)TrueCryptUnprotectData, DetourCryptUnprotectData);
+		DetourDetach(&(PVOID&)TrueCryptProtectMemory, DetourCryptProtectMemory);
+		DetourDetach(&(PVOID&)TrueCryptUnprotectMemory, DetourCryptUnprotectMemory);
 	}
 }
