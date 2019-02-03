@@ -308,7 +308,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// if not 'CON' then ensure the passed directory exists
 			std::wstring sRecordCrypto(aArgv[iArg + 1]);
-			if (_wcsicmp(sArg.c_str(), L"CON") != 0)
+			if (_wcsicmp(sRecordCrypto.c_str(), L"CON") != 0)
 			{
 				if (CreateDirectory(sRecordCrypto.c_str(), NULL) == FALSE &&
 					ERROR_ALREADY_EXISTS != GetLastError())
