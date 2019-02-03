@@ -20,7 +20,6 @@
 #include <ws2ipdef.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
-#include <dpapi.h>
 #include <wincrypt.h>
 
 #define _NTDEF_
@@ -550,6 +549,12 @@ BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 //  \__, |  \  |   |  \__/    |  \ |___ \__, \__/ |  \ |__/ 
 // 
 
+std::wstring IntToString(int iValue, int iPadding = 5)
+{
+	std::wstring sValue = std::to_wstring(iValue);
+	return std::wstring(iPadding - sValue.length(), '0') + sValue;
+}
+
 void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 {
 	// remove 'Detour' from the function name
@@ -574,10 +579,8 @@ void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 	{
 		// formulate the file name to write to
 		static std::atomic<int> iOrder = 0;
-		std::wstring sEnumerator = std::to_wstring(iOrder++);
-		sEnumerator = std::wstring(5 - sEnumerator.length(), '0') + sEnumerator;
-		std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + sEnumerator + L"-PID" 
-			+ std::to_wstring(GetCurrentProcessId()) + L"-TID" + std::to_wstring(GetCurrentThreadId()) 
+		std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
+			+ IntToString(GetCurrentProcessId()) + L"-TID" + IntToString(GetCurrentThreadId())
 			+ L"-" + sFunction + L".bin";
 
 		// create the crypto data file

@@ -33,7 +33,7 @@
     <ProjectGuid>{B35AA3D9-40D7-479D-A407-FF3B21FABB0E}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>WinPriv</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
     <ProjectName>WinPrivCmd</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
