@@ -215,9 +215,15 @@ Optional Switches
    This option records the data being inputted to common Windows encryption 
    functions and the data being outputted from common Windows decryption 
    functions. A separate file will be created for each operation in the 
-   specified directory. If 'CON' is specified instead of a directory path, 
+   specified directory. If 'SHOW' is specified instead of a directory path, 
    information is outputted to the console and message boxes, depending of the 
    type of application.
+
+/SqlConnect <String>
+
+   This option replaces the string used in any ODBC string connection with the
+   one specified. Alternatively, 'SHOW' can be specified to display a 
+   connection string without changing it.
 
 /MeasureTime
 

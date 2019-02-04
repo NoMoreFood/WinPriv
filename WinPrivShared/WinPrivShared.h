@@ -25,6 +25,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 #define WINPRIV_EV_HOST_OVERRIDE L"_WINPRIV_EV_HOST_OVERRIDE_"
 #define WINPRIV_EV_ADMIN_IMPERSONATE L"_WINPRIV_EV_ADMIN_IMPERSONATE_"
 #define WINPRIV_EV_RECORD_CRYPTO L"_WINPRIV_EV_RECORD_CRYPTO_"
+#define WINPRIV_EV_SQL_CONNECT L"_WINPRIV_EV_SQL_CONNECT_"
 
 //
 // Miscellaneous Unicode String Helper Functions
