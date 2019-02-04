@@ -21,6 +21,7 @@
 #include <ws2tcpip.h>
 #include <mstcpip.h>
 #include <wincrypt.h>
+#include <sqlext.h>
 
 #define _NTDEF_
 #include <ntsecapi.h>
@@ -562,7 +563,7 @@ void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 
 	// decide whether to output to console or file system
 	LPWSTR sCryptoValue = _wgetenv(WINPRIV_EV_RECORD_CRYPTO);
-	if (_wcsicmp(sCryptoValue, L"CON") == 0)
+	if (_wcsicmp(sCryptoValue, L"SHOW") == 0)
 	{
 		if (IsTextUnicode(pData, iDataLen, NULL))
 		{
@@ -661,6 +662,46 @@ NTSTATUS __stdcall DetourRtlDecryptMemory(_Inout_updates_bytes_(MemorySize) PVOI
 	return iResult;
 }
 
+//   __   __           __   __             ___  __  ___ 
+//  /__` /  \ |       /  ` /  \ |\ | |\ | |__  /  `  |  
+//  .__/ \__X |___    \__, \__/ | \| | \| |___ \__,  |  
+//                                                      
+
+decltype(&SQLDriverConnectA) TrueSQLDriverConnectA = SQLDriverConnectA;
+
+SQLRETURN SQL_API DetourSQLDriverConnectA(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_(cbConnStrIn) SQLCHAR *szConnStrIn,
+	SQLSMALLINT cbConnStrIn, _Out_writes_opt_(cbConnStrOutMax) SQLCHAR *szConnStrOut, SQLSMALLINT cbConnStrOutMax,
+	_Out_opt_ SQLSMALLINT *pcbConnStrOut, SQLUSMALLINT fDriverCompletion)
+{
+	// internally, the ansi function is routed through the wide character function
+	// so we do not need to add any handling logic here
+	return TrueSQLDriverConnectA(hdbc, hwnd, szConnStrIn, cbConnStrIn, szConnStrOut,
+		cbConnStrOutMax, pcbConnStrOut, fDriverCompletion);
+}
+
+decltype(&SQLDriverConnectW) TrueSQLDriverConnectW = SQLDriverConnectW;
+
+SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_(cchConnStrIn) SQLWCHAR* szConnStrIn,
+	SQLSMALLINT cchConnStrIn, _Out_writes_opt_(cchConnStrOutMax) SQLWCHAR* szConnStrOut, SQLSMALLINT cchConnStrOutMax,
+	_Out_opt_ SQLSMALLINT* pcchConnStrOut, SQLUSMALLINT fDriverCompletion)
+{
+	// decide whether to simply show the sql connection string or replace it
+	LPWSTR sSqlConnect = _wgetenv(WINPRIV_EV_SQL_CONNECT);
+	if (_wcsicmp(sSqlConnect, L"SHOW") == 0)
+	{
+		std::wstring sPassedConnection((LPWSTR) szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
+		PrintMessage(L"SQL Connection String: %s", sPassedConnection.c_str());
+	}
+	else
+	{
+		szConnStrIn = sSqlConnect;
+		cchConnStrIn = SQL_NTS;
+	}
+
+	return TrueSQLDriverConnectW(hdbc, hwnd, szConnStrIn, cchConnStrIn, szConnStrOut,
+		cchConnStrOutMax, pcchConnStrOut, fDriverCompletion);
+}
+
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
@@ -717,6 +758,12 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 		DetourAttach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
 		DetourAttach(&(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
 		DetourAttach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+	}
+
+	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT))
+	{
+		DetourAttach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
+		DetourAttach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
@@ -786,5 +833,11 @@ EXTERN_C VOID WINAPI DllExtraDetach()
 		DetourDetach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
 		DetourDetach(&(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
 		DetourDetach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+	}
+
+	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT))
+	{
+		DetourDetach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
+		DetourDetach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
 	}
 }

@@ -47,6 +47,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, L"");
+	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT, L"");
 	SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_PARENT_PID, std::to_wstring(GetCurrentProcessId()).c_str());
 
@@ -294,7 +295,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"1");
 		}
 
-		// instructs winpriv to override all host name lookups
+		// instructs winpriv to record encrypt/decrypt operations
 		else if (_wcsicmp(sArg.c_str(), L"/RecordCrypto") == 0)
 		{
 			const int iArgsRequired = 1;
@@ -306,9 +307,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 				return __LINE__;
 			}
 
-			// if not 'CON' then ensure the passed directory exists
+			// if not 'SHOW' then ensure the passed directory exists
 			std::wstring sRecordCrypto(aArgv[iArg + 1]);
-			if (_wcsicmp(sRecordCrypto.c_str(), L"CON") != 0)
+			if (_wcsicmp(sRecordCrypto.c_str(), L"SHOW") != 0)
 			{
 				if (CreateDirectory(sRecordCrypto.c_str(), NULL) == FALSE &&
 					ERROR_ALREADY_EXISTS != GetLastError())
@@ -320,6 +321,24 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// store the crypto variable in the environment variable to pass to child
 			SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, sRecordCrypto.c_str());
+			iArg += iArgsRequired;
+		}
+
+		// instructs winpriv to show or replace sql connection information
+		else if (_wcsicmp(sArg.c_str(), L"/SqlConnect") == 0)
+		{
+			const int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// store the sql connect info in the environment variable to pass to child
+			std::wstring sSqlConnect(aArgv[iArg + 1]);
+			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT, sSqlConnect.c_str());
 			iArg += iArgsRequired;
 		}
 
