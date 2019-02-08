@@ -124,5 +124,6 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
 	CloseHandle(o_ProcessInfo.hProcess);
+	CloseHandle(o_ProcessInfo.hThread);
 	return iExitCode;
 }
