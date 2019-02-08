@@ -153,6 +153,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			if (_wcsicmp(sType, L"REG_DWORD") == 0) tInterceptInfo->RegValueType = REG_DWORD;
 			else if (_wcsicmp(sType, L"REG_QWORD") == 0) tInterceptInfo->RegValueType = REG_QWORD;
 			else if (_wcsicmp(sType, L"REG_SZ") == 0) tInterceptInfo->RegValueType = REG_SZ;
+			else if (_wcsicmp(sType, L"REG_BINARY") == 0) tInterceptInfo->RegValueType = REG_BINARY;
 			else if (_wcsicmp(sType, L"REG_BLOCK") == 0) tInterceptInfo->RegValueType = -1;
 			else break;
 
@@ -174,6 +175,13 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			{
 				tInterceptInfo->RegValueData = sData;
 				tInterceptInfo->RegValueDataSize = (DWORD)wcslen(sData) * sizeof(WCHAR);
+			}
+			else if (tInterceptInfo->RegValueType == REG_BINARY)
+			{
+				tInterceptInfo->RegValueData = malloc(wcslen(sData) / 2);
+				for (size_t iChar = 0; iChar < wcslen(sData) / 2; iChar++)
+					swscanf(&sData[iChar*2], L"%02hhX", &(((PBYTE)tInterceptInfo->RegValueData)[iChar]));
+				tInterceptInfo->RegValueDataSize = (DWORD) (wcslen(sData) / 2);
 			}
 			else if (tInterceptInfo->RegValueType == -1)
 			{
@@ -359,7 +367,7 @@ DECLSPEC_NORETURN EXTERN_C VOID NTAPI DetourRtlExitUserProcess(_In_ NTSTATUS Exi
 	if (GetConsoleWindow() != NULL && VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
 		wprintf(L"\n\nWinPriv target process has finished execution. Please any key to exit this window.\n");
-		_getch();
+		(void) _getch();
 	}
 
 	TrueRtlExitUserProcess(ExitStatus);
