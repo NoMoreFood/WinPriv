@@ -70,10 +70,10 @@ EXTERN_C NTSTATUS NTAPI DetourNtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MAS
 		FileAttributes, ShareAccess, CreateDisposition, CreateOptions | FILE_OPEN_FOR_BACKUP_INTENT, EaBuffer, EaLength);
 }
 
-//   __   ___  __     __  ___         __   ___       __
-//  |__) |__  / _` | /__`  |  \ /    |__) |__   /\  |  \
-//  |  \ |___ \__> | .__/  |   |     |  \ |___ /~~\ |__/
-//
+//   __   ___  __     __  ___  __          __   ___       __  
+//  |__) |__  / _` | /__`  |  |__) \ /    |__) |__   /\  |  \ 
+//  |  \ |___ \__> | .__/  |  |  \  |     |  \ |___ /~~\ |__/ 
+//                                                           
 
 typedef struct RegInterceptInfo
 {
@@ -173,7 +173,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			}
 			else if (tInterceptInfo->RegValueType == REG_SZ)
 			{
-				tInterceptInfo->RegValueData = sData;
+				tInterceptInfo->RegValueData = _wcsdup(sData);
 				tInterceptInfo->RegValueDataSize = (DWORD)wcslen(sData) * sizeof(WCHAR);
 			}
 			else if (tInterceptInfo->RegValueType == REG_BINARY)
