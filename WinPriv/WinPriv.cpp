@@ -46,6 +46,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
+	SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, L"");
 	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT, L"");
 	SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"0");
@@ -293,6 +294,13 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		{
 			SetEnvironmentVariable(L"__COMPAT_LAYER", L"RunAsInvoker");
 			SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"1");
+		}
+
+		// instruct winpriv to tell the target process that the current 
+		// operating system is a server operating sysem
+		else if (_wcsicmp(sArg.c_str(), L"/ServerEdition") == 0)
+		{
+			SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"1");
 		}
 
 		// instructs winpriv to record encrypt/decrypt operations
