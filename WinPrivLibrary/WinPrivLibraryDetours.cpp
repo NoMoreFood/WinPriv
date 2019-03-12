@@ -22,6 +22,7 @@
 #include <mstcpip.h>
 #include <wincrypt.h>
 #include <sqlext.h>
+#include <versionhelpers.h>
 
 #define _NTDEF_
 #include <ntsecapi.h>
@@ -553,10 +554,84 @@ BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 	return bRealResult;
 }
 
-//   __   __      ___  __      __   ___  __   __   __   __  
-//  /  ` |__) \ /  |  /  \    |__) |__  /  ` /  \ |__) |  \ 
-//  \__, |  \  |   |  \__/    |  \ |___ \__, \__/ |  \ |__/ 
-// 
+//   __   ___  __        ___  __      ___  __    ___    __       
+//  /__` |__  |__) \  / |__  |__)    |__  |  \ |  |  | /  \ |\ | 
+//  .__/ |___ |  \  \/  |___ |  \    |___ |__/ |  |  | \__/ | \| 
+//                                                                                                                                
+
+decltype(&GetVersionExW) TrueGetVersionExW = GetVersionExW;
+
+BOOL WINAPI DetourGetVersionExW(_Inout_ LPOSVERSIONINFOW lpVersionInformation)
+{
+	BOOL bResult = TrueGetVersionExW(lpVersionInformation);
+	if (bResult == 0) return bResult;
+	
+	if (lpVersionInformation->dwOSVersionInfoSize == sizeof(OSVERSIONINFOEXW))
+	{
+		LPOSVERSIONINFOEXW pVersionInfo = (LPOSVERSIONINFOEXW) lpVersionInformation;
+		pVersionInfo->wProductType |= VER_NT_SERVER;
+		pVersionInfo->wProductType &= ~VER_NT_WORKSTATION;
+	}
+
+	return bResult;
+}
+
+decltype(&GetVersionExA) TrueGetVersionExA = GetVersionExA;
+
+BOOL WINAPI DetourGetVersionExA(_Inout_ LPOSVERSIONINFOA lpVersionInformation)
+{
+	BOOL bResult = TrueGetVersionExA(lpVersionInformation);
+	if (bResult == 0) return bResult;
+
+	if (lpVersionInformation->dwOSVersionInfoSize == sizeof(OSVERSIONINFOEXA))
+	{
+		LPOSVERSIONINFOEXA pVersionInfo = (LPOSVERSIONINFOEXA)lpVersionInformation;
+		pVersionInfo->wProductType |= VER_NT_SERVER;
+		pVersionInfo->wProductType &= ~VER_NT_WORKSTATION;
+	}
+
+	return bResult;
+}
+
+decltype(&VerifyVersionInfoW) TrueVerifyVersionInfoW = VerifyVersionInfoW;
+
+BOOL WINAPI DetourVerifyVersionInfoW(_Inout_ LPOSVERSIONINFOEXW lpVersionInformation, _In_ DWORD dwTypeMask, _In_ DWORDLONG dwlConditionMask)
+{
+	if (dwTypeMask == VER_PRODUCT_TYPE)
+	{
+		// quit early if actually running on a server
+		OSVERSIONINFOEXW tInfo;
+		tInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
+		TrueGetVersionExW((LPOSVERSIONINFOW) &tInfo);
+		if ((tInfo.wProductType & VER_NT_WORKSTATION) == 0)
+		{
+			return TrueVerifyVersionInfoW(lpVersionInformation, dwTypeMask, dwlConditionMask);
+		}
+
+		// if we are testing for workstation, then just change the comparison value
+		// so the test actually fails, indicating it is not a workstation  
+		LPOSVERSIONINFOEXW pVersionInfo = (LPOSVERSIONINFOEXW)lpVersionInformation;
+		if (pVersionInfo->wProductType == VER_NT_WORKSTATION)
+		{
+			pVersionInfo->wProductType = VER_NT_SERVER;
+		}
+
+		// if we are testing for server and we actually are a workstation then just
+		// change the test such that it tests for a workstation so call will succeed 
+		// and the caller will believe the system is a server
+		else if (pVersionInfo->wProductType == VER_NT_SERVER)
+		{
+			pVersionInfo->wProductType = VER_NT_WORKSTATION;
+		}
+	}
+
+	return TrueVerifyVersionInfoW(lpVersionInformation, dwTypeMask, dwlConditionMask);
+}
+
+//   __   __       __  ___  __      __   ___       __  
+//  /  ` |__) \ / |__)  |  /  \    |__) |__   /\  |  \ 
+//  \__, |  \  |  |     |  \__/    |  \ |___ /~~\ |__/ 
+//                                                     
 
 std::wstring IntToString(int iValue, int iPadding = 5)
 {
@@ -758,6 +833,13 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 		DetourAttach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
 
+	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
+	{
+		DetourAttach(&(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
+		DetourAttach(&(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
+		DetourAttach(&(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
+	}
+
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
 	{
 		DetourAttach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt); 
@@ -831,6 +913,13 @@ EXTERN_C VOID WINAPI DllExtraDetach()
 	{
 		DetourDetach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
 		DetourDetach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
+	}
+
+	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
+	{
+		DetourDetach(&(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
+		DetourDetach(&(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
+		DetourDetach(&(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
