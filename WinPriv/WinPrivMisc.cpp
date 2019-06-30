@@ -204,11 +204,25 @@ Optional Switches
    WinPrivCmd.exe /BypassFileSecurity icacls.exe
       "C:\System Volume Information" /T
 
+/BreakRemoteLocks
+
+   This option attempts to break remote file locks if a file cannot be accessed
+   because it is opened by another program remotely. For example, this can be 
+   used to allow programs like robocopy to mirror an area where the destination
+   system has an in-use file. This option will have no effect if the file is 
+   in-use by a program on the same system where WinPriv is executed.
+
 /AdminImpersonate
 
    This option causes any local administrator check using IsUserAnAdmin() or
    CheckTokenMembership() to unconditionally succeed regardless if the user is
    actually a member of the local administrator group.
+
+/ServerEdition
+
+   This option causes the most common operating system version information
+   functions to indicate the that the system is running a server edition of
+   the operating system.
 
 /RecordCrypto <Directory>
 

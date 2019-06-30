@@ -45,6 +45,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
+	SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, L"");
@@ -287,6 +288,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"1");
 		}
 
+		// instruct winpriv to break remote file locks if a file operation
+		// cannot complete due to a remote file lock
+		else if (_wcsicmp(sArg.c_str(), L"/BreakRemoteLocks") == 0)
+		{
+			SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"1");
+		}
 
 		// instruct winpriv to tell the target process that the current user is
 		// an admin regardless of security tokens or group memberships

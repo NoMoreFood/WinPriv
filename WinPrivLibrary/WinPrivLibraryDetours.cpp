@@ -49,6 +49,85 @@
 //  |    | |___ |___    \__/ |    |___ | \|
 //
 
+bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
+{
+	// valid path formats
+	static const std::wregex tRegexLocal(LR"(\\\?\?\\(.*))", std::wregex::optimize);
+	static const std::wregex tRegexUnc(LR"(\\\?\?\\UNC\\([^\\]+?)\\([^\\]+?)\\(.*))", std::wregex::optimize);
+
+	std::wstring sComputerName;
+	std::wstring sPath;
+
+	std::wstring sFileName(sFileNameUnicodeString->Buffer, sFileNameUnicodeString->Length / sizeof(WCHAR));
+
+	// see if the path looks like a unc path
+	std::wsmatch tMatches;
+	if (std::regex_match(sFileName, tMatches, tRegexUnc))
+	{
+		// extract the important parts of the regular expression result
+		sComputerName = tMatches[1].str();
+		const std::wstring sShareName = tMatches[2].str();
+		const std::wstring sLocalPath = tMatches[3].str();
+
+		// get the real path name using the computer and share name
+		PSHARE_INFO_502 tShareInfo = 0;
+		DWORD a = NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)& tShareInfo);
+		bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
+		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
+		NetApiBufferFree(tShareInfo);
+	}
+
+	// see if the path looks like a local path
+	else if (std::regex_match(sFileName, tMatches, tRegexLocal))
+	{
+		wprintf(L"Local Path %s!\r\n", tMatches[1].str().c_str());
+		sPath = tMatches[1].str();
+	}
+
+	// unrecognized path type
+	else
+	{
+		wprintf(L"Unrecognized Path: %s!\r\n", sFileName.c_str());
+		return false;
+	}
+
+	// loop through the files matching the path
+	DWORD iClosedFiles = 0;
+	DWORD iStatus = 0;
+	DWORD iEntriesRead = 0;
+	DWORD iReturned = 0;
+	DWORD_PTR hHandle = 0;
+	std::vector<DWORD> tFileIds;
+	PFILE_INFO_3 tFileInfo;
+	while ((iStatus = NetFileEnum(sComputerName.length() == 0 ? NULL : (LPWSTR)sComputerName.c_str(),
+		(LPWSTR)sPath.c_str(), NULL, 3, (LPBYTE*) &tFileInfo,
+		MAX_PREFERRED_LENGTH, &iEntriesRead, &iReturned, &hHandle)) == NERR_Success || iStatus == ERROR_MORE_DATA)
+	{
+		if (iEntriesRead == 0) break;
+
+		// put the files into a vector so we can close them all at once and not
+		// interrupt the enumeration operation
+		for (DWORD iEntry = 0; iEntry < iEntriesRead; iEntry++)
+		{
+			tFileIds.push_back(tFileInfo[iEntry].fi3_id);
+		}
+
+		NetApiBufferFree(tFileInfo);
+	}
+
+	// close the open files
+	for (DWORD iFileId : tFileIds)
+	{
+		if (NetFileClose(sComputerName.length() == 0 ? NULL : (LPWSTR)sComputerName.c_str(),
+			iFileId) == NERR_Success)
+		{
+			iClosedFiles++;
+		}
+	}
+
+	return iClosedFiles > 0;
+}
+
 decltype(&NtOpenFile) TrueNtOpenFile = (decltype(&NtOpenFile))
 GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtOpenFile");
 decltype(&NtCreateFile) TrueNtCreateFile = (decltype(&NtCreateFile))
@@ -58,8 +137,28 @@ EXTERN_C NTSTATUS NTAPI DetourNtOpenFile(OUT PHANDLE FileHandle,
 	IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, OUT PIO_STATUS_BLOCK IoStatusBlock,
 	IN ULONG ShareAccess, IN ULONG OpenOptions)
 {
-	return TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
-		ShareAccess, OpenOptions | FILE_OPEN_FOR_BACKUP_INTENT);
+	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1))
+	{
+		OpenOptions |= FILE_OPEN_FOR_BACKUP_INTENT;
+	}
+
+	DWORD iStatus = TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, 
+		IoStatusBlock, ShareAccess, OpenOptions);
+
+	if (VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
+	{
+		if (iStatus == STATUS_SHARING_VIOLATION || iStatus == STATUS_ACCESS_DENIED)
+		{
+			if (CloseFileHandle(ObjectAttributes->ObjectName))
+			{
+				// try operation again now that file is closed
+				iStatus = TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, 
+					IoStatusBlock, ShareAccess, OpenOptions);
+			}
+		}
+	}
+
+	return iStatus;
 }
 
 EXTERN_C NTSTATUS NTAPI DetourNtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess,
@@ -67,8 +166,28 @@ EXTERN_C NTSTATUS NTAPI DetourNtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MAS
 	IN PLARGE_INTEGER AllocationSize OPTIONAL, IN ULONG FileAttributes, IN ULONG ShareAccess,
 	IN ULONG CreateDisposition, IN ULONG CreateOptions, IN PVOID EaBuffer OPTIONAL, IN ULONG EaLength)
 {
-	return TrueNtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
-		FileAttributes, ShareAccess, CreateDisposition, CreateOptions | FILE_OPEN_FOR_BACKUP_INTENT, EaBuffer, EaLength);
+	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1))
+	{
+		CreateOptions |= FILE_OPEN_FOR_BACKUP_INTENT;
+	}
+
+	NTSTATUS iStatus = TrueNtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
+		FileAttributes, ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
+
+	if (VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
+	{
+		if (iStatus == STATUS_SHARING_VIOLATION || iStatus == STATUS_ACCESS_DENIED)
+		{
+			if (CloseFileHandle(ObjectAttributes->ObjectName))
+			{
+				// try operation again now that file is closed
+				iStatus = TrueNtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
+					FileAttributes, ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
+			}
+		}
+	}
+
+	return iStatus;
 }
 
 //   __   ___  __     __  ___  __          __   ___       __  
@@ -790,8 +909,10 @@ SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
 //
 
-EXTERN_C VOID WINAPI DllExtraAttach()
+EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 {
+	decltype(&DetourAttach) AttachDetach = (bAttach) ? DetourAttach : DetourDetach;
+
 	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
 	{
 		return;
@@ -799,64 +920,64 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 
 	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
-		DetourAttach(&(PVOID&)TrueRtlExitUserProcess, DetourRtlExitUserProcess);
+		AttachDetach(&(PVOID&)TrueRtlExitUserProcess, DetourRtlExitUserProcess);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))
 	{
-		DetourAttach(&(PVOID&)TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
-		DetourAttach(&(PVOID&)TrueGetAdaptersInfo, DetourGetAdaptersInfo);
-		DetourAttach(&(PVOID&)TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
+		AttachDetach(&(PVOID&)TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
+		AttachDetach(&(PVOID&)TrueGetAdaptersInfo, DetourGetAdaptersInfo);
+		AttachDetach(&(PVOID&)TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
-		DetourAttach(&(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
-		DetourAttach(&(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
+		AttachDetach(&(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
+		AttachDetach(&(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))
 	{
-		DetourAttach(&(PVOID&)TrueWSALookupServiceNextW, DetourWSALookupServiceNextW);
-		DetourAttach(&(PVOID&)TrueWSALookupServiceNextA, DetourWSALookupServiceNextA);
+		AttachDetach(&(PVOID&)TrueWSALookupServiceNextW, DetourWSALookupServiceNextW);
+		AttachDetach(&(PVOID&)TrueWSALookupServiceNextA, DetourWSALookupServiceNextA);
 	}
 
-	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1))
+	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1) || VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
 	{
-		DetourAttach(&(PVOID&)TrueNtOpenFile, DetourNtOpenFile);
-		DetourAttach(&(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
+		AttachDetach(&(PVOID&)TrueNtOpenFile, DetourNtOpenFile);
+		AttachDetach(&(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
-		DetourAttach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
-		DetourAttach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
+		AttachDetach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
+		AttachDetach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
 	{
-		DetourAttach(&(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
-		DetourAttach(&(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
-		DetourAttach(&(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
+		AttachDetach(&(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
+		AttachDetach(&(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
+		AttachDetach(&(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
 	{
-		DetourAttach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt); 
-		DetourAttach(&(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
-		DetourAttach(&(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
-		DetourAttach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
-		DetourAttach(&(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
-		DetourAttach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+		AttachDetach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt);
+		AttachDetach(&(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
+		AttachDetach(&(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
+		AttachDetach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
+		AttachDetach(&(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
+		AttachDetach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT))
 	{
-		DetourAttach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
-		DetourAttach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
+		AttachDetach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
+		AttachDetach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
 	}
 
-	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
+	if (bAttach && VariableNotEmpty(WINPRIV_EV_PRIVLIST))
 	{
 		// tokenize the string
 		std::wstring sPrivString(_wgetenv(WINPRIV_EV_PRIVLIST));
@@ -873,68 +994,3 @@ EXTERN_C VOID WINAPI DllExtraAttach()
 		}
 	}
 }                                                                     
-
-EXTERN_C VOID WINAPI DllExtraDetach()
-{
-	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
-	{
-		return;
-	}
-
-	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
-	{
-		DetourDetach(&(PVOID&)TrueRtlExitUserProcess, DetourRtlExitUserProcess);
-	}
-
-	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))
-	{
-		DetourDetach(&(PVOID&)TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
-	}
-
-	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
-	{
-		DetourDetach(&(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
-		DetourDetach(&(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
-	}
-
-	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))
-	{
-		DetourDetach(&(PVOID&)TrueWSALookupServiceNextW, DetourWSALookupServiceNextW);
-		DetourDetach(&(PVOID&)TrueWSALookupServiceNextA, DetourWSALookupServiceNextA);
-	}
-
-	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1))
-	{
-		DetourDetach(&(PVOID&)TrueNtOpenFile, DetourNtOpenFile);
-		DetourDetach(&(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
-	}
-
-	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
-	{
-		DetourDetach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
-		DetourDetach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
-	}
-
-	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
-	{
-		DetourDetach(&(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
-		DetourDetach(&(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
-		DetourDetach(&(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
-	}
-
-	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
-	{
-		DetourDetach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt); 
-		DetourDetach(&(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
-		DetourDetach(&(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
-		DetourDetach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
-		DetourDetach(&(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
-		DetourDetach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
-	}
-
-	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT))
-	{
-		DetourDetach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
-		DetourDetach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
-	}
-}

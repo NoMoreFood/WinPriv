@@ -9,8 +9,7 @@
 #pragma comment(lib,"ntdll.lib")
 #pragma comment(lib,"detours.lib")
 
-EXTERN_C VOID WINAPI DllExtraAttach();
-EXTERN_C VOID WINAPI DllExtraDetach();
+EXTERN_C VOID WINAPI DllExtraAttachDetach(BOOL);
 
 static CHAR sDetourLibrary[MAX_PATH + 1] = "";
 
@@ -52,7 +51,7 @@ EXTERN_C BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved)
 		GetModuleFileNameA(hinst, sDetourLibrary, ARRAYSIZE(sDetourLibrary));
 		DetourTransactionBegin();
 		DetourUpdateThread(GetCurrentThread());
-		DllExtraAttach();
+		DllExtraAttachDetach(true);
 		DetourAttach(&(PVOID&)TrueCreateProcessA, DetourCreateProcessA);
 		DetourAttach(&(PVOID&)TrueCreateProcessW, DetourCreateProcessW);
 		DetourTransactionCommit();
@@ -61,7 +60,7 @@ EXTERN_C BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved)
 	{
 		DetourTransactionBegin();
 		DetourUpdateThread(GetCurrentThread());
-		DllExtraDetach();
+		DllExtraAttachDetach(false);
 		DetourDetach(&(PVOID&)TrueCreateProcessA, DetourCreateProcessA);
 		DetourDetach(&(PVOID&)TrueCreateProcessW, DetourCreateProcessW);
 		DetourTransactionCommit();
