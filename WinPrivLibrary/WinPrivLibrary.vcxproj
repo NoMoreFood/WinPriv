@@ -118,6 +118,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="WinPrivLibraryDetours.cpp" />
+    <ClCompile Include="WinPrivLibraryDetoursCom.c" />
     <ClCompile Include="WinPrivLibraryMain.cpp" />
   </ItemGroup>
   <ItemGroup>

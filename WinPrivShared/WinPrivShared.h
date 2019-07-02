@@ -2,15 +2,19 @@
 
 #include <windows.h>
 
+#ifdef __cplusplus
 #include <vector>
 #include <string>
+#endif
 
 //
 // Shared Functions
 //
-
+#ifdef __cplusplus
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
 BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRights);
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR>& vArgs);
+#endif
 
 //
 // Environment Variables Used For Interprocess Communication
@@ -27,7 +31,9 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 #define WINPRIV_EV_ADMIN_IMPERSONATE L"_WINPRIV_EV_ADMIN_IMPERSONATE_"
 #define WINPRIV_EV_SERVER_EDITION L"_WINPRIV_EV_SERVER_EDITION_"
 #define WINPRIV_EV_RECORD_CRYPTO L"_WINPRIV_EV_RECORD_CRYPTO_"
-#define WINPRIV_EV_SQL_CONNECT L"_WINPRIV_EV_SQL_CONNECT_"
+#define WINPRIV_EV_SQL_CONNECT_SHOW L"_WINPRIV_EV_SQL_CONNECT_SHOW_"
+#define WINPRIV_EV_SQL_CONNECT_SEARCH L"_WINPRIV_EV_SQL_CONNECT_SEARCH_"
+#define WINPRIV_EV_SQL_CONNECT_REPLACE L"_WINPRIV_EV_SQL_CONNECT_REPLACE_"
 
 //
 // Miscellaneous Unicode String Helper Functions
@@ -40,8 +46,6 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	_wcsnicmp((x)->Buffer,(y)->Buffer,(x)->Length / sizeof(WCHAR)) == 0 : FALSE)
 
 #define UnicodeStringInit(x) { (wcslen(x) * sizeof(WCHAR)), (wcslen(x) * sizeof(WCHAR)), x }
-
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> & vArgs);
 
 //
 // Miscellaneous Environment Variable Helper Functions
@@ -72,8 +76,9 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vect
 // vardiac variables but will also output to a message box
 // if not compiled on a console
 #define PrintMessage(format, ...) do { \
-		std::wstring sString(_scwprintf(format, __VA_ARGS__), '\0'); \
-		_swprintf((LPWSTR) sString.data(), format, __VA_ARGS__); \
-		if (GetConsoleWindow() != NULL) wprintf(L"%s", sString.c_str()); else \
-			MessageBox(NULL, sString.c_str(), L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
+		LPWSTR sString = (LPWSTR) calloc(_scwprintf(format, __VA_ARGS__), sizeof(WCHAR)); \
+		_swprintf(sString, format, __VA_ARGS__); \
+		if (GetConsoleWindow() != NULL) wprintf(L"%s", sString); else \
+			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
+        free(sString); \
 	} while (0)

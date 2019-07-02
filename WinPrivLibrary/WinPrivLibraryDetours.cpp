@@ -34,6 +34,7 @@
 #include <codecvt>
 #include <fstream>
 #include <atomic>
+#include <regex>
 
 #include "WinPrivShared.h"
 #include "WinPrivLibrary.h"
@@ -887,21 +888,63 @@ SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_
 	SQLSMALLINT cchConnStrIn, _Out_writes_opt_(cchConnStrOutMax) SQLWCHAR* szConnStrOut, SQLSMALLINT cchConnStrOutMax,
 	_Out_opt_ SQLSMALLINT* pcchConnStrOut, SQLUSMALLINT fDriverCompletion)
 {
-	// decide whether to simply show the sql connection string or replace it
-	LPWSTR sSqlConnect = _wgetenv(WINPRIV_EV_SQL_CONNECT);
-	if (_wcsicmp(sSqlConnect, L"SHOW") == 0)
+	// handle search and replace
+	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		std::wstring sPassedConnection((LPWSTR) szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
-		PrintMessage(L"SQL Connection String: %s", sPassedConnection.c_str());
-	}
-	else
-	{
-		szConnStrIn = sSqlConnect;
+		// do search replace and create a new string from the result
+		std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
+		std::wstring sModifiedConnection = std::regex_replace(sPassedConnection,
+			std::wregex(_wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH)), _wgetenv(WINPRIV_EV_SQL_CONNECT_REPLACE));
+		szConnStrIn = wcsdup(sModifiedConnection.c_str());
 		cchConnStrIn = SQL_NTS;
+	}
+	
+	// handle show or complete replacement
+	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1))
+	{
+		// decide whether to simply show the sql connection string or replace it
+		std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
+		PrintMessage(L"SQL Connection String: %s", sPassedConnection.c_str());
 	}
 
 	return TrueSQLDriverConnectW(hdbc, hwnd, szConnStrIn, cchConnStrIn, szConnStrOut,
 		cchConnStrOutMax, pcchConnStrOut, fDriverCompletion);
+}
+
+//   __   __            __   ___ ___  __        __   __  
+//  /  ` /  \  |\/|    |  \ |__   |  /  \ |  | |__) /__` 
+//  \__, \__/  |  |    |__/ |___  |  \__/ \__/ |  \ .__/ 
+//  
+
+EXTERN_C VOID WINAPI DllExtraAttachDetachCom(BOOL bAttach);
+static bool bComDetoursNeedToBeInitialized = true;
+
+decltype(&CoInitializeEx) TrueCoInitializeEx = CoInitializeEx;
+
+EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitializeEx(_In_opt_ LPVOID pvReserved, _In_ DWORD dwCoInit)
+{
+	HRESULT iResult = TrueCoInitializeEx(pvReserved, dwCoInit);
+	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized)
+	{
+		// attach com-based detours
+		bComDetoursNeedToBeInitialized = false;
+		DllExtraAttachDetachCom(TRUE);
+	}
+	return iResult;
+}
+
+decltype(&CoInitialize) TrueCoInitialize = CoInitialize;
+
+EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitialize(_In_opt_ LPVOID pvReserved)
+{
+	HRESULT iResult = TrueCoInitialize(pvReserved);
+	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized)
+	{
+		// attach com-based detours
+		bComDetoursNeedToBeInitialized = false;
+		DllExtraAttachDetachCom(TRUE);
+	}
+	return iResult;
 }
 
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
@@ -971,7 +1014,7 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 		AttachDetach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
 	}
 
-	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT))
+	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
 		AttachDetach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
 		AttachDetach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
@@ -993,4 +1036,20 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 			PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.");
 		}
 	}
+
+	// special handling for com-based detours
+	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
+	{
+		AttachDetach(&(PVOID&)TrueCoInitializeEx, DetourCoInitializeEx);
+		AttachDetach(&(PVOID&)TrueCoInitialize, DetourCoInitialize);
+		if (!bAttach) DllExtraAttachDetachCom(FALSE);
+	}
 }                                                                     
+
+EXTERN_C LPWSTR SearchReplace(LPWSTR sInputString, LPWSTR sSearchString, LPWSTR sReplaceString)
+{
+	std::wstring sSearch(sSearchString);
+	std::wstring sReplace(sReplaceString);
+	std::wstring sResult = std::regex_replace(sInputString, std::wregex(sSearchString), sReplaceString);
+	return wcsdup(sResult.c_str());
+}

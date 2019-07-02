@@ -49,7 +49,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, L"");
-	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT, L"");
+	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SHOW, L"");
+	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SEARCH, L"");
+	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_REPLACE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_PARENT_PID, std::to_wstring(GetCurrentProcessId()).c_str());
 
@@ -340,9 +342,16 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		}
 
 		// instructs winpriv to show or replace sql connection information
-		else if (_wcsicmp(sArg.c_str(), L"/SqlConnect") == 0)
+		else if (_wcsicmp(sArg.c_str(), L"/SqlConnectShow") == 0)
 		{
-			const int iArgsRequired = 1;
+			// store the sql connect info in the environment variable to pass to child
+			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SHOW, L"1");
+		}
+
+		// instructs winpriv to show or replace sql connection information
+		else if (_wcsicmp(sArg.c_str(), L"/SqlConnectSearchReplace") == 0)
+		{
+			const int iArgsRequired = 2;
 
 			// one additional parameter is required
 			if (iArg + iArgsRequired >= iArgc)
@@ -352,8 +361,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			}
 
 			// store the sql connect info in the environment variable to pass to child
-			std::wstring sSqlConnect(aArgv[iArg + 1]);
-			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT, sSqlConnect.c_str());
+			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SEARCH, aArgv[iArg + 1]);
+			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_REPLACE, aArgv[iArg + 2]);
 			iArg += iArgsRequired;
 		}
 
