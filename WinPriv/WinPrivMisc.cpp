@@ -233,11 +233,21 @@ Optional Switches
    information is outputted to the console and message boxes, depending of the 
    type of application.
 
-/SqlConnect <String>
+/SqlConnectShow
 
-   This option replaces the string used in any ODBC string connection with the
-   one specified. Alternatively, 'SHOW' can be specified to display a 
-   connection string without changing it.
+   This option will display the ODBC connection parameters immediately before
+   a connection operation occurs.
+
+/SqlConnectSearchReplace <SearchString> <ReplaceString>
+
+   This option performs a search / replace on an ODBC connection string prior
+   to passing it to the connection Open() function.  The search string is 
+   parsed as a regular expression.
+
+   Examples:
+
+   WinPrivCmd.exe /SqlConnectSearchReplace 
+      Provider=SQLOLEDB Provider=SQLNCLI11 LegacyApplication.exe
 
 /MeasureTime
 
