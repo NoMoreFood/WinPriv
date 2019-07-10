@@ -76,7 +76,7 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vect
 // vardiac variables but will also output to a message box
 // if not compiled on a console
 #define PrintMessage(format, ...) do { \
-		LPWSTR sString = (LPWSTR) calloc(_scwprintf(format, __VA_ARGS__), sizeof(WCHAR)); \
+		LPWSTR sString = (LPWSTR) calloc((size_t) (_scwprintf(format, __VA_ARGS__) + 1), sizeof(WCHAR)); \
 		_swprintf(sString, format, __VA_ARGS__); \
 		if (GetConsoleWindow() != NULL) wprintf(L"%s", sString); else \
 			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
