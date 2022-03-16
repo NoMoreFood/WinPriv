@@ -6,15 +6,14 @@
 #define UMDF_USING_NTSTATUS
 #include <ntstatus.h>
 
-#include <windows.h>
+#include <Windows.h>
 #include <winternl.h>
-#include <stdio.h>
 #include <wincred.h>
+#include <TlHelp32.h>
 
 #define _NTDEF_
-#include <ntsecapi.h>
+#include <NTSecAPI.h>
 
-#include <map>
 #include <string>
 #include <vector>
 #include <cctype>
@@ -22,7 +21,7 @@
 
 #include "WinPrivShared.h"
 
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> & vArgs)
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> vArgs)
 {
 	std::wstring sResult;
 
@@ -60,7 +59,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 
 	// get the current user sid out of the token
 	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
-	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
+	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
 	{
@@ -118,9 +117,9 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 
 	// get the current user sid out of the token
 	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
-	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
+	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
-	BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
+	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
 	CloseHandle(hToken);
 	if (bRet == 0)
 	{
@@ -148,19 +147,6 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	BOOL bSuccessful = TRUE;
 	for (std::wstring sPrivilege : vPrivsToGrant)
 	{
-		// populate the privilege adjustment structure
-		TOKEN_PRIVILEGES tPrivEntry;
-		tPrivEntry.PrivilegeCount = 1;
-		tPrivEntry.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-		// translate the privilege name into the binary representation
-		if (LookupPrivilegeValue(NULL, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
-		{
-			PrintMessage(L"ERROR: Could not lookup privilege: %s\n", sPrivilege.c_str());
-			bSuccessful = FALSE;
-			continue;
-		}
-
 		// convert the privilege name to a unicode string format
 		LSA_UNICODE_STRING sUnicodePrivilege;
 		sUnicodePrivilege.Buffer = (PWSTR)sPrivilege.c_str();
@@ -193,4 +179,34 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	// cleanup
 	LsaClose(hPolicyHandle);
 	return bSuccessful;
+}
+
+void KillProcess(const std::wstring & sProcessName)
+{
+	PROCESSENTRY32 tEntry = {};
+	tEntry.dwSize = sizeof(PROCESSENTRY32);
+
+	// fetch current session id
+	DWORD iCurrentSessionId = 0;
+	if (ProcessIdToSessionId(GetCurrentProcessId(), &iCurrentSessionId) == 0) return;
+
+	// enumerate all processes, looking for match by name
+	HANDLE const hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
+	for (BOOL bValid = Process32First(hSnapshot, &tEntry); bValid; bValid = Process32Next(hSnapshot, &tEntry))
+	{
+		if (_wcsicmp(tEntry.szExeFile, sProcessName.c_str()) != 0) continue;
+
+		// skip process if not the current session id or session id lookup fails
+		DWORD iSessionId = 0;
+		if (ProcessIdToSessionId(tEntry.th32ProcessID, &iSessionId) == 0 
+			|| iSessionId != iCurrentSessionId) continue;
+
+		// kill process
+		HANDLE const hProcess = OpenProcess(PROCESS_TERMINATE, 0, tEntry.th32ProcessID);
+		TerminateProcess(hProcess, 1);
+		CloseHandle(hProcess);
+	}
+
+	// cleanup
+	CloseHandle(hSnapshot);
 }

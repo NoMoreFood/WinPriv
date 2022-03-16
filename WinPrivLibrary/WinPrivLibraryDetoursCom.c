@@ -1,9 +1,8 @@
 #define CINTERFACE
 
-#include <windows.h>
+#include <Windows.h>
 #include <CDOSys.h>
-#include <ole2.h>
-#include <windows.h> 
+#include <Ole2.h>
 #include <adoint.h>
 #include <detours.h>
 
@@ -41,7 +40,7 @@ HRESULT STDMETHODCALLTYPE DetourComOpen(__RPC__in Connection15* This,
 		PrintMessage(L"SQL Connection String: %s", ConnectionString);
 	}
 
-	HRESULT iResult = TrueComOpen(This, ConnectionString, UserID, Password, Options);
+	const HRESULT iResult = TrueComOpen(This, ConnectionString, UserID, Password, Options);
 	if (sRevisedString != NULL) SysFreeString(sRevisedString);
 	return iResult;
 }
@@ -57,7 +56,7 @@ VOID WINAPI DllExtraAttachDetachCom(BOOL bAttach)
 			Connection15* tConnection;
 
 			// create an object in order to get the virtual table pointer
-			HRESULT hRes = CoCreateInstance(&CLSID_CADOConnection, NULL, CLSCTX_INPROC_SERVER, &IID_Connection15, &tConnection);
+			CoCreateInstance(&CLSID_CADOConnection, NULL, CLSCTX_INPROC_SERVER, &IID_Connection15, &tConnection);
 			if (tConnection == NULL) return;
 
 			// apply the detour to the vtable function

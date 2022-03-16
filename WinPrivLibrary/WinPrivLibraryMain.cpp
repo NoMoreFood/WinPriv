@@ -3,7 +3,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
-#include <windows.h>
+#include <Windows.h>
 #include <detours.h>
 
 #pragma comment(lib,"ntdll.lib")

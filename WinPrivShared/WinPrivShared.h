@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include <Windows.h>
 
 #ifdef __cplusplus
 #include <vector>
@@ -13,7 +13,8 @@
 #ifdef __cplusplus
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
 BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRights);
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR>& vArgs);
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> vArgs);
+void KillProcess(const std::wstring& sProcessName);
 #endif
 
 //

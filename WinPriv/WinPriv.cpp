@@ -5,13 +5,12 @@
 
 #define _WINSOCKAPI_
 
-#include <windows.h>
+#include <Windows.h>
 #include <rpc.h>
-#include <stdio.h>
-#include <shlobj.h>
-#include <ws2tcpip.h>
-#include <mstcpip.h>
+#include <ShlObj.h>
+#include <WS2tcpip.h>
 
+#include <cstdio>
 #include <map>
 #include <string>
 #include <vector>
@@ -67,6 +66,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// whether or not to provide execution time
 	bool bDisplayExecutionTime = false;
 
+	// whether or not to kill any processes
+	std::vector<std::wstring> vProcessesToKill;
+
 	// enumerate arguments
 	for (int iArg = 1; iArg < iArgc; iArg++)
 	{
@@ -121,6 +123,23 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			vPrivsToEnable.insert(vPrivsToEnable.end(), vPrivsToAdd.begin(), vPrivsToAdd.end());
 		}
 
+		// this instructs winpriv to kill any processes with the specified name
+		else if (_wcsicmp(sArg.c_str(), L"/KillProcess") == 0)
+		{
+			constexpr int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// add to a list or processes to kill
+			vProcessesToKill.push_back(aArgv[iArg + 1]);
+			iArg += iArgsRequired;
+		}
+
 		// instructs winpriv to attempt to enable all privs on the system
 		else if (_wcsicmp(sArg.c_str(), L"/WithAllPrivs") == 0)
 		{
@@ -158,7 +177,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to impersonate the mac address on the system
 		else if (_wcsicmp(sArg.c_str(), L"/MacOverride") == 0)
 		{
-			const int iArgsRequired = 1;
+			constexpr int iArgsRequired = 1;
 
 			// one additional parameter is required
 			if (iArg + iArgsRequired >= iArgc)
@@ -178,7 +197,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to override all registry queries for a specific key
 		else if (_wcsicmp(sArg.c_str(), L"/RegOverride") == 0)
 		{
-			const int iArgsRequired = 4;
+			constexpr int iArgsRequired = 4;
 
 			// four additional parameters are required
 			if (iArg + iArgsRequired >= iArgc)
@@ -199,7 +218,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// any subkeys as being not found to the target process
 		else if (_wcsicmp(sArg.c_str(), L"/RegBlock") == 0)
 		{
-			const int iArgsRequired = 1;
+			constexpr int iArgsRequired = 1;
 
 			// one additional parameter is required
 			if (iArg + 1 >= iArgc)
@@ -244,7 +263,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to override all host name lookups
 		else if (_wcsicmp(sArg.c_str(), L"/HostOverride") == 0)
 		{
-			const int iArgsRequired = 2;
+			constexpr int iArgsRequired = 2;
 
 			// four additional parameters are required
 			if (iArg + iArgsRequired >= iArgc)
@@ -315,7 +334,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to record encrypt/decrypt operations
 		else if (_wcsicmp(sArg.c_str(), L"/RecordCrypto") == 0)
 		{
-			const int iArgsRequired = 1;
+			constexpr int iArgsRequired = 1;
 
 			// one additional parameter is required
 			if (iArg + iArgsRequired >= iArgc)
@@ -351,7 +370,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// instructs winpriv to show or replace sql connection information
 		else if (_wcsicmp(sArg.c_str(), L"/SqlConnectSearchReplace") == 0)
 		{
-			const int iArgsRequired = 2;
+			constexpr int iArgsRequired = 2;
 
 			// one additional parameter is required
 			if (iArg + iArgsRequired >= iArgc)
@@ -525,6 +544,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		DeleteFileA(sTempLibraryX64);
 		PrintMessage(L"ERROR: Problem closing temporary library file.\n");
 		return __LINE__;
+	}
+
+	// kill any processes requested
+	for (std::wstring & sProcessName : vProcessesToKill)
+	{
+		KillProcess(sProcessName);
 	}
 
 	STARTUPINFO o_StartInfo;
