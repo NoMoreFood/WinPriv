@@ -3,9 +3,9 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
-#include <windows.h>
+#include <Windows.h>
 #include <winternl.h>
-#include <stdio.h>
+#include <cstdio>
 #include <wincred.h>
 
 #include "WinPrivShared.h"
@@ -15,7 +15,7 @@
 int LaunchElevated(int iArgc, wchar_t *aArgv[])
 {
 	// construct a command line containing just the argument passed this executable
-	std::wstring sCommand = L"/RelaunchComplete " + ArgvToCommandLine(2, iArgc - 1,
+	const std::wstring sCommand = L"/RelaunchComplete " + ArgvToCommandLine(2, iArgc - 1,
 		std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 
 	// get the current working directory to pass to the child process
@@ -80,9 +80,9 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 
 	// pull apart the domain from the user name
 	WCHAR sUserNameShort[CREDUI_MAX_USERNAME_LENGTH + 1] = L"";
-	DWORD iUserNameShort = _countof(sUserNameShort);
+	constexpr DWORD iUserNameShort = _countof(sUserNameShort);
 	WCHAR sDomainName[CREDUI_MAX_DOMAIN_TARGET_LENGTH + 1] = L"";
-	DWORD iDomainName = _countof(sDomainName);
+	constexpr DWORD iDomainName = _countof(sDomainName);
 	CredUIParseUserName(sUserName, sUserNameShort, iUserNameShort, sDomainName, iDomainName);
 
 	STARTUPINFO o_StartInfo;
@@ -95,7 +95,7 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 
 	// reconstruct a command line with a flag to indicate relaunch
 	std::vector<LPWSTR> sArgs({ aArgv, aArgv + iArgc });
-	std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) +
+	const std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) +
 		L" /RelaunchElevated " + ArgvToCommandLine(1, iArgc - 1, sArgs);
 
 	// get the current working directory to pass to the child process
@@ -107,7 +107,7 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 	}
 	
 	// relaunch process under altered security policy
-	LPWSTR sBlock = GetEnvironmentStrings();
+	const LPWSTR sBlock = GetEnvironmentStrings();
 	if (CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE,
 		NULL, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock,
 		sCurrentDir, &o_StartInfo, &o_ProcessInfo) == 0)

@@ -6,17 +6,14 @@
 #define UMDF_USING_NTSTATUS
 #include <ntstatus.h>
 
-#include <windows.h>
+#include <Windows.h>
 #include <winternl.h>
 
-#include <iostream>
 #include <map>
 #include <string>
 #include <regex>
 
 #include <ntlsa.h>
-
-#include "WinPrivShared.h"
 
 std::map<std::wstring, std::wstring> GetPrivilegeList()
 {
@@ -65,22 +62,6 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 
 		// cleanup
 		LsaFreeMemory(buffer);
-	}
-
-	// rights are not available from any enumerated functions so these are manually added
-	// temporarily disabled since they cannot be managed the same way as privileges
-	if (false)
-	{
-		tPrivilegeList[SE_BATCH_LOGON_NAME] = L"Log on as a batch job";
-		tPrivilegeList[SE_DENY_BATCH_LOGON_NAME] = L"Deny log on as a batch job";
-		tPrivilegeList[SE_DENY_INTERACTIVE_LOGON_NAME] = L"Deny log on locally";
-		tPrivilegeList[SE_DENY_NETWORK_LOGON_NAME] = L"Deny access to this computer from the network";
-		tPrivilegeList[SE_DENY_REMOTE_INTERACTIVE_LOGON_NAME] = L"Deny log on through Remote Desktop Services";
-		tPrivilegeList[SE_DENY_SERVICE_LOGON_NAME] = L"Deny log on as a service";
-		tPrivilegeList[SE_INTERACTIVE_LOGON_NAME] = L"Allow log on locally";
-		tPrivilegeList[SE_NETWORK_LOGON_NAME] = L"Access this computer from the network";
-		tPrivilegeList[SE_REMOTE_INTERACTIVE_LOGON_NAME] = L"Allow log on through Remote Desktop Services";
-		tPrivilegeList[SE_SERVICE_LOGON_NAME] = L"Log on as a service";
 	}
 
 	// cleanup
@@ -248,6 +229,12 @@ Optional Switches
 
    WinPrivCmd.exe /SqlConnectSearchReplace 
       Provider=SQLOLEDB Provider=SQLNCLI11 LegacyApplication.exe
+
+/KillProcess <ProcessName>
+
+   Kill the process with specified name prior to running the target. This is 
+   useful if the target has logic to prevent multiple execution and needs to
+   to be terminated before the effects of a WinPriv session can be effective.
 
 /MeasureTime
 

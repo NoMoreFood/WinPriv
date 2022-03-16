@@ -8,24 +8,24 @@
 
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define _WINSOCKAPI_
-#include <windows.h>
+#include <Windows.h>
 #include <winternl.h>
 #include <detours.h>
-#include <stdio.h>
+#include <cstdio>
 #include <conio.h>
-#include <shlobj.h>
-#include <lm.h>
-#include <winsock2.h>
+#include <ShlObj.h>
+#include <LM.h>
+#include <WinSock2.h>
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
-#include <ws2tcpip.h>
+#include <WS2tcpip.h>
 #include <mstcpip.h>
 #include <wincrypt.h>
 #include <sqlext.h>
-#include <versionhelpers.h>
+#include <VersionHelpers.h>
 
 #define _NTDEF_
-#include <ntsecapi.h>
+#include <NTSecAPI.h>
 
 #include <string>
 #include <vector>
@@ -72,7 +72,7 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 
 		// get the real path name using the computer and share name
 		PSHARE_INFO_502 tShareInfo = 0;
-		DWORD a = NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)& tShareInfo);
+		NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)& tShareInfo);
 		bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
 		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
 		NetApiBufferFree(tShareInfo);
@@ -657,7 +657,7 @@ BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 	// fetch and allocate the local admin structure
 	static SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
 	static PSID LocalAdministratorsGroup = NULL;
-	static BOOL bLocalAdmin = AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+	AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
 		DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &LocalAdministratorsGroup);
 
 	// get the real value of the function - return if failure 
@@ -895,7 +895,7 @@ SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_
 		std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
 		std::wstring sModifiedConnection = std::regex_replace(sPassedConnection,
 			std::wregex(_wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH)), _wgetenv(WINPRIV_EV_SQL_CONNECT_REPLACE));
-		szConnStrIn = wcsdup(sModifiedConnection.c_str());
+		szConnStrIn = _wcsdup(sModifiedConnection.c_str());
 		cchConnStrIn = SQL_NTS;
 	}
 	
@@ -1031,7 +1031,7 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 		std::vector<std::wstring> tFailedPrivs = EnablePrivs(std::vector<std::wstring>({ oFirst, oLast }));
 
 		// grant any privileges that cannot be enabled
-		if (tFailedPrivs.size() > 0)
+		if (!tFailedPrivs.empty())
 		{
 			PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.");
 		}
@@ -1051,5 +1051,5 @@ EXTERN_C LPWSTR SearchReplace(LPWSTR sInputString, LPWSTR sSearchString, LPWSTR 
 	std::wstring sSearch(sSearchString);
 	std::wstring sReplace(sReplaceString);
 	std::wstring sResult = std::regex_replace(sInputString, std::wregex(sSearchString), sReplaceString);
-	return wcsdup(sResult.c_str());
+	return _wcsdup(sResult.c_str());
 }

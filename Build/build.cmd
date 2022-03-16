@@ -4,7 +4,7 @@ CLS
 SET PATH=%WINDIR%\system32;%WINDIR%\system32\WindowsPowerShell\v1.0
 
 :: cert info to use for signing
-SET CERT=D4C06C609230B7BC433A428BFFD6EDC4F77FD166
+SET CERT=BC4F81C0B3B32755A8CC9A6B91713958294788F0
 set TSAURL=http://time.certum.pl/
 set LIBNAME=WinPriv
 set LIBURL=https://github.com/NoMoreFood/WinPriv
@@ -49,4 +49,3 @@ FOR %%H IN (SHA256 SHA1 MD5) DO %POWERSHELL% -Command ^
 %POWERSHELL% -Command "$Data = Get-Content '%HASHFILE%'; $Data.Replace((Get-Item -LiteralPath '%BINDIR%').FullName,'').Trim() | Set-Content '%HASHFILE%'"
 
 PAUSE
-C
