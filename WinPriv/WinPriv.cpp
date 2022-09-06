@@ -69,6 +69,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// whether or not to kill any processes
 	std::vector<std::wstring> vProcessesToKill;
 
+	// directory to put any temporary library files in
+	std::wstring sTempDirectory;
+
 	// enumerate arguments
 	for (int iArg = 1; iArg < iArgc; iArg++)
 	{
@@ -137,6 +140,23 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// add to a list or processes to kill
 			vProcessesToKill.push_back(aArgv[iArg + 1]);
+			iArg += iArgsRequired;
+		}
+
+		// this instructs winpriv to put any temporary dlls into the following directory
+		else if (_wcsicmp(sArg.c_str(), L"/LibraryDirectory") == 0)
+		{
+			constexpr int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// set directory name
+			sTempDirectory = aArgv[iArg + 1];
 			iArg += iArgsRequired;
 		}
 
@@ -469,14 +489,26 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		AlterCurrentUserPrivs(vFailedPrivs, FALSE);
 		return iRet;
 	}
-
-	// gets the temp path env string (no guarantee it is a valid path)
-	WCHAR sTempDirectory[_MAX_PATH];
-	if (GetTempPath(sizeof(sTempDirectory) / sizeof(WCHAR), sTempDirectory) == 0)
+	
+	// user the standard temp directory if one was not defined
+	if (sTempDirectory.empty())
 	{
+		sTempDirectory.resize(MAX_PATH + 1);
+		if (GetTempPath(MAX_PATH, sTempDirectory.data()) == 0)
+		{
+			return __LINE__;
+		}
+		sTempDirectory.resize(sTempDirectory.find(L'\0'));
+	}
+	
+	// ensure temp directory actually exists
+	if (GetFileAttributes(sTempDirectory.c_str()) == INVALID_FILE_ATTRIBUTES &&
+		CreateDirectory(sTempDirectory.c_str(), NULL) == 0)
+	{
+		PrintMessage(L"ERROR: Could not create temporary directory for library files.\n");
 		return __LINE__;
 	}
-
+	
 	// generate a uuid string to create the temporary file
 	RPC_WSTR sUUID;
 	UUID tUUID;
@@ -488,10 +520,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	}
 
 	// generate the files names to use for library names
-	CHAR sTempLibraryX86[_MAX_PATH + 1];
-	CHAR sTempLibraryX64[_MAX_PATH + 1];
-	sprintf_s(sTempLibraryX86, _countof(sTempLibraryX86), "%S\\%S-32.dll", sTempDirectory, (LPWSTR)sUUID);
-	sprintf_s(sTempLibraryX64, _countof(sTempLibraryX64), "%S\\%S-64.dll", sTempDirectory, (LPWSTR)sUUID);
+	std::wstring sTempLibraryX86 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-32.dll";
+	std::wstring sTempLibraryX64 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-64.dll";
 
 	// cleanup the guid structure
 	RpcStringFree(&sUUID);
@@ -515,9 +545,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	}
 
 	// create the library files
-	HANDLE hTempFileX86 = CreateFileA(sTempLibraryX86, GENERIC_ALL, 0,
+	HANDLE hTempFileX86 = CreateFile(sTempLibraryX86.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
 		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	HANDLE hTempFileX64 = CreateFileA(sTempLibraryX64, GENERIC_ALL, 0,
+	HANDLE hTempFileX64 = CreateFile(sTempLibraryX64.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
 		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hTempFileX86 == INVALID_HANDLE_VALUE || hTempFileX64 == INVALID_HANDLE_VALUE)
 	{
@@ -540,8 +570,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// close the temporary file so our created process can use it
 	if (CloseHandle(hTempFileX86) == 0 || CloseHandle(hTempFileX64) == 0)
 	{
-		DeleteFileA(sTempLibraryX86);
-		DeleteFileA(sTempLibraryX64);
+		DeleteFile(sTempLibraryX86.c_str());
+		DeleteFile(sTempLibraryX64.c_str());
 		PrintMessage(L"ERROR: Problem closing temporary library file.\n");
 		return __LINE__;
 	}
@@ -561,7 +591,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// load the detour library into memory - the main reason we do this
 	// is so that the create process command below will load the detour library
 	// that matches the architecture of the target executable
-	LoadLibraryA((sizeof(INT_PTR) == sizeof(LONGLONG)) ? sTempLibraryX64 : sTempLibraryX86);
+	HMODULE hLibrary = LoadLibrary((sizeof(INT_PTR) == sizeof(LONGLONG)) 
+		? sTempLibraryX64.c_str() : sTempLibraryX86.c_str());
 	
 	// create process and detour
 	ULONGLONG iTimeStart = GetTickCount64();;
@@ -569,8 +600,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		&o_StartInfo, &o_ProcessInfo) == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
-		DeleteFileA(sTempLibraryX86);
-		DeleteFileA(sTempLibraryX64);
+		DeleteFile(sTempLibraryX86.c_str());
+		DeleteFile(sTempLibraryX64.c_str());
 		return __LINE__;
 	}
 
@@ -578,8 +609,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	if (WaitForSingleObject(o_ProcessInfo.hProcess, INFINITE) == WAIT_FAILED)
 	{
 		PrintMessage(L"ERROR: Problem waiting for process to complete.");
-		DeleteFileA(sTempLibraryX86);
-		DeleteFileA(sTempLibraryX64);
+		DeleteFile(sTempLibraryX86.c_str());
+		DeleteFile(sTempLibraryX64.c_str());
 		return __LINE__;
 	}
 
@@ -590,15 +621,16 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		PrintMessage(L"Execution Time In Seconds: %.3f", ((double)(iTimeStop - iTimeStart)) / 1000.0);
 	}
 
-	// cleanup
-	DeleteFileA(sTempLibraryX86);
-	DeleteFileA(sTempLibraryX64);
-
-	// return process exit code
+	// fetch process exit code
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
 	CloseHandle(o_ProcessInfo.hProcess);
 	CloseHandle(o_ProcessInfo.hThread);
+
+	// cleanup
+	FreeLibrary(hLibrary);
+	DeleteFile(sTempLibraryX86.c_str());
+	DeleteFile(sTempLibraryX64.c_str());
 	return iExitCode;
 }
 

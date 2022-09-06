@@ -236,6 +236,12 @@ Optional Switches
    useful if the target has logic to prevent multiple execution and needs to
    to be terminated before the effects of a WinPriv session can be effective.
 
+/LibraryDirectory <DirectoryName>
+
+   This option specifies the directory to put any temporary library files that
+   may be necessary for WinPriv to operate properly. By default, the user's
+   temporary directory is used.
+
 /MeasureTime
 
    This option measures the execution time of the target process and displays

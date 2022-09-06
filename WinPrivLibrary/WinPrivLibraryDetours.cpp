@@ -125,7 +125,6 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 			iClosedFiles++;
 		}
 	}
-
 	return iClosedFiles > 0;
 }
 
@@ -266,8 +265,8 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 
 			// fetch value name
 			LPWSTR sValueName = sParams[iParam + 1];
-			tInterceptInfo->RegValueName = { (USHORT)wcslen(sValueName) * sizeof(WCHAR),
-				(USHORT)wcslen(sValueName) * sizeof(WCHAR), _wcsdup(sValueName) };
+			tInterceptInfo->RegValueName = { (USHORT) (wcslen(sValueName) * sizeof(WCHAR)),
+				(USHORT) (wcslen(sValueName) * sizeof(WCHAR)), _wcsdup(sValueName) };
 
 			// match the aesthetic types to the typed enumerations
 			LPWSTR sType = sParams[iParam + 2];
@@ -951,10 +950,11 @@ EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitialize(_In_opt_ LPVOID pvReserved)
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
 //
+#define AttachDetech(bAttach,pAtt,pDet) (bAttach) ? DetourAttach(pAtt,pDet) : DetourDetach(pAtt,pDet)
 
 EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 {
-	decltype(&DetourAttach) AttachDetach = (bAttach) ? DetourAttach : DetourDetach;
+	//decltype(&DetourAttach) AttachDetach = (bAttach) ? DetourAttach : DetourDetach;
 
 	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
 	{
@@ -963,61 +963,61 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 
 	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
-		AttachDetach(&(PVOID&)TrueRtlExitUserProcess, DetourRtlExitUserProcess);
+		AttachDetech(bAttach,&(PVOID&)TrueRtlExitUserProcess, DetourRtlExitUserProcess);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))
 	{
-		AttachDetach(&(PVOID&)TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
-		AttachDetach(&(PVOID&)TrueGetAdaptersInfo, DetourGetAdaptersInfo);
-		AttachDetach(&(PVOID&)TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
+		AttachDetech(bAttach, &(PVOID&)TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
+		AttachDetech(bAttach, &(PVOID&)TrueGetAdaptersInfo, DetourGetAdaptersInfo);
+		AttachDetech(bAttach, &(PVOID&)TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
-		AttachDetach(&(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
-		AttachDetach(&(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
+		AttachDetech(bAttach, &(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
+		AttachDetech(bAttach, &(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))
 	{
-		AttachDetach(&(PVOID&)TrueWSALookupServiceNextW, DetourWSALookupServiceNextW);
-		AttachDetach(&(PVOID&)TrueWSALookupServiceNextA, DetourWSALookupServiceNextA);
+		AttachDetech(bAttach, &(PVOID&)TrueWSALookupServiceNextW, DetourWSALookupServiceNextW);
+		AttachDetech(bAttach, &(PVOID&)TrueWSALookupServiceNextA, DetourWSALookupServiceNextA);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1) || VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
 	{
-		AttachDetach(&(PVOID&)TrueNtOpenFile, DetourNtOpenFile);
-		AttachDetach(&(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
+		AttachDetech(bAttach, &(PVOID&)TrueNtOpenFile, DetourNtOpenFile);
+		AttachDetech(bAttach, &(PVOID&)TrueNtCreateFile, DetourNtCreateFile);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
-		AttachDetach(&(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
-		AttachDetach(&(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
+		AttachDetech(bAttach, &(PVOID&)TrueIsUserAnAdmin, DetourIsUserAnAdmin);
+		AttachDetech(bAttach, &(PVOID&)TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
 	{
-		AttachDetach(&(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
-		AttachDetach(&(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
-		AttachDetach(&(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
+		AttachDetech(bAttach, &(PVOID&)TrueGetVersionExW, DetourGetVersionExW);
+		AttachDetech(bAttach, &(PVOID&)TrueGetVersionExA, DetourGetVersionExA);
+		AttachDetech(bAttach, &(PVOID&)TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
 	{
-		AttachDetach(&(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt);
-		AttachDetach(&(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
-		AttachDetach(&(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
-		AttachDetach(&(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
-		AttachDetach(&(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
-		AttachDetach(&(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+		AttachDetech(bAttach, &(PVOID&)TrueBCryptEncrypt, DetourBCryptEncrypt);
+		AttachDetech(bAttach, &(PVOID&)TrueBCryptDecrypt, DetourBCryptDecrypt);
+		AttachDetech(bAttach, &(PVOID&)TrueCryptEncrypt, DetourCryptEncrypt);
+		AttachDetech(bAttach, &(PVOID&)TrueCryptDecrypt, DetourCryptDecrypt);
+		AttachDetech(bAttach, &(PVOID&)TrueRtlEncryptMemory, DetourRtlEncryptMemory);
+		AttachDetech(bAttach, &(PVOID&)TrueRtlDecryptMemory, DetourRtlDecryptMemory);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		AttachDetach(&(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
-		AttachDetach(&(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
+		AttachDetech(bAttach, &(PVOID&)TrueSQLDriverConnectA, DetourSQLDriverConnectA);
+		AttachDetech(bAttach, &(PVOID&)TrueSQLDriverConnectW, DetourSQLDriverConnectW);
 	}
 
 	if (bAttach && VariableNotEmpty(WINPRIV_EV_PRIVLIST))
@@ -1040,8 +1040,8 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 	// special handling for com-based detours
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		AttachDetach(&(PVOID&)TrueCoInitializeEx, DetourCoInitializeEx);
-		AttachDetach(&(PVOID&)TrueCoInitialize, DetourCoInitialize);
+		AttachDetech(bAttach, &(PVOID&)TrueCoInitializeEx, DetourCoInitializeEx);
+		AttachDetech(bAttach, &(PVOID&)TrueCoInitialize, DetourCoInitialize);
 		if (!bAttach) DllExtraAttachDetachCom(FALSE);
 	}
 }                                                                     
