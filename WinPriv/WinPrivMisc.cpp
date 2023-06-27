@@ -236,11 +236,13 @@ Optional Switches
    useful if the target has logic to prevent multiple execution and needs to
    to be terminated before the effects of a WinPriv session can be effective.
 
-/LibraryDirectory <DirectoryName>
+/ExtractLibrary
 
-   This option specifies the directory to put any temporary library files that
-   may be necessary for WinPriv to operate properly. By default, the user's
-   temporary directory is used.
+   This option extracts the embedded 32-bit and 64-bit libraries to the 
+   directory where WinPriv is running. These are normally dynamically extracted
+   to the users temporary directory. If WinPriv finds these libraries in the 
+   directory where it is running, it will use those instead of writing them 
+   to the temporary directory.
 
 /MeasureTime
 

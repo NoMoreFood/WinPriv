@@ -19,6 +19,8 @@
 #include <sstream>
 #include <iostream>
 #include <iomanip>
+#include <fstream>
+#include <codecvt>
 
 #include "WinPrivShared.h"
 #include "WinPrivResource.h"
@@ -29,6 +31,78 @@ extern int LaunchNewLogon(int iArgc, wchar_t *aArgv[]);
 extern int LaunchElevated(int iArgc, wchar_t *aArgv[]);
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
+
+bool WriteResourceToFile(std::wstring sOutputDirectory, DWORD iResourceId)
+{
+	// locate the resource that has the embedded library
+	HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
+	if (hRes == NULL)
+	{
+		PrintMessage(L"ERROR: Could not locate internal resource data.\n");
+		return false;
+	}
+
+	// load the resource that has the embedded detours library
+	HGLOBAL hResourceLoadedX86 = LoadResource(NULL, hRes);
+	if (hResourceLoadedX86 == NULL)
+	{
+		PrintMessage(L"ERROR: Could not load internal resource data.\n");
+		return false;
+	}
+
+	// create the library files
+	HANDLE hTempFile = CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE, 0,
+		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hTempFile == INVALID_HANDLE_VALUE)
+	{
+		PrintMessage(L"ERROR: Problem creating library file.\n");
+		return false;
+	}
+
+	// write the resource into the temporary file
+	DWORD wSizeRes = SizeofResource(NULL, hRes);
+	if (WriteFile(hTempFile, hResourceLoadedX86, wSizeRes, &wSizeRes, NULL) == 0)
+	{
+		PrintMessage(L"ERROR: Problem writing library file.\n");
+		return false;
+	}
+
+	// close out handles so process can use it
+	if (CloseHandle(hTempFile) == 0)
+	{
+		PrintMessage(L"ERROR: Problem closing library file.\n");
+		return false;
+	}
+	
+	return true;
+}
+
+std::wstring GetRunningExecutable()
+{
+	// attempt to get the directory to the path to this executable
+	std::wstring sThisExecutable;
+	sThisExecutable.resize(MAX_PATH + 1);
+	if (GetModuleFileName(NULL, sThisExecutable.data(), MAX_PATH + 1) == 0)
+	{
+		PrintMessage(L"ERROR: Error fetching currently executable path.\n");
+		std::exit(0);
+		return L"";
+	}
+
+	sThisExecutable.resize(sThisExecutable.find(L'\0'));
+	return sThisExecutable;
+}
+
+std::wstring GetLocalLibraryPath(bool bIs64Bit)
+{
+	std::wstring sThisExecutable = GetRunningExecutable();
+
+	// trim of final path element
+	std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
+	
+	// return directory name
+	return sBasePath + (bIs64Bit ? L"\\WinPrivLibrary-x64.dll" : L"\\WinPrivLibrary-x86.dll");
+}
 
 int RunProgram(int iArgc, wchar_t *aArgv[])
 {
@@ -69,8 +143,17 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// whether or not to kill any processes
 	std::vector<std::wstring> vProcessesToKill;
 
-	// directory to put any temporary library files in
-	std::wstring sTempDirectory;
+	// read command line from cfg file if it exists
+	std::wstring sExecutable = GetRunningExecutable();
+	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.find_last_of(L".exe") - 3) + L".cfg";
+	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	{
+		std::wifstream oFileStream(sCfgPath);
+		oFileStream.imbue(std::locale(std::locale::empty(), new std::codecvt_utf8<wchar_t>));
+		std::wstringstream oStringStream;
+		oStringStream << oFileStream.rdbuf();
+		aArgv = CommandLineToArgvW((L"IGNORE " + oStringStream.str()).c_str(), &iArgc);
+	}
 
 	// enumerate arguments
 	for (int iArg = 1; iArg < iArgc; iArg++)
@@ -143,21 +226,17 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			iArg += iArgsRequired;
 		}
 
-		// this instructs winpriv to put any temporary dlls into the following directory
-		else if (_wcsicmp(sArg.c_str(), L"/LibraryDirectory") == 0)
+		// this instructs winpriv to write out any temporary dlls into the following directory
+		else if (_wcsicmp(sArg.c_str(), L"/ExtractLibrary") == 0)
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
+			if (WriteResourceToFile(GetLocalLibraryPath(false), IDR_RT_RCDATA_X86) == false ||
+				WriteResourceToFile(GetLocalLibraryPath(true), IDR_RT_RCDATA_X64) == false)
 			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				PrintMessage(L"ERROR: Failed to extract libraries.\n");
 				return __LINE__;
 			}
 
-			// set directory name
-			sTempDirectory = aArgv[iArg + 1];
-			iArg += iArgsRequired;
+			return 0;
 		}
 
 		// instructs winpriv to attempt to enable all privs on the system
@@ -490,16 +569,14 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		return iRet;
 	}
 	
-	// user the standard temp directory if one was not defined
-	if (sTempDirectory.empty())
+	// user the standard temp directory
+	std::wstring sTempDirectory;
+	sTempDirectory.resize(MAX_PATH + 1);
+	if (GetTempPath(MAX_PATH, sTempDirectory.data()) == 0)
 	{
-		sTempDirectory.resize(MAX_PATH + 1);
-		if (GetTempPath(MAX_PATH, sTempDirectory.data()) == 0)
-		{
-			return __LINE__;
-		}
-		sTempDirectory.resize(sTempDirectory.find(L'\0'));
+		return __LINE__;
 	}
+	sTempDirectory.resize(sTempDirectory.find(L'\0'));
 	
 	// ensure temp directory actually exists
 	if (GetFileAttributes(sTempDirectory.c_str()) == INVALID_FILE_ATTRIBUTES &&
@@ -509,71 +586,41 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		return __LINE__;
 	}
 	
-	// generate a uuid string to create the temporary file
-	RPC_WSTR sUUID;
-	UUID tUUID;
-	if (UuidCreate(&tUUID) != RPC_S_OK ||
-		UuidToString(&tUUID, &sUUID) != RPC_S_OK)
+	// fetch the default library paths
+	bool bCleanupLibrary = false;
+	std::wstring sTempLibraryX86 = GetLocalLibraryPath(false);
+	std::wstring sTempLibraryX64 = GetLocalLibraryPath(true);;
+
+	if (GetFileAttributes(sTempLibraryX86.c_str()) == INVALID_FILE_ATTRIBUTES ||
+		GetFileAttributes(sTempLibraryX64.c_str()) == INVALID_FILE_ATTRIBUTES)
 	{
-		PrintMessage(L"ERROR: Could not generate name for temporary file.\n");
-		return __LINE__;
-	}
+		// generate a uuid string to create the temporary file
+		bCleanupLibrary = true;
+		RPC_WSTR sUUID;
+		UUID tUUID;
+		if (UuidCreate(&tUUID) != RPC_S_OK ||
+			UuidToString(&tUUID, &sUUID) != RPC_S_OK)
+		{
+			PrintMessage(L"ERROR: Could not generate name for temporary file.\n");
+			return __LINE__;
+		}
 
-	// generate the files names to use for library names
-	std::wstring sTempLibraryX86 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-32.dll";
-	std::wstring sTempLibraryX64 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-64.dll";
+		// generate the files names to use for library names
+		sTempLibraryX86 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-32.dll";
+		sTempLibraryX64 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-64.dll";
 
-	// cleanup the guid structure
-	RpcStringFree(&sUUID);
+		// cleanup the guid structure
+		RpcStringFree(&sUUID);
 
-	// locate the resource that has the embedded library
-	HRSRC hResX86 = FindResource(NULL, MAKEINTRESOURCE(IDR_RT_RCDATA_X86), L"RT_RCDATA");
-	HRSRC hResX64 = FindResource(NULL, MAKEINTRESOURCE(IDR_RT_RCDATA_X64), L"RT_RCDATA");
-	if (hResX86 == NULL || hResX64 == NULL)
-	{
-		PrintMessage(L"ERROR: Could not locate internal resource data.\n");
-		return __LINE__;
-	}
-
-	// load the resource that has the embedded detours library
-	HGLOBAL hResourceLoadedX86 = LoadResource(NULL, hResX86);
-	HGLOBAL hResourceLoadedX64 = LoadResource(NULL, hResX64);
-	if (hResourceLoadedX86 == NULL || hResourceLoadedX64 == NULL)
-	{
-		PrintMessage(L"ERROR: Could not load internal resource data.\n");
-		return __LINE__;
-	}
-
-	// create the library files
-	HANDLE hTempFileX86 = CreateFile(sTempLibraryX86.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	HANDLE hTempFileX64 = CreateFile(sTempLibraryX64.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hTempFileX86 == INVALID_HANDLE_VALUE || hTempFileX64 == INVALID_HANDLE_VALUE)
-	{
-		PrintMessage(L"ERROR: Problem creating temporary library file.\n");
-		return __LINE__;
-	}
-
-	// get the size of the data to write to the files
-	DWORD wSizeResX86 = SizeofResource(NULL, hResX86);
-	DWORD wSizeResX64 = SizeofResource(NULL, hResX64);
-
-	// write the resource into the temporary file
-	if (WriteFile(hTempFileX86, hResourceLoadedX86, wSizeResX86, &wSizeResX86, NULL) == 0 ||
-		WriteFile(hTempFileX64, hResourceLoadedX64, wSizeResX64, &wSizeResX64, NULL) == 0)
-	{
-		PrintMessage(L"ERROR: Problem writing temporary library file.\n");
-		return __LINE__;
-	}
-
-	// close the temporary file so our created process can use it
-	if (CloseHandle(hTempFileX86) == 0 || CloseHandle(hTempFileX64) == 0)
-	{
-		DeleteFile(sTempLibraryX86.c_str());
-		DeleteFile(sTempLibraryX64.c_str());
-		PrintMessage(L"ERROR: Problem closing temporary library file.\n");
-		return __LINE__;
+		// create the library files
+		if (WriteResourceToFile(sTempLibraryX86, IDR_RT_RCDATA_X86) == false ||
+			WriteResourceToFile(sTempLibraryX64, IDR_RT_RCDATA_X64) == false)
+		{
+			DeleteFile(sTempLibraryX86.c_str());
+			DeleteFile(sTempLibraryX64.c_str());
+			PrintMessage(L"ERROR: Problem creating temporary library file.\n");
+			return __LINE__;
+		}
 	}
 
 	// kill any processes requested
@@ -593,15 +640,18 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// that matches the architecture of the target executable
 	HMODULE hLibrary = LoadLibrary((sizeof(INT_PTR) == sizeof(LONGLONG)) 
 		? sTempLibraryX64.c_str() : sTempLibraryX86.c_str());
-	
+
 	// create process and detour
 	ULONGLONG iTimeStart = GetTickCount64();;
 	if (CreateProcess(NULL, (LPWSTR)sProcessParams.c_str(), NULL, NULL, FALSE, 0, NULL, NULL,
 		&o_StartInfo, &o_ProcessInfo) == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
-		DeleteFile(sTempLibraryX86.c_str());
-		DeleteFile(sTempLibraryX64.c_str());
+		if (bCleanupLibrary)
+		{
+			DeleteFile(sTempLibraryX86.c_str());
+			DeleteFile(sTempLibraryX64.c_str());
+		}
 		return __LINE__;
 	}
 
@@ -609,8 +659,11 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	if (WaitForSingleObject(o_ProcessInfo.hProcess, INFINITE) == WAIT_FAILED)
 	{
 		PrintMessage(L"ERROR: Problem waiting for process to complete.");
-		DeleteFile(sTempLibraryX86.c_str());
-		DeleteFile(sTempLibraryX64.c_str());
+		if (bCleanupLibrary)
+		{
+			DeleteFile(sTempLibraryX86.c_str());
+			DeleteFile(sTempLibraryX64.c_str());
+		}
 		return __LINE__;
 	}
 
@@ -628,9 +681,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	CloseHandle(o_ProcessInfo.hThread);
 
 	// cleanup
-	FreeLibrary(hLibrary);
-	DeleteFile(sTempLibraryX86.c_str());
-	DeleteFile(sTempLibraryX64.c_str());
+	if (hLibrary != NULL) FreeLibrary(hLibrary);
+	if (bCleanupLibrary)
+	{
+		DeleteFile(sTempLibraryX86.c_str());
+		DeleteFile(sTempLibraryX64.c_str());
+	}
 	return iExitCode;
 }
 

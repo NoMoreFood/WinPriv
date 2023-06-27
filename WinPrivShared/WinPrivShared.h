@@ -78,6 +78,7 @@ void KillProcess(const std::wstring& sProcessName);
 // if not compiled on a console
 #define PrintMessage(format, ...) do { \
 		LPWSTR sString = (LPWSTR) calloc((size_t) (_scwprintf(format, __VA_ARGS__) + 1), sizeof(WCHAR)); \
+		if (sString == NULL) exit(0); \
 		_swprintf(sString, format, __VA_ARGS__); \
 		if (GetConsoleWindow() != NULL) wprintf(L"%s", sString); else \
 			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \

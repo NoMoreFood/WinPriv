@@ -9,6 +9,7 @@
 #include <Windows.h>
 #include <winternl.h>
 #include <wincred.h>
+#include <inttypes.h>
 #include <TlHelp32.h>
 
 #define _NTDEF_
@@ -160,7 +161,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 				tTokenUser->User.Sid, &sUnicodePrivilege, 1)) != STATUS_SUCCESS)
 			{
 				bSuccessful = FALSE;
-				PrintMessage(L"ERROR: Privilege '%s' was not able to be added with error '%lu'\n",
+				PrintMessage(L"ERROR: Privilege '%s' was not able to be added with error '%u'\n",
 					sPrivilege.c_str(), LsaNtStatusToWinError(iResult));
 			}
 		}
@@ -170,7 +171,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 				tTokenUser->User.Sid, FALSE, &sUnicodePrivilege, 1)) != STATUS_SUCCESS)
 			{
 				bSuccessful = FALSE;
-				PrintMessage(L"ERROR: Privilege '%s' was not able to be remove with error '%lu'\n",
+				PrintMessage(L"ERROR: Privilege '%s' was not able to be remove with error '%u'\n",
 					sPrivilege.c_str(), LsaNtStatusToWinError(iResult));
 			}
 		}
