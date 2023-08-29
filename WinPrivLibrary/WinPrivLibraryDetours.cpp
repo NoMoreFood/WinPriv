@@ -22,6 +22,7 @@
 #include <mstcpip.h>
 #include <wincrypt.h>
 #include <sqlext.h>
+#include <amsi.h>
 #include <VersionHelpers.h>
 
 #define _NTDEF_
@@ -44,6 +45,7 @@
 
 #pragma comment(lib,"crypt32.lib")
 #pragma comment(lib,"bcrypt.lib")
+#pragma comment(lib,"amsi.lib")
 
 //   ___         ___     __   __   ___
 //  |__  | |    |__     /  \ |__) |__  |\ |
@@ -71,7 +73,7 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 		const std::wstring sLocalPath = tMatches[3].str();
 
 		// get the real path name using the computer and share name
-		PSHARE_INFO_502 tShareInfo = 0;
+		PSHARE_INFO_502 tShareInfo = nullptr;
 		NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)& tShareInfo);
 		bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
 		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
@@ -99,7 +101,7 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 	DWORD iReturned = 0;
 	DWORD_PTR hHandle = 0;
 	std::vector<DWORD> tFileIds;
-	PFILE_INFO_3 tFileInfo;
+	PFILE_INFO_3 tFileInfo = nullptr;
 	while ((iStatus = NetFileEnum(sComputerName.length() == 0 ? NULL : (LPWSTR)sComputerName.c_str(),
 		(LPWSTR)sPath.c_str(), NULL, 3, (LPBYTE*) &tFileInfo,
 		MAX_PREFERRED_LENGTH, &iEntriesRead, &iReturned, &hHandle)) == NERR_Success || iStatus == ERROR_MORE_DATA)
@@ -569,6 +571,29 @@ ULONG WINAPI DetourGetAdaptersAddresses(_In_ ULONG Family, _In_ ULONG Flags, _Re
 	return iRet;
 }
 
+//              __        __     __        __        ___ 
+//   /\   |\/| /__` |    |  \ | /__`  /\  |__) |    |__  
+//  /~~\  |  | .__/ |    |__/ | .__/ /~~\ |__) |___ |___ 
+//                                                       
+
+decltype(&AmsiScanBuffer) TrueAmsiScanBuffer = AmsiScanBuffer;
+
+HRESULT DetourAmsiScanBuffer(_In_  HAMSICONTEXT amsiContext, _In_reads_bytes_(length) PVOID buffer, _In_  ULONG length,
+	_In_opt_  LPCWSTR contentName, _In_opt_  HAMSISESSION amsiSession, _Out_ AMSI_RESULT* result)
+{
+	*result = AMSI_RESULT_CLEAN;
+	return S_OK;
+}
+
+decltype(&AmsiScanString) TrueAmsiScanString = AmsiScanString;
+
+HRESULT DetourAmsiScanString(_In_  HAMSICONTEXT amsiContext, _In_  LPCWSTR string, _In_opt_  LPCWSTR contentName,
+	_In_opt_  HAMSISESSION amsiSession,	_Out_ AMSI_RESULT* result)
+{
+	*result = AMSI_RESULT_CLEAN;
+	return S_OK;
+}
+
 //        __   __  ___     __        ___  __   __     __   ___
 //  |__| /  \ /__`  |     /  \ \  / |__  |__) |__) | |  \ |__
 //  |  | \__/ .__/  |     \__/  \/  |___ |  \ |  \ | |__/ |___
@@ -719,7 +744,7 @@ BOOL WINAPI DetourVerifyVersionInfoW(_Inout_ LPOSVERSIONINFOEXW lpVersionInforma
 	if (dwTypeMask == VER_PRODUCT_TYPE)
 	{
 		// quit early if actually running on a server
-		OSVERSIONINFOEXW tInfo;
+		OSVERSIONINFOEXW tInfo = {};
 		tInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
 		TrueGetVersionExW((LPOSVERSIONINFOW) &tInfo);
 		if ((tInfo.wProductType & VER_NT_WORKSTATION) == 0)
@@ -977,6 +1002,12 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 	{
 		AttachDetech(bAttach, &(PVOID&)TrueNtQueryValueKey, DetourNtQueryValueKey);
 		AttachDetech(bAttach, &(PVOID&)TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
+	}
+
+	if (VariableIsSet(WINPRIV_EV_DISABLE_AMSI, 1))
+	{
+		AttachDetech(bAttach, &(PVOID&)TrueAmsiScanBuffer, DetourAmsiScanBuffer);
+		AttachDetech(bAttach, &(PVOID&)TrueAmsiScanString, DetourAmsiScanString);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))
