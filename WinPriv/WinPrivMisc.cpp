@@ -35,7 +35,7 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 	}
 
 	// enumerate the privileges that are settable
-	PPOLICY_PRIVILEGE_DEFINITION buffer;
+	PPOLICY_PRIVILEGE_DEFINITION buffer = nullptr;
 	LSA_ENUMERATION_HANDLE enumerationContext = 0;
 	ULONG countReturned = 0;
 	while (LsaEnumeratePrivileges(policyHandle, &enumerationContext,

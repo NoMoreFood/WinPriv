@@ -59,7 +59,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	}
 
 	// get the current user sid out of the token
-	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
 	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
@@ -77,7 +77,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	for (std::wstring sPrivilege : vRequestedPrivs)
 	{
 		// populate the privilege adjustment structure
-		TOKEN_PRIVILEGES tPrivEntry;
+		TOKEN_PRIVILEGES tPrivEntry = {};
 		tPrivEntry.PrivilegeCount = 1;
 		tPrivEntry.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
@@ -117,7 +117,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	}
 
 	// get the current user sid out of the token
-	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
 	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
@@ -149,7 +149,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	for (std::wstring sPrivilege : vPrivsToGrant)
 	{
 		// convert the privilege name to a unicode string format
-		LSA_UNICODE_STRING sUnicodePrivilege;
+		LSA_UNICODE_STRING sUnicodePrivilege = {};
 		sUnicodePrivilege.Buffer = (PWSTR)sPrivilege.c_str();
 		sUnicodePrivilege.Length = (USHORT)(wcslen(sPrivilege.c_str()) * sizeof(WCHAR));
 		sUnicodePrivilege.MaximumLength = (USHORT)((wcslen(sPrivilege.c_str()) + 1) * sizeof(WCHAR));

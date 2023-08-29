@@ -101,7 +101,7 @@ std::wstring GetLocalLibraryPath(bool bIs64Bit)
 	std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
 	
 	// return directory name
-	return sBasePath + (bIs64Bit ? L"\\WinPrivLibrary-x64.dll" : L"\\WinPrivLibrary-x86.dll");
+	return sBasePath + (bIs64Bit ? L"\\WinPrivLibrary-64.dll" : L"\\WinPrivLibrary-32.dll");
 }
 
 int RunProgram(int iArgc, wchar_t *aArgv[])
@@ -342,7 +342,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			sRegistryOverride += L"REG_DWORD ";
 			sRegistryOverride += (_wcsicmp(sArg.c_str(), L"/FipsOn") == 0) ? L"1 " : L"0 ";
 		}
-		
+	
 		// instructs winpriv to block access to popular group policy areas
 		else if (_wcsicmp(sArg.c_str(), L"/PolicyBlock") == 0)
 		{
@@ -357,6 +357,13 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			sRegistryOverride += L"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies ";
 			sRegistryOverride += L"N/A REG_BLOCK N/A ";
+		}
+
+		// instructs winpriv to disable amsi scanning
+		else if (_wcsicmp(sArg.c_str(), L"/DisableAmsi") == 0)
+		{
+			// implement the fips override using the registry override capability
+			SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"1");
 		}
 
 		// instructs winpriv to override all host name lookups
