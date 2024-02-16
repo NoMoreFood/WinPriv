@@ -244,6 +244,17 @@ Optional Switches
    directory where it is running, it will use those instead of writing them 
    to the temporary directory.
 
+/WindowStyle <Style>
+
+   This option will launch the target process with the specified window style:
+   NoActive, Hidden, Maximized, Minimized, MinimizedNoActive
+
+/UseShellExecute
+
+   This option will launch the target process with ShellExecute() function 
+   instead of CreateProcess().  This can be useful if launching an application
+   that is registered on the system but not in the system path.
+
 /MeasureTime
 
    This option measures the execution time of the target process and displays
