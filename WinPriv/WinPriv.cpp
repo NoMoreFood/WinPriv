@@ -136,9 +136,16 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// target executable and options provided by command line args
 	std::wstring sProcessParams;
+	std::wstring sProcess;
 
 	// whether or not to provide execution time
 	bool bDisplayExecutionTime = false;
+
+	// show mode if selected
+	WORD iShowWindow = SW_NORMAL;
+
+	// show mode if selected
+	bool bUseShellExecute = false;
 
 	// whether or not to kill any processes
 	std::vector<std::wstring> vProcessesToKill;
@@ -165,6 +172,11 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		// a slash, then assume we are processing the command to run
 		if (sArg.c_str()[0] != L'/')
 		{
+			if (bUseShellExecute)
+			{
+				sProcess = aArgv[iArg++];
+			}
+
 			sProcessParams = ArgvToCommandLine(iArg, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 			break;
@@ -332,6 +344,30 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" N/A REG_BLOCK N/A ";
 			iArg += iArgsRequired;
 		}
+
+
+		// instructs winpriv to report all accesses of the specified registry key or
+		// any subkeys as being not found to the target process
+		else if (_wcsicmp(sArg.c_str(), L"/WindowStyle") == 0)
+		{
+			constexpr int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + 1 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// decode the parameter into a windowstyle parameter
+			std::wstring sWindowStytle(aArgv[iArg + 1]);
+			if (_wcsicmp(sWindowStytle.c_str(), L"NoActive") == 0) iShowWindow = SW_SHOWNOACTIVATE;
+			if (_wcsicmp(sWindowStytle.c_str(), L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
+			if (_wcsicmp(sWindowStytle.c_str(), L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
+			if (_wcsicmp(sWindowStytle.c_str(), L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
+			if (_wcsicmp(sWindowStytle.c_str(), L"Hidden") == 0) iShowWindow = SW_HIDE;
+			iArg += iArgsRequired;
+		}
 		
 		// instructs winpriv to override the fips setting on the system
 		else if (_wcsicmp(sArg.c_str(), L"/FipsOn") == 0 || _wcsicmp(sArg.c_str(), L"/FipsOff") == 0)
@@ -491,6 +527,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			iArg += iArgsRequired;
 		}
 
+		// instruct winpriv to use the shell execute command to launch the app
+		else if (_wcsicmp(sArg.c_str(), L"/UseShellExecute") == 0)
+		{
+			bUseShellExecute = true;
+		}
+
 		// instruct winpriv to display process execution time
 		else if (_wcsicmp(sArg.c_str(), L"/MeasureTime") == 0)
 		{
@@ -513,7 +555,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	}
 
 	// display help if no target was specified
-	if (sProcessParams.length() == 0)
+	if (bUseShellExecute && sProcess.empty() ||
+		!bUseShellExecute && sProcessParams.empty())
 	{
 		PrintMessage(L"%s",GetWinPrivHelp().c_str());
 		return __LINE__;
@@ -642,6 +685,25 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	ZeroMemory(&o_StartInfo, sizeof(STARTUPINFO));
 	o_StartInfo.cb = sizeof(STARTUPINFO);
 
+	// apply window creation parameters
+	if (iShowWindow != SW_NORMAL)
+	{
+		o_StartInfo.dwFlags |= STARTF_USESHOWWINDOW;
+		o_StartInfo.wShowWindow = iShowWindow;
+	}
+
+	// setup shell execute structure if requested
+	SHELLEXECUTEINFOW o_ShellExecute;
+	if (bUseShellExecute)
+	{
+		ZeroMemory(&o_ShellExecute, sizeof(SHELLEXECUTEINFOW));
+		o_ShellExecute.cbSize = sizeof(SHELLEXECUTEINFOW);
+		o_ShellExecute.fMask = SEE_MASK_NOCLOSEPROCESS;
+		o_ShellExecute.lpFile = sProcess.c_str();
+		o_ShellExecute.nShow = iShowWindow;
+		o_ShellExecute.lpParameters = sProcessParams.c_str();
+	}
+
 	// load the detour library into memory - the main reason we do this
 	// is so that the create process command below will load the detour library
 	// that matches the architecture of the target executable
@@ -650,7 +712,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// create process and detour
 	ULONGLONG iTimeStart = GetTickCount64();;
-	if (CreateProcess(NULL, (LPWSTR)sProcessParams.c_str(), NULL, NULL, FALSE, 0, NULL, NULL,
+	if (bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE ||
+		!bUseShellExecute && CreateProcess(NULL, (LPWSTR)sProcessParams.c_str(), NULL, NULL, FALSE, 0, NULL, NULL,
 		&o_StartInfo, &o_ProcessInfo) == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
@@ -661,6 +724,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		}
 		return __LINE__;
 	}
+
+	// copy process info out of shell execute for waiting 
+	if (bUseShellExecute) o_ProcessInfo.hProcess = o_ShellExecute.hProcess;
 
 	// wait for our process to complete
 	if (WaitForSingleObject(o_ProcessInfo.hProcess, INFINITE) == WAIT_FAILED)
@@ -685,7 +751,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
 	CloseHandle(o_ProcessInfo.hProcess);
-	CloseHandle(o_ProcessInfo.hThread);
+	if (o_ProcessInfo.hThread != NULL) CloseHandle(o_ProcessInfo.hThread);
 
 	// cleanup
 	if (hLibrary != NULL) FreeLibrary(hLibrary);
