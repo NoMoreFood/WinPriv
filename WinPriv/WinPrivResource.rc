@@ -17,6 +17,7 @@
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
 
 #ifdef APSTUDIO_INVOKED
 /////////////////////////////////////////////////////////////////////////////
@@ -70,7 +71,7 @@ BEGIN
             VALUE "FileDescription", "Windows Privilege Utility"
             VALUE "FileVersion", "1.0.12.0"
             VALUE "InternalName", "WinPriv.exe"
-            VALUE "LegalCopyright", "Copyright (C) 2022"
+            VALUE "LegalCopyright", "Copyright (C) 2024"
             VALUE "OriginalFilename", "WinPriv.exe"
             VALUE "ProductName", "WinPriv"
             VALUE "ProductVersion", "1.0.12.0"
