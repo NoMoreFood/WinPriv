@@ -27,7 +27,7 @@ HRESULT STDMETHODCALLTYPE DetourComOpen(__RPC__in Connection15* This,
 	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
 		// do search replace and create a new string from the result
-		LPWSTR sNewString = SearchReplace(ConnectionString,
+		const LPWSTR sNewString = SearchReplace(ConnectionString,
 			_wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH), _wgetenv(WINPRIV_EV_SQL_CONNECT_REPLACE));
 		sRevisedString = SysAllocString(sNewString);
 		ConnectionString = sRevisedString;

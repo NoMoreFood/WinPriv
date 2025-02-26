@@ -12,8 +12,8 @@
 //
 #ifdef __cplusplus
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
-BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRights);
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> vArgs);
+BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights);
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
 void KillProcess(const std::wstring& sProcessName);
 #endif
 
@@ -22,8 +22,8 @@ void KillProcess(const std::wstring& sProcessName);
 //
 
 #define WINPRIV_EV_RELAUNCH_MODE L"_WINPRIV_RELAUNCH_PHASE_"
-#define WINPRIV_EV_REG_OVERRIDE L"_WINPRIV_REG_OVERIDE_"
-#define WINPRIV_EV_MAC_OVERRIDE L"_WINPRIV_MAC_OVERIDE_"
+#define WINPRIV_EV_REG_OVERRIDE L"_WINPRIV_REG_OVERRIDE_"
+#define WINPRIV_EV_MAC_OVERRIDE L"_WINPRIV_MAC_OVERRIDE_"
 #define WINPRIV_EV_BACKUP_RESTORE L"_WINPRIV_BACKUP_RESTORE_"
 #define WINPRIV_EV_DISABLE_AMSI L"_WINPRIV_DISABLE_AMSI_"
 #define WINPRIV_EV_BREAK_LOCKS L"_WINPRIV_BREAK_LOCKS_"
