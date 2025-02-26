@@ -9,7 +9,7 @@
 #include <Windows.h>
 #include <winternl.h>
 #include <wincred.h>
-#include <inttypes.h>
+#include <cinttypes>
 #include <TlHelp32.h>
 
 #define _NTDEF_
@@ -22,7 +22,7 @@
 
 #include "WinPrivShared.h"
 
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vector<LPWSTR> vArgs)
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs)
 {
 	std::wstring sResult;
 
@@ -30,8 +30,8 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vect
 	{
 		std::wstring sArg(vArgs.at(iCurrent));
 
-		if (std::count_if(sArg.begin(), sArg.end(),
-			[](wchar_t c) { return isblank(c); }) > 0)
+		if (std::ranges::count_if(sArg,
+			[](const wchar_t c) { return isblank(c); }) > 0)
 		{
 			// enclose the parameter in double quotes
 			sArg = L'"' + sArg + L'"';
@@ -50,7 +50,7 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::vect
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 {
 	// open the current token
-	HANDLE hToken = NULL;
+	HANDLE hToken = nullptr;
 	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &hToken) == 0)
 	{
 		// error
@@ -59,7 +59,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	}
 
 	// get the current user sid out of the token
-	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
+	const BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
 	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
@@ -86,18 +86,17 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 		if (std::equal(sRight.rbegin(), sRight.rend(), sPrivilege.rbegin())) continue;
 
 		// translate the privilege name into the binary representation
-		if (LookupPrivilegeValue(NULL, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
+		if (LookupPrivilegeValue(nullptr, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
 		{
 			PrintMessage(L"ERROR: Could not lookup privilege: %s\n", sPrivilege.c_str());
 			continue;
 		}
 
 		// adjust the process to change the privilege
-		if (AdjustTokenPrivileges(hToken, FALSE, &tPrivEntry, sizeof(TOKEN_PRIVILEGES),
-			NULL, NULL) == 0 || GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+		if (AdjustTokenPrivileges(hToken, FALSE, &tPrivEntry, sizeof(TOKEN_PRIVILEGES), nullptr, nullptr) == 0 || GetLastError() == ERROR_NOT_ALL_ASSIGNED)
 		{
 			// add to list of privileges we had issues with
-			vUnavailablePrivs.push_back(sPrivilege.c_str());
+			vUnavailablePrivs.emplace_back(sPrivilege.c_str());
 		}
 	}
 
@@ -105,10 +104,10 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	return vUnavailablePrivs;
 }
 
-BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRights)
+BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights)
 {
 	// open the current token
-	HANDLE hToken = NULL;
+	HANDLE hToken = nullptr;
 	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) == 0)
 	{
 		// error
@@ -117,7 +116,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	}
 
 	// get the current user sid out of the token
-	BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
+	const BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
 	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
@@ -136,7 +135,7 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 	// get a handle to the policy object.
 	LSA_HANDLE hPolicyHandle;
 	NTSTATUS iResult = 0;
-	if ((iResult = LsaOpenPolicy(NULL, &ObjectAttributes,
+	if ((iResult = LsaOpenPolicy(nullptr, &ObjectAttributes,
 		POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT, &hPolicyHandle)) != STATUS_SUCCESS)
 	{
 		PrintMessage(L"ERROR: Local security policy could not be opened with error '%lu'\n",
@@ -146,13 +145,13 @@ BOOL AlterCurrentUserPrivs(std::vector<std::wstring> vPrivsToGrant, BOOL bAddRig
 
 	// grant policy to all users
 	BOOL bSuccessful = TRUE;
-	for (std::wstring sPrivilege : vPrivsToGrant)
+	for (const std::wstring& sPrivilege : vPrivsToGrant)
 	{
 		// convert the privilege name to a unicode string format
 		LSA_UNICODE_STRING sUnicodePrivilege = {};
 		sUnicodePrivilege.Buffer = (PWSTR)sPrivilege.c_str();
-		sUnicodePrivilege.Length = (USHORT)(wcslen(sPrivilege.c_str()) * sizeof(WCHAR));
-		sUnicodePrivilege.MaximumLength = (USHORT)((wcslen(sPrivilege.c_str()) + 1) * sizeof(WCHAR));
+		sUnicodePrivilege.Length = static_cast<USHORT>(wcslen(sPrivilege.c_str()) * sizeof(WCHAR));
+		sUnicodePrivilege.MaximumLength = static_cast<USHORT>((wcslen(sPrivilege.c_str()) + 1) * sizeof(WCHAR));
 
 		// attempt to add the account to policy
 		if (bAddRights)

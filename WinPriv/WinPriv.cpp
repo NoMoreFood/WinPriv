@@ -32,27 +32,26 @@ extern int LaunchElevated(int iArgc, wchar_t *aArgv[]);
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
-bool WriteResourceToFile(std::wstring sOutputDirectory, DWORD iResourceId)
+bool WriteResourceToFile(const std::wstring& sOutputDirectory, DWORD iResourceId)
 {
 	// locate the resource that has the embedded library
-	HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
-	if (hRes == NULL)
+	const HRSRC hRes = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
+	if (hRes == nullptr)
 	{
 		PrintMessage(L"ERROR: Could not locate internal resource data.\n");
 		return false;
 	}
 
 	// load the resource that has the embedded detours library
-	HGLOBAL hResourceLoadedX86 = LoadResource(NULL, hRes);
-	if (hResourceLoadedX86 == NULL)
+	const HGLOBAL hResourceLoadedX86 = LoadResource(nullptr, hRes);
+	if (hResourceLoadedX86 == nullptr)
 	{
 		PrintMessage(L"ERROR: Could not load internal resource data.\n");
 		return false;
 	}
 
 	// create the library files
-	HANDLE hTempFile = CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE, 0,
-		NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	const HANDLE hTempFile = CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (hTempFile == INVALID_HANDLE_VALUE)
 	{
 		PrintMessage(L"ERROR: Problem creating library file.\n");
@@ -60,8 +59,8 @@ bool WriteResourceToFile(std::wstring sOutputDirectory, DWORD iResourceId)
 	}
 
 	// write the resource into the temporary file
-	DWORD wSizeRes = SizeofResource(NULL, hRes);
-	if (WriteFile(hTempFile, hResourceLoadedX86, wSizeRes, &wSizeRes, NULL) == 0)
+	DWORD wSizeRes = SizeofResource(nullptr, hRes);
+	if (WriteFile(hTempFile, hResourceLoadedX86, wSizeRes, &wSizeRes, nullptr) == 0)
 	{
 		PrintMessage(L"ERROR: Problem writing library file.\n");
 		return false;
@@ -82,7 +81,7 @@ std::wstring GetRunningExecutable()
 	// attempt to get the directory to the path to this executable
 	std::wstring sThisExecutable;
 	sThisExecutable.resize(MAX_PATH + 1);
-	if (GetModuleFileName(NULL, sThisExecutable.data(), MAX_PATH + 1) == 0)
+	if (GetModuleFileName(nullptr, sThisExecutable.data(), MAX_PATH + 1) == 0)
 	{
 		PrintMessage(L"ERROR: Error fetching currently executable path.\n");
 		std::exit(0);
@@ -95,10 +94,10 @@ std::wstring GetRunningExecutable()
 
 std::wstring GetLocalLibraryPath(bool bIs64Bit)
 {
-	std::wstring sThisExecutable = GetRunningExecutable();
+	const std::wstring sThisExecutable = GetRunningExecutable();
 
 	// trim of final path element
-	std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
+	const std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
 	
 	// return directory name
 	return sBasePath + (bIs64Bit ? L"\\WinPrivLibrary-64.dll" : L"\\WinPrivLibrary-32.dll");
@@ -299,8 +298,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// format the mac address to a consistent format by removing colons or dashes
 			std::wstring sMacAddr(aArgv[iArg + 1]);
-			sMacAddr.erase(std::remove(sMacAddr.begin(), sMacAddr.end(), ':'), sMacAddr.end());
-			sMacAddr.erase(std::remove(sMacAddr.begin(), sMacAddr.end(), '-'), sMacAddr.end());
+			std::erase(sMacAddr, ':');
+			std::erase(sMacAddr, '-');
 			SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str());
 			iArg += iArgsRequired;
 		}
@@ -423,7 +422,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 			// first lookup the address
 			PADDRINFOW tResult;
-			INT iGetAddrInfoResult = GetAddrInfoW(aArgv[iArg + 2], NULL, NULL, &tResult);
+			INT iGetAddrInfoResult = GetAddrInfoW(aArgv[iArg + 2], nullptr, nullptr, &tResult);
 			WSACleanup();
 			if (iGetAddrInfoResult != 0)
 			{
@@ -489,7 +488,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			std::wstring sRecordCrypto(aArgv[iArg + 1]);
 			if (_wcsicmp(sRecordCrypto.c_str(), L"SHOW") != 0)
 			{
-				if (CreateDirectory(sRecordCrypto.c_str(), NULL) == FALSE &&
+				if (CreateDirectory(sRecordCrypto.c_str(), nullptr) == FALSE &&
 					ERROR_ALREADY_EXISTS != GetLastError())
 				{
 					PrintMessage(L"ERROR: Could not create the specified directory for /CrytpoRecord");
@@ -572,12 +571,12 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// sort privs, remove duplicate privs, and reconstruct into a list of privs
 	// that can be set as an environment variable and passed to a child process
-	std::sort(vPrivsToEnable.begin(), vPrivsToEnable.end());
-	vPrivsToEnable.erase(std::unique(vPrivsToEnable.begin(), vPrivsToEnable.end()), vPrivsToEnable.end());
-	std::wstring sPrivsToSetList = L"";
+	std::ranges::sort(vPrivsToEnable);
+	vPrivsToEnable.erase(std::ranges::unique(vPrivsToEnable).begin(), vPrivsToEnable.end());
+	std::wstring sPrivsToSetList;
 	for (std::wstring sPrivToSet : vPrivsToEnable)
 	{
-		if (vPrivMaps.find(sPrivToSet) == vPrivMaps.end())
+		if (!vPrivMaps.contains(sPrivToSet))
 		{
 			PrintMessage(L"ERROR: Invalid privilege specified: %s\n", sPrivToSet.c_str());
 			return __LINE__;
@@ -630,7 +629,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	
 	// ensure temp directory actually exists
 	if (GetFileAttributes(sTempDirectory.c_str()) == INVALID_FILE_ATTRIBUTES &&
-		CreateDirectory(sTempDirectory.c_str(), NULL) == 0)
+		CreateDirectory(sTempDirectory.c_str(), nullptr) == 0)
 	{
 		PrintMessage(L"ERROR: Could not create temporary directory for library files.\n");
 		return __LINE__;
@@ -656,8 +655,8 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		}
 
 		// generate the files names to use for library names
-		sTempLibraryX86 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-32.dll";
-		sTempLibraryX64 = sTempDirectory + L"\\" + LPWSTR(sUUID) + L"-64.dll";
+		sTempLibraryX86 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-32.dll";
+		sTempLibraryX64 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-64.dll";
 
 		// cleanup the guid structure
 		RpcStringFree(&sUUID);
@@ -713,7 +712,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	// create process and detour
 	ULONGLONG iTimeStart = GetTickCount64();;
 	if (bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE ||
-		!bUseShellExecute && CreateProcess(NULL, (LPWSTR)sProcessParams.c_str(), NULL, NULL, FALSE, 0, NULL, NULL,
+		!bUseShellExecute && CreateProcess(nullptr, (LPWSTR)sProcessParams.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
 		&o_StartInfo, &o_ProcessInfo) == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
@@ -751,10 +750,10 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
 	CloseHandle(o_ProcessInfo.hProcess);
-	if (o_ProcessInfo.hThread != NULL) CloseHandle(o_ProcessInfo.hThread);
+	if (o_ProcessInfo.hThread != nullptr) CloseHandle(o_ProcessInfo.hThread);
 
 	// cleanup
-	if (hLibrary != NULL) FreeLibrary(hLibrary);
+	if (hLibrary != nullptr) FreeLibrary(hLibrary);
 	if (bCleanupLibrary)
 	{
 		DeleteFile(sTempLibraryX86.c_str());

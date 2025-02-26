@@ -27,7 +27,7 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 	// get a handle to the policy object.
 	NTSTATUS iResult = 0;
 	LSA_HANDLE policyHandle;
-	if ((iResult = LsaOpenPolicy(NULL, &ObjectAttributes,
+	if ((iResult = LsaOpenPolicy(nullptr, &ObjectAttributes,
 		POLICY_VIEW_LOCAL_INFORMATION, &policyHandle)) != STATUS_SUCCESS)
 	{
 		// return on error - priv list will be empty
@@ -49,9 +49,9 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 
 			// return privilege display name -- call lookup once to get string size
 			// and then alloc the string on the next call to get the string
-			if (LookupPrivilegeDisplayName(NULL, (LPWSTR)buffer[iPrivIndex].Name.Buffer, NULL, &iSize, &iIden) == 0 &&
-				LookupPrivilegeDisplayName(NULL, (LPWSTR)buffer[iPrivIndex].Name.Buffer,
-					sDisplayName = (LPWSTR)malloc(sizeof(WCHAR) * (++iSize)), &iSize, &iIden) != 0)
+			if (LookupPrivilegeDisplayName(nullptr, (LPWSTR)buffer[iPrivIndex].Name.Buffer, nullptr, &iSize, &iIden) == 0 &&
+				LookupPrivilegeDisplayName(nullptr, (LPWSTR)buffer[iPrivIndex].Name.Buffer,
+					sDisplayName = static_cast<LPWSTR>(malloc(sizeof(WCHAR) * (++iSize))), &iSize, &iIden) != 0)
 			{
 				tPrivilegeList[buffer[iPrivIndex].Name.Buffer] = sDisplayName;
 			}
@@ -73,7 +73,7 @@ std::wstring GetWinPrivHelp()
 {
 	// a messagebox will garble this help information so simply the help
 	// for the non-commandline version and defer to commandline for help
-	if (GetConsoleWindow() == NULL)
+	if (GetConsoleWindow() == nullptr)
 	{
 		return std::wstring(PROJECT_NAME) +
 			L".exe [optional switches] <Command To Execute> \n" +

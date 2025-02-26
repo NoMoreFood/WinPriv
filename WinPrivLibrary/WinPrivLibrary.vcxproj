@@ -87,7 +87,7 @@
       <AdditionalDependencies>kernel32.lib;user32.lib;ws2_32.lib;iphlpapi.lib;netapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>signtool.exe sign /sha1 04F071366E2A3C75B7CABF091B9CF340ABEA22A7 /as /fd sha256 /tr http://time.certum.pl/ /td sha256 /d WinPriv /du https://github.com/NoMoreFood/WinPriv "$(TargetPath)"</Command>
+      <Command>signtool.exe sign /fd sha256 /tr http://time.certum.pl/ /td sha256 /d WinPriv /du https://github.com/NoMoreFood/WinPriv "$(TargetPath)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -123,7 +123,7 @@
       <PreserveSbr>true</PreserveSbr>
     </Bscmake>
     <PostBuildEvent>
-      <Command>signtool.exe sign /sha1 04F071366E2A3C75B7CABF091B9CF340ABEA22A7 /as /fd sha256 /tr http://time.certum.pl/ /td sha256 /d WinPriv /du https://github.com/NoMoreFood/WinPriv "$(TargetPath)"</Command>
+      <Command>signtool.exe sign /fd sha256 /tr http://time.certum.pl/ /td sha256 /d WinPriv /du https://github.com/NoMoreFood/WinPriv "$(TargetPath)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

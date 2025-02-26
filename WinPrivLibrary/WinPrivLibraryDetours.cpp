@@ -61,7 +61,7 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 	std::wstring sComputerName;
 	std::wstring sPath;
 
-	std::wstring sFileName(sFileNameUnicodeString->Buffer, sFileNameUnicodeString->Length / sizeof(WCHAR));
+	const std::wstring sFileName(sFileNameUnicodeString->Buffer, sFileNameUnicodeString->Length / sizeof(WCHAR));
 
 	// see if the path looks like a unc path
 	std::wsmatch tMatches;
@@ -75,7 +75,7 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 		// get the real path name using the computer and share name
 		PSHARE_INFO_502 tShareInfo = nullptr;
 		NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)& tShareInfo);
-		bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
+		const bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
 		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
 		NetApiBufferFree(tShareInfo);
 	}
@@ -102,8 +102,8 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 	DWORD_PTR hHandle = 0;
 	std::vector<DWORD> tFileIds;
 	PFILE_INFO_3 tFileInfo = nullptr;
-	while ((iStatus = NetFileEnum(sComputerName.length() == 0 ? NULL : (LPWSTR)sComputerName.c_str(),
-		(LPWSTR)sPath.c_str(), NULL, 3, (LPBYTE*) &tFileInfo,
+	while ((iStatus = NetFileEnum(sComputerName.empty() ? nullptr : (LPWSTR)sComputerName.c_str(),
+		(LPWSTR)sPath.c_str(), nullptr, 3, (LPBYTE*) &tFileInfo,
 		MAX_PREFERRED_LENGTH, &iEntriesRead, &iReturned, &hHandle)) == NERR_Success || iStatus == ERROR_MORE_DATA)
 	{
 		if (iEntriesRead == 0) break;
@@ -119,9 +119,9 @@ bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 	}
 
 	// close the open files
-	for (DWORD iFileId : tFileIds)
+	for (const DWORD iFileId : tFileIds)
 	{
-		if (NetFileClose(sComputerName.length() == 0 ? NULL : (LPWSTR)sComputerName.c_str(),
+		if (NetFileClose(sComputerName.empty() ? nullptr : (LPWSTR)sComputerName.c_str(),
 			iFileId) == NERR_Success)
 		{
 			iClosedFiles++;
@@ -215,8 +215,8 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	_In_ PUNICODE_STRING ValueName, _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
 	_Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength)
 {
-	static std::vector<RegInterceptInfo *> * vRegInterceptList = NULL;
-	if (vRegInterceptList == NULL)
+	static std::vector<RegInterceptInfo *> * vRegInterceptList = nullptr;
+	if (vRegInterceptList == nullptr)
 	{
 		// allocate space to hold our list
 		vRegInterceptList = new std::vector<RegInterceptInfo *>();
@@ -226,15 +226,15 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 		LPWSTR * sParams = CommandLineToArgvW(_wgetenv(WINPRIV_EV_REG_OVERRIDE), &iParams);
 		for (int iParam = 0; iParam < iParams; iParam += 4)
 		{
-			RegInterceptInfo * tInterceptInfo = (RegInterceptInfo *)calloc(1, sizeof(RegInterceptInfo));
+			RegInterceptInfo * tInterceptInfo = static_cast<RegInterceptInfo*>(calloc(1, sizeof(RegInterceptInfo)));
 
 			// split the first argument into a root name and subkey name
-			LPWSTR sRootKeyName = sParams[iParam];
+			const LPWSTR sRootKeyName = sParams[iParam];
 			LPWSTR sSubKeyName = wcschr(sParams[iParam], L'\\');
-			if (sSubKeyName != NULL) *sSubKeyName++ = '\0';
+			if (sSubKeyName != nullptr) *sSubKeyName++ = '\0';
 
 			// match the aesthetic name to the builtin roots
-			HKEY hRootKey = NULL;
+			HKEY hRootKey = nullptr;
 			if (_wcsicmp(sRootKeyName, L"HKLM") == 0 || _wcsicmp(sRootKeyName, L"HKEY_LOCAL_MACHINE") == 0)
 				hRootKey = HKEY_LOCAL_MACHINE;
 			else if (_wcsicmp(sRootKeyName, L"HKCU") == 0 || _wcsicmp(sRootKeyName, L"HKEY_CURRENT_USER") == 0)
@@ -250,13 +250,13 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			if (RegOpenKeyEx(hRootKey, sSubKeyName, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
 			{
 				DWORD iSize;
-				if (NtQueryKey(hKey, KeyNameInformation, NULL, 0, &iSize) == STATUS_BUFFER_TOO_SMALL)
+				if (NtQueryKey(hKey, KeyNameInformation, nullptr, 0, &iSize) == STATUS_BUFFER_TOO_SMALL)
 				{
-					PKEY_NAME_INFORMATION pNameInfo = (PKEY_NAME_INFORMATION)malloc(iSize);
+					const PKEY_NAME_INFORMATION pNameInfo = static_cast<PKEY_NAME_INFORMATION>(malloc(iSize));
 					if (NtQueryKey(hKey, KeyNameInformation, pNameInfo, iSize, &iSize) == STATUS_SUCCESS)
 					{
-						tInterceptInfo->RegKeyName = { (USHORT)pNameInfo->NameLength,
-							(USHORT)pNameInfo->NameLength, pNameInfo->Name };
+						tInterceptInfo->RegKeyName = { static_cast<USHORT>(pNameInfo->NameLength),
+							static_cast<USHORT>(pNameInfo->NameLength), pNameInfo->Name };
 					}
 				}
 				CloseHandle(hKey);
@@ -266,12 +266,12 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			if (tInterceptInfo->RegKeyName.Length == NULL) break;
 
 			// fetch value name
-			LPWSTR sValueName = sParams[iParam + 1];
-			tInterceptInfo->RegValueName = { (USHORT) (wcslen(sValueName) * sizeof(WCHAR)),
-				(USHORT) (wcslen(sValueName) * sizeof(WCHAR)), _wcsdup(sValueName) };
+			const LPWSTR sValueName = sParams[iParam + 1];
+			tInterceptInfo->RegValueName = { static_cast<USHORT>(wcslen(sValueName) * sizeof(WCHAR)),
+				static_cast<USHORT>(wcslen(sValueName) * sizeof(WCHAR)), _wcsdup(sValueName) };
 
 			// match the aesthetic types to the typed enumerations
-			LPWSTR sType = sParams[iParam + 2];
+			const LPWSTR sType = sParams[iParam + 2];
 			if (_wcsicmp(sType, L"REG_DWORD") == 0) tInterceptInfo->RegValueType = REG_DWORD;
 			else if (_wcsicmp(sType, L"REG_QWORD") == 0) tInterceptInfo->RegValueType = REG_QWORD;
 			else if (_wcsicmp(sType, L"REG_SZ") == 0) tInterceptInfo->RegValueType = REG_SZ;
@@ -280,34 +280,34 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			else break;
 
 			// decode the value string to a data blob
-			LPWSTR sData = sParams[iParam + 3];
+			const LPWSTR sData = sParams[iParam + 3];
 			if (tInterceptInfo->RegValueType == REG_DWORD)
 			{
-				tInterceptInfo->RegValueData = (DWORD *)malloc(sizeof(DWORD));
-				swscanf(sData, L"%li", (DWORD *)tInterceptInfo->RegValueData);
+				tInterceptInfo->RegValueData = static_cast<DWORD*>(malloc(sizeof(DWORD)));
+				swscanf(sData, L"%li", static_cast<DWORD*>(tInterceptInfo->RegValueData));
 				tInterceptInfo->RegValueDataSize = sizeof(DWORD);
 			}
 			else if (tInterceptInfo->RegValueType == REG_QWORD)
 			{
-				tInterceptInfo->RegValueData = (unsigned __int64 *)malloc(sizeof(unsigned __int64));
-				swscanf(sData, L"%lli", (unsigned __int64 *)tInterceptInfo->RegValueData);
+				tInterceptInfo->RegValueData = static_cast<unsigned __int64*>(malloc(sizeof(unsigned __int64)));
+				swscanf(sData, L"%lli", static_cast<unsigned __int64*>(tInterceptInfo->RegValueData));
 				tInterceptInfo->RegValueDataSize = sizeof(unsigned __int64);
 			}
 			else if (tInterceptInfo->RegValueType == REG_SZ)
 			{
 				tInterceptInfo->RegValueData = _wcsdup(sData);
-				tInterceptInfo->RegValueDataSize = (DWORD)wcslen(sData) * sizeof(WCHAR);
+				tInterceptInfo->RegValueDataSize = static_cast<DWORD>(wcslen(sData)) * sizeof(WCHAR);
 			}
 			else if (tInterceptInfo->RegValueType == REG_BINARY)
 			{
 				tInterceptInfo->RegValueData = malloc(wcslen(sData) / 2);
 				for (size_t iChar = 0; iChar < wcslen(sData) / 2; iChar++)
-					swscanf(&sData[iChar*2], L"%02hhX", &(((PBYTE)tInterceptInfo->RegValueData)[iChar]));
-				tInterceptInfo->RegValueDataSize = (DWORD) (wcslen(sData) / 2);
+					swscanf(&sData[iChar*2], L"%02hhX", &(static_cast<PBYTE>(tInterceptInfo->RegValueData)[iChar]));
+				tInterceptInfo->RegValueDataSize = static_cast<DWORD>(wcslen(sData) / 2);
 			}
 			else if (tInterceptInfo->RegValueType == -1)
 			{
-				tInterceptInfo->RegValueData = NULL;
+				tInterceptInfo->RegValueData = nullptr;
 				tInterceptInfo->RegValueDataSize = 0;
 			}
 			else break;
@@ -319,14 +319,14 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	}
 
 	// sanity check
-	if (ResultLength == NULL)
+	if (ResultLength == nullptr)
 	{
 		return STATUS_INVALID_PARAMETER;
 	}
 
 	// lookup the size for the key name so we can allocate space for it
 	DWORD iKeyNameSize;
-	if (NtQueryKey(KeyHandle, KeyNameInformation, NULL, 0, &iKeyNameSize) != STATUS_BUFFER_TOO_SMALL)
+	if (NtQueryKey(KeyHandle, KeyNameInformation, nullptr, 0, &iKeyNameSize) != STATUS_BUFFER_TOO_SMALL)
 	{
 		// should never happen
 		return STATUS_INVALID_PARAMETER;
@@ -334,15 +334,15 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 
 	// allocate space for name and lookup
 	NTSTATUS iStatus = -1;
-	PKEY_NAME_INFORMATION pNameInfo = (PKEY_NAME_INFORMATION)malloc(iKeyNameSize);
-	if (pNameInfo != NULL && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo,
+	const PKEY_NAME_INFORMATION pNameInfo = static_cast<PKEY_NAME_INFORMATION>(malloc(iKeyNameSize));
+	if (pNameInfo != nullptr && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo,
 		iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
 	{
 		// convert to unicode string structure for quick comparisons
-		UNICODE_STRING sKeyName = { (USHORT)pNameInfo->NameLength,
-			(USHORT)pNameInfo->NameLength, pNameInfo->Name };
+		const UNICODE_STRING sKeyName = { static_cast<USHORT>(pNameInfo->NameLength),
+			static_cast<USHORT>(pNameInfo->NameLength), pNameInfo->Name };
 
-		for (RegInterceptInfo * tRegOverrideInfo : *vRegInterceptList)
+		for (const RegInterceptInfo * tRegOverrideInfo : *vRegInterceptList)
 		{
 			// handle registry block
 			if (UnicodeStringPrefix(&tRegOverrideInfo->RegKeyName, &sKeyName) &&
@@ -362,10 +362,10 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 				{
 					const UINT_PTR alignment = (KeyValueInformationClass == KeyValueFullInformation) ? 32 : 64;
 					iStatus = Length >= sizeof(ULONG) ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
-					*ResultLength = (ULONG)align(offsetof(KEY_VALUE_FULL_INFORMATION, Name) +
-						tRegOverrideInfo->RegValueName.Length + tRegOverrideInfo->RegValueDataSize, alignment);
+					*ResultLength = static_cast<ULONG>(align(offsetof(KEY_VALUE_FULL_INFORMATION, Name) + tRegOverrideInfo->RegValueName.Length + tRegOverrideInfo->RegValueDataSize,
+						alignment));
 
-					PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
+					const PKEY_VALUE_FULL_INFORMATION tKeyInfo = static_cast<PKEY_VALUE_FULL_INFORMATION>(KeyValueInformation);
 
 					if (sizereq(KEY_VALUE_FULL_INFORMATION, TitleIndex) <= Length)
 					{
@@ -385,18 +385,18 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 					}
 
 					// copy name payload
-					const ULONG iNameRequiredSize = (ULONG)offsetof(KEY_VALUE_FULL_INFORMATION, Name) + tKeyInfo->NameLength;
+					const ULONG iNameRequiredSize = static_cast<ULONG>(offsetof(KEY_VALUE_FULL_INFORMATION, Name)) + tKeyInfo->NameLength;
 					if (iNameRequiredSize <= Length)
 					{
 						memcpy(tKeyInfo->Name, tRegOverrideInfo->RegValueName.Buffer, tKeyInfo->NameLength);
 					}
 
 					// copy data payload
-					const ULONG iDataRequiredSize = (ULONG)align(iNameRequiredSize + tKeyInfo->DataLength, alignment);
+					const ULONG iDataRequiredSize = static_cast<ULONG>(align(iNameRequiredSize + tKeyInfo->DataLength, alignment));
 					if (iDataRequiredSize <= Length)
 					{
-						tKeyInfo->DataOffset = (ULONG)align(iNameRequiredSize, alignment);
-						LPVOID pData = (LPVOID)align(((LPBYTE)KeyValueInformation + tKeyInfo->DataOffset), alignment);
+						tKeyInfo->DataOffset = static_cast<ULONG>(align(iNameRequiredSize, alignment));
+						const LPVOID pData = (LPVOID)align((static_cast<LPBYTE>(KeyValueInformation) + tKeyInfo->DataOffset), alignment);
 						memcpy(pData, tRegOverrideInfo->RegValueData, tKeyInfo->DataLength);
 						iStatus = STATUS_SUCCESS;
 					}
@@ -407,10 +407,9 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 					// calculate required size and set default status
 					const UINT_PTR alignment = (KeyValueInformationClass == KeyValuePartialInformation) ? 32 : 64;
 					iStatus = Length >= sizeof(ULONG) ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
-					*ResultLength = (ULONG)align(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) +
-						tRegOverrideInfo->RegValueDataSize, alignment);
+					*ResultLength = static_cast<ULONG>(align(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) + tRegOverrideInfo->RegValueDataSize, alignment));
 
-					PKEY_VALUE_PARTIAL_INFORMATION tKeyInfo = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
+					const PKEY_VALUE_PARTIAL_INFORMATION tKeyInfo = static_cast<PKEY_VALUE_PARTIAL_INFORMATION>(KeyValueInformation);
 
 					if (sizereq(KEY_VALUE_PARTIAL_INFORMATION, TitleIndex) <= Length)
 					{
@@ -438,7 +437,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	}
 
 	// cleanup
-	if (pNameInfo != NULL) free(pNameInfo);
+	if (pNameInfo != nullptr) free(pNameInfo);
 
 	// return the real value if no match was found
 	if (iStatus == -1)
@@ -462,12 +461,12 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
 		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 
-	if (iStatus == STATUS_SUCCESS && KeyValueInformation != NULL &&
+	if (iStatus == STATUS_SUCCESS && KeyValueInformation != nullptr &&
 		(KeyValueInformationClass == KeyValueFullInformation ||
 			KeyValueInformationClass == KeyValueFullInformationAlign64))
 	{
-		PKEY_VALUE_FULL_INFORMATION tKeyInfo = (PKEY_VALUE_FULL_INFORMATION)KeyValueInformation;
-		UNICODE_STRING sValue = { (USHORT)tKeyInfo->NameLength, (USHORT)tKeyInfo->NameLength, tKeyInfo->Name };
+		const PKEY_VALUE_FULL_INFORMATION tKeyInfo = static_cast<PKEY_VALUE_FULL_INFORMATION>(KeyValueInformation);
+		UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength), static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
 		iStatus = DetourNtQueryValueKey(KeyHandle, &sValue,
 			KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 		return iStatus;
@@ -484,9 +483,9 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 VOID(NTAPI * TrueRtlExitUserProcess)(_In_ NTSTATUS 	ExitStatus) =
 (decltype(TrueRtlExitUserProcess))GetProcAddress(LoadLibrary(L"ntdll.dll"), "RtlExitUserProcess");
 
-DECLSPEC_NORETURN EXTERN_C VOID NTAPI DetourRtlExitUserProcess(_In_ NTSTATUS ExitStatus)
+VOID NTAPI DetourRtlExitUserProcess(_In_ NTSTATUS ExitStatus)
 {
-	if (GetConsoleWindow() != NULL && VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
+	if (GetConsoleWindow() != nullptr && VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
 		wprintf(L"\n\nWinPriv target process has finished execution. Please any key to exit this window.\n");
 		(void) _getch();
@@ -511,7 +510,7 @@ EXTERN_C NET_API_STATUS NET_API_FUNCTION DetourNetWkstaTransportEnum(
 
 	if (level == 0 && (iRet == NERR_Success || iRet == NERR_BufTooSmall || iRet == ERROR_MORE_DATA))
 	{
-		PWKSTA_TRANSPORT_INFO_0 tInfo = (PWKSTA_TRANSPORT_INFO_0)*bufptr;
+		const PWKSTA_TRANSPORT_INFO_0 tInfo = (PWKSTA_TRANSPORT_INFO_0)*bufptr;
 		for (DWORD iEntry = 0; iEntry < *entriesread; iEntry++)
 		{
 			wcscpy(tInfo[iEntry].wkti0_transport_address, _wgetenv(WINPRIV_EV_MAC_OVERRIDE));
@@ -525,20 +524,20 @@ decltype(&GetAdaptersInfo) TrueGetAdaptersInfo = GetAdaptersInfo;
 
 ULONG WINAPI DetourGetAdaptersInfo(_Out_ PIP_ADAPTER_INFO AdapterInfo, _Inout_ PULONG SizePointer)
 {
-	ULONG iRet = TrueGetAdaptersInfo(AdapterInfo, SizePointer);
+	const ULONG iRet = TrueGetAdaptersInfo(AdapterInfo, SizePointer);
 
 	// return immediately upon error
 	if (iRet != ERROR_SUCCESS) return iRet;
 
 	// enumerate each adapter and replace the max data
-	for (PIP_ADAPTER_INFO pInfo = AdapterInfo; pInfo != NULL; pInfo = pInfo->Next)
+	for (PIP_ADAPTER_INFO pInfo = AdapterInfo; pInfo != nullptr; pInfo = pInfo->Next)
 	{
-		LPWSTR sAddressString = _wgetenv(WINPRIV_EV_MAC_OVERRIDE);
+		const LPWSTR sAddressString = _wgetenv(WINPRIV_EV_MAC_OVERRIDE);
 		for (size_t iByte = 0; iByte < wcslen(sAddressString) / 2 &&
 			iByte < MAX_ADAPTER_ADDRESS_LENGTH; iByte++)
 		{
 			swscanf(&sAddressString[iByte * 2], L"%2hhx", &pInfo->Address[iByte]);
-			pInfo->AddressLength = (UINT)(iByte + 1);
+			pInfo->AddressLength = static_cast<UINT>(iByte + 1);
 		}
 	}
 
@@ -550,21 +549,21 @@ decltype(&GetAdaptersAddresses) TrueGetAdaptersAddresses = GetAdaptersAddresses;
 ULONG WINAPI DetourGetAdaptersAddresses(_In_ ULONG Family, _In_ ULONG Flags, _Reserved_ PVOID Reserved,
 	_Out_ PIP_ADAPTER_ADDRESSES AdapterAddresses, _Inout_ PULONG SizePointer)
 {
-	ULONG iRet = TrueGetAdaptersAddresses(Family, Flags,
+	const ULONG iRet = TrueGetAdaptersAddresses(Family, Flags,
 		Reserved, AdapterAddresses, SizePointer);
 
 	// return immediately upon error
 	if (iRet != ERROR_SUCCESS) return iRet;
 
 	// enumerate each adapter and replace the max data
-	for (PIP_ADAPTER_ADDRESSES pInfo = AdapterAddresses; pInfo != NULL; pInfo = pInfo->Next)
+	for (PIP_ADAPTER_ADDRESSES pInfo = AdapterAddresses; pInfo != nullptr; pInfo = pInfo->Next)
 	{
-		LPWSTR sAddressString = _wgetenv(WINPRIV_EV_MAC_OVERRIDE);
+		const LPWSTR sAddressString = _wgetenv(WINPRIV_EV_MAC_OVERRIDE);
 		for (size_t iByte = 0; iByte < wcslen(sAddressString) / 2 &&
 			iByte < MAX_ADAPTER_ADDRESS_LENGTH; iByte++)
 		{
 			swscanf(&sAddressString[iByte * 2], L"%2hhx", &pInfo->PhysicalAddress[iByte]);
-			pInfo->PhysicalAddressLength = (ULONG)(iByte + 1);
+			pInfo->PhysicalAddressLength = static_cast<ULONG>(iByte + 1);
 		}
 	}
 
@@ -611,7 +610,7 @@ void UpdateIpAddress(_In_ LPCWSTR sName, _Inout_ LPSOCKADDR tSockToUpdate)
 		if (_wcsicmp(sName, sHostOverride[iParam]) != 0) continue;
 
 		IN_ADDR tReplace;
-		LPCWSTR sTerm = NULL;
+		LPCWSTR sTerm = nullptr;
 		RtlIpv4StringToAddressW(sHostOverride[iParam + 1], TRUE, &sTerm, &tReplace);
 
 		if (tSockToUpdate->sa_family == AF_INET6)
@@ -633,7 +632,7 @@ INT WSAAPI DetourWSALookupServiceNextW(_In_ HANDLE hLookup, _In_ DWORD dwControl
 	_Inout_ LPDWORD lpdwBufferLength, _Out_ LPWSAQUERYSETW lpqsResults)
 {
 	// call the real lookup function and return immediately if failed
-	INT iRet = TrueWSALookupServiceNextW(hLookup, dwControlFlags, lpdwBufferLength, lpqsResults);
+	const INT iRet = TrueWSALookupServiceNextW(hLookup, dwControlFlags, lpdwBufferLength, lpqsResults);
 	if (iRet == -1 || lpqsResults->dwNumberOfCsAddrs == 0) return iRet;
 
 	//  inspect the packet and update the address
@@ -649,12 +648,12 @@ INT WSAAPI DetourWSALookupServiceNextA(_In_ HANDLE hLookup, _In_ DWORD dwControl
 	_Inout_ LPDWORD lpdwBufferLength, _Out_ LPWSAQUERYSETA lpqsResults)
 {
 	// call the real lookup function and return immediately if failed
-	INT iRet = TrueWSALookupServiceNextA(hLookup, dwControlFlags, lpdwBufferLength, lpqsResults);
+	const INT iRet = TrueWSALookupServiceNextA(hLookup, dwControlFlags, lpdwBufferLength, lpqsResults);
 	if (iRet == -1 || lpqsResults->dwNumberOfCsAddrs == 0) return iRet;
 
 	// inspect the packet and update the address
 	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> tConverter;
-	std::wstring sQueryNameWide = tConverter.from_bytes(lpqsResults->lpszServiceInstanceName);
+	const std::wstring sQueryNameWide = tConverter.from_bytes(lpqsResults->lpszServiceInstanceName);
 	UpdateIpAddress(sQueryNameWide.c_str(),
 		((PCSADDR_INFO)lpqsResults->lpcsaBuffer)->RemoteAddr.lpSockaddr);
 
@@ -680,12 +679,12 @@ BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 {
 	// fetch and allocate the local admin structure
 	static SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
-	static PSID LocalAdministratorsGroup = NULL;
+	static PSID LocalAdministratorsGroup = nullptr;
 	AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
 		DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &LocalAdministratorsGroup);
 
 	// get the real value of the function - return if failure 
-	BOOL bRealResult = TrueCheckTokenMembership(TokenHandle, SidToCheck, IsMember);
+	const BOOL bRealResult = TrueCheckTokenMembership(TokenHandle, SidToCheck, IsMember);
 	if (bRealResult == 0) return bRealResult;
 
 	// check if the local admin group is being requested
@@ -707,12 +706,12 @@ decltype(&GetVersionExW) TrueGetVersionExW = GetVersionExW;
 
 BOOL WINAPI DetourGetVersionExW(_Inout_ LPOSVERSIONINFOW lpVersionInformation)
 {
-	BOOL bResult = TrueGetVersionExW(lpVersionInformation);
+	const BOOL bResult = TrueGetVersionExW(lpVersionInformation);
 	if (bResult == 0) return bResult;
 	
 	if (lpVersionInformation->dwOSVersionInfoSize == sizeof(OSVERSIONINFOEXW))
 	{
-		LPOSVERSIONINFOEXW pVersionInfo = (LPOSVERSIONINFOEXW) lpVersionInformation;
+		const LPOSVERSIONINFOEXW pVersionInfo = (LPOSVERSIONINFOEXW) lpVersionInformation;
 		pVersionInfo->wProductType |= VER_NT_SERVER;
 		pVersionInfo->wProductType &= ~VER_NT_WORKSTATION;
 	}
@@ -724,12 +723,12 @@ decltype(&GetVersionExA) TrueGetVersionExA = GetVersionExA;
 
 BOOL WINAPI DetourGetVersionExA(_Inout_ LPOSVERSIONINFOA lpVersionInformation)
 {
-	BOOL bResult = TrueGetVersionExA(lpVersionInformation);
+	const BOOL bResult = TrueGetVersionExA(lpVersionInformation);
 	if (bResult == 0) return bResult;
 
 	if (lpVersionInformation->dwOSVersionInfoSize == sizeof(OSVERSIONINFOEXA))
 	{
-		LPOSVERSIONINFOEXA pVersionInfo = (LPOSVERSIONINFOEXA)lpVersionInformation;
+		const LPOSVERSIONINFOEXA pVersionInfo = (LPOSVERSIONINFOEXA)lpVersionInformation;
 		pVersionInfo->wProductType |= VER_NT_SERVER;
 		pVersionInfo->wProductType &= ~VER_NT_WORKSTATION;
 	}
@@ -754,7 +753,7 @@ BOOL WINAPI DetourVerifyVersionInfoW(_Inout_ LPOSVERSIONINFOEXW lpVersionInforma
 
 		// if we are testing for workstation, then just change the comparison value
 		// so the test actually fails, indicating it is not a workstation  
-		LPOSVERSIONINFOEXW pVersionInfo = (LPOSVERSIONINFOEXW)lpVersionInformation;
+		const LPOSVERSIONINFOEXW pVersionInfo = (LPOSVERSIONINFOEXW)lpVersionInformation;
 		if (pVersionInfo->wProductType == VER_NT_WORKSTATION)
 		{
 			pVersionInfo->wProductType = VER_NT_SERVER;
@@ -779,7 +778,7 @@ BOOL WINAPI DetourVerifyVersionInfoW(_Inout_ LPOSVERSIONINFOEXW lpVersionInforma
 
 std::wstring IntToString(int iValue, int iPadding = 5)
 {
-	std::wstring sValue = std::to_wstring(iValue);
+	const std::wstring sValue = std::to_wstring(iValue);
 	return std::wstring(iPadding - sValue.length(), '0') + sValue;
 }
 
@@ -789,10 +788,10 @@ void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 	sFunction = &sFunction[wcslen(L"Detour")];
 
 	// decide whether to output to console or file system
-	LPWSTR sCryptoValue = _wgetenv(WINPRIV_EV_RECORD_CRYPTO);
+	const LPWSTR sCryptoValue = _wgetenv(WINPRIV_EV_RECORD_CRYPTO);
 	if (_wcsicmp(sCryptoValue, L"SHOW") == 0)
 	{
-		if (IsTextUnicode(pData, iDataLen, NULL))
+		if (IsTextUnicode(pData, iDataLen, nullptr))
 		{
 			PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*s\n", 
 				sFunction, L"Unicode", iDataLen, (int) (iDataLen / sizeof(WCHAR)), (LPWSTR) pData);
@@ -807,13 +806,12 @@ void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 	{
 		// formulate the file name to write to
 		static std::atomic<int> iOrder = 0;
-		std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
+		const std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
 			+ IntToString(GetCurrentProcessId()) + L"-TID" + IntToString(GetCurrentThreadId())
 			+ L"-" + sFunction + L".bin";
 
 		// create the crypto data file
-		HANDLE hFile = CreateFile(sFilePath.c_str(), GENERIC_ALL, FILE_SHARE_WRITE,
-			NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		const HANDLE hFile = CreateFile(sFilePath.c_str(), GENERIC_ALL, FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (hFile == INVALID_HANDLE_VALUE)
 		{
 			PrintMessage(L"ERROR: Problem opening crypto data file.\n");
@@ -822,7 +820,7 @@ void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 
 		// write the crypto data to the file
 		DWORD iSizeWritten = 0;
-		if (WriteFile(hFile, pData, iDataLen, &iSizeWritten, NULL) == 0)
+		if (WriteFile(hFile, pData, iDataLen, &iSizeWritten, nullptr) == 0)
 		{
 			PrintMessage(L"ERROR: Problem writing crypto data file.\n");
 			CloseHandle(hFile);
@@ -850,7 +848,7 @@ decltype(&BCryptDecrypt) TrueBCryptDecrypt = BCryptDecrypt;
 
 NTSTATUS WINAPI DetourBCryptDecrypt(_Inout_ BCRYPT_KEY_HANDLE hKey, _In_reads_bytes_opt_(cbInput) PUCHAR pbInput, _In_ ULONG cbInput, _In_opt_ VOID *pPaddingInfo, _Inout_updates_bytes_opt_(cbIV) PUCHAR pbIV, _In_ ULONG cbIV, _Out_writes_bytes_to_opt_(cbOutput, *pcbResult) PUCHAR pbOutput, _In_ ULONG cbOutput, _Out_ ULONG *pcbResult, _In_ ULONG dwFlags)
 {
-	NTSTATUS iResult = TrueBCryptDecrypt(hKey, pbInput, cbInput, pPaddingInfo, pbIV, cbIV, pbOutput, cbOutput, pcbResult, dwFlags);
+	const NTSTATUS iResult = TrueBCryptDecrypt(hKey, pbInput, cbInput, pPaddingInfo, pbIV, cbIV, pbOutput, cbOutput, pcbResult, dwFlags);
 	if (iResult == STATUS_SUCCESS) RecordCryptoData(__FUNCTIONW__, pbInput, cbInput);
 	return iResult;
 }
@@ -867,7 +865,7 @@ decltype(&CryptDecrypt) TrueCryptDecrypt = CryptDecrypt;
 
 BOOL WINAPI DetourCryptDecrypt(_In_ HCRYPTKEY hKey, _In_ HCRYPTHASH hHash, _In_ BOOL Final, _In_ DWORD dwFlags, _Inout_updates_bytes_to_(*pdwDataLen, *pdwDataLen) BYTE *pbData, _Inout_ DWORD *pdwDataLen)
 {
-	BOOL iResult = TrueCryptDecrypt(hKey, hHash, Final, dwFlags, pbData, pdwDataLen);
+	const BOOL iResult = TrueCryptDecrypt(hKey, hHash, Final, dwFlags, pbData, pdwDataLen);
 	if (iResult == TRUE) RecordCryptoData(__FUNCTIONW__, pbData, *pdwDataLen);
 	return iResult;
 }
@@ -876,7 +874,7 @@ decltype(&RtlEncryptMemory) TrueRtlEncryptMemory = RtlEncryptMemory;
 
 NTSTATUS __stdcall DetourRtlEncryptMemory(_Inout_updates_bytes_(MemorySize) PVOID Memory, _In_ ULONG MemorySize, _In_ ULONG OptionFlag)
 {
-	RecordCryptoData(__FUNCTIONW__, (PUCHAR)Memory, MemorySize);
+	RecordCryptoData(__FUNCTIONW__, static_cast<PUCHAR>(Memory), MemorySize);
 	return TrueRtlEncryptMemory(Memory, MemorySize, OptionFlag);
 }
 
@@ -884,8 +882,8 @@ decltype(&RtlDecryptMemory) TrueRtlDecryptMemory = RtlDecryptMemory;
 
 NTSTATUS __stdcall DetourRtlDecryptMemory(_Inout_updates_bytes_(MemorySize) PVOID Memory, _In_ ULONG MemorySize, _In_ ULONG OptionFlags)
 {
-	NTSTATUS iResult = TrueRtlDecryptMemory(Memory, MemorySize, OptionFlags);
-	if (iResult == STATUS_SUCCESS) RecordCryptoData(__FUNCTIONW__, (PUCHAR) Memory, MemorySize);
+	const NTSTATUS iResult = TrueRtlDecryptMemory(Memory, MemorySize, OptionFlags);
+	if (iResult == STATUS_SUCCESS) RecordCryptoData(__FUNCTIONW__, static_cast<PUCHAR>(Memory), MemorySize);
 	return iResult;
 }
 
@@ -916,8 +914,8 @@ SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_
 	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
 		// do search replace and create a new string from the result
-		std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
-		std::wstring sModifiedConnection = std::regex_replace(sPassedConnection,
+		const std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
+		const std::wstring sModifiedConnection = std::regex_replace(sPassedConnection,
 			std::wregex(_wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH)), _wgetenv(WINPRIV_EV_SQL_CONNECT_REPLACE));
 		szConnStrIn = _wcsdup(sModifiedConnection.c_str());
 		cchConnStrIn = SQL_NTS;
@@ -927,7 +925,7 @@ SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1))
 	{
 		// decide whether to simply show the sql connection string or replace it
-		std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
+		const std::wstring sPassedConnection((LPWSTR)szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
 		PrintMessage(L"SQL Connection String: %s", sPassedConnection.c_str());
 	}
 
@@ -947,7 +945,7 @@ decltype(&CoInitializeEx) TrueCoInitializeEx = CoInitializeEx;
 
 EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitializeEx(_In_opt_ LPVOID pvReserved, _In_ DWORD dwCoInit)
 {
-	HRESULT iResult = TrueCoInitializeEx(pvReserved, dwCoInit);
+	const HRESULT iResult = TrueCoInitializeEx(pvReserved, dwCoInit);
 	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized)
 	{
 		// attach com-based detours
@@ -961,7 +959,7 @@ decltype(&CoInitialize) TrueCoInitialize = CoInitialize;
 
 EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitialize(_In_opt_ LPVOID pvReserved)
 {
-	HRESULT iResult = TrueCoInitialize(pvReserved);
+	const HRESULT iResult = TrueCoInitialize(pvReserved);
 	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized)
 	{
 		// attach com-based detours
@@ -1081,6 +1079,6 @@ EXTERN_C LPWSTR SearchReplace(LPWSTR sInputString, LPWSTR sSearchString, LPWSTR 
 {
 	std::wstring sSearch(sSearchString);
 	std::wstring sReplace(sReplaceString);
-	std::wstring sResult = std::regex_replace(sInputString, std::wregex(sSearchString), sReplaceString);
+	const std::wstring sResult = std::regex_replace(sInputString, std::wregex(sSearchString), sReplaceString);
 	return _wcsdup(sResult.c_str());
 }
