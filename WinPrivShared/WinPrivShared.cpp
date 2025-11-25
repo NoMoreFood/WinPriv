@@ -72,23 +72,23 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	// vector to store privileges we had issues with
 	std::vector<std::wstring> vUnavailablePrivs;
 
-	// tokenize the string
-	for (std::wstring sPrivilege : vRequestedPrivs)
-	{
-		// populate the privilege adjustment structure
-		TOKEN_PRIVILEGES tPrivEntry = {};
-		tPrivEntry.PrivilegeCount = 1;
-		tPrivEntry.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	// use ranges algorithm to process privileges
+	std::ranges::for_each(vRequestedPrivs, [&](const std::wstring& sPrivilege) {
+		// populate the privilege adjustment structure with designated initializers
+		TOKEN_PRIVILEGES tPrivEntry{
+			.PrivilegeCount = 1,
+			.Privileges = {{ .Luid = {}, .Attributes = SE_PRIVILEGE_ENABLED }}
+		};
 
 		// rights do not have to be enabled since they are automatically established
-		std::wstring sRight(L"Right");
-		if (std::equal(sRight.rbegin(), sRight.rend(), sPrivilege.rbegin())) continue;
+		constexpr std::wstring_view sRight(L"Right");
+		if (std::equal(sRight.rbegin(), sRight.rend(), sPrivilege.rbegin())) return;
 
 		// translate the privilege name into the binary representation
 		if (LookupPrivilegeValue(nullptr, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
 		{
 			PrintMessage(L"ERROR: Could not lookup privilege: %s\n", sPrivilege.c_str());
-			continue;
+			return;
 		}
 
 		// adjust the process to change the privilege
@@ -97,7 +97,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 			// add to list of privileges we had issues with
 			vUnavailablePrivs.emplace_back(sPrivilege.c_str());
 		}
-	}
+	});
 
 	return vUnavailablePrivs;
 }
@@ -125,9 +125,8 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL 
 		return FALSE;
 	}
 
-	// object attributes are reserved, so initialize to zeros.
-	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
-	ZeroMemory(&ObjectAttributes, sizeof(ObjectAttributes));
+	// object attributes are reserved, so initialize to zeros with designated initializer
+	LSA_OBJECT_ATTRIBUTES ObjectAttributes{};
 
 	// get a handle to the policy object 
 	SmartPointer<LSA_HANDLE> hPolicyHandle(LsaClose, nullptr);
@@ -140,15 +139,15 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL 
 		return FALSE;
 	}
 
-	// grant policy to all users
+	// grant policy to all users using ranges algorithm
 	BOOL bSuccessful = TRUE;
-	for (const std::wstring& sPrivilege : vPrivsToGrant)
-	{
+	std::ranges::for_each(vPrivsToGrant, [&](const std::wstring& sPrivilege) {
 		// convert the privilege name to a unicode string format
-		LSA_UNICODE_STRING sUnicodePrivilege = {};
-		sUnicodePrivilege.Buffer = (PWSTR)sPrivilege.c_str();
-		sUnicodePrivilege.Length = static_cast<USHORT>(wcslen(sPrivilege.c_str()) * sizeof(WCHAR));
-		sUnicodePrivilege.MaximumLength = static_cast<USHORT>((wcslen(sPrivilege.c_str()) + 1) * sizeof(WCHAR));
+		LSA_UNICODE_STRING sUnicodePrivilege{
+			.Length = static_cast<USHORT>(sPrivilege.length() * sizeof(WCHAR)),
+			.MaximumLength = static_cast<USHORT>((sPrivilege.length() + 1) * sizeof(WCHAR)),
+			.Buffer = const_cast<PWSTR>(sPrivilege.c_str())
+		};
 
 		// attempt to add the account to policy
 		if (bAddRights)
@@ -171,7 +170,7 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL 
 					sPrivilege.c_str(), LsaNtStatusToWinError(iResult));
 			}
 		}
-	}
+	});
 
 	return bSuccessful;
 }
