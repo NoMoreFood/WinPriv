@@ -42,15 +42,15 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std
 
 	// trim off last character if space
 	if (!sResult.empty() && sResult.back() == L' ') sResult.pop_back();
-	
+
 	// append a space for the next param
 	return sResult;
 }
 
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 {
-	// open the current token
-	HANDLE hToken = nullptr;
+	// open the current token 
+	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
 	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &hToken) == 0)
 	{
 		// error
@@ -65,7 +65,6 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
 	{
 		// error
-		CloseHandle(hToken);
 		PrintMessage(L"ERROR: Could retrieve process token information.\n");
 		return vRequestedPrivs;
 	}
@@ -100,14 +99,13 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 		}
 	}
 
-	CloseHandle(hToken);
 	return vUnavailablePrivs;
 }
 
 BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights)
 {
-	// open the current token
-	HANDLE hToken = nullptr;
+	// open the current token 
+	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
 	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) == 0)
 	{
 		// error
@@ -120,7 +118,6 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL 
 	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
 	DWORD iBytesFilled = 0;
 	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
-	CloseHandle(hToken);
 	if (bRet == 0)
 	{
 		// error
@@ -132,8 +129,8 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL 
 	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
 	ZeroMemory(&ObjectAttributes, sizeof(ObjectAttributes));
 
-	// get a handle to the policy object.
-	LSA_HANDLE hPolicyHandle;
+	// get a handle to the policy object 
+	SmartPointer<LSA_HANDLE> hPolicyHandle(LsaClose, nullptr);
 	NTSTATUS iResult = 0;
 	if ((iResult = LsaOpenPolicy(nullptr, &ObjectAttributes,
 		POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT, &hPolicyHandle)) != STATUS_SUCCESS)
@@ -176,12 +173,10 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL 
 		}
 	}
 
-	// cleanup
-	LsaClose(hPolicyHandle);
 	return bSuccessful;
 }
 
-void KillProcess(const std::wstring & sProcessName)
+void KillProcess(const std::wstring& sProcessName)
 {
 	PROCESSENTRY32 tEntry = {};
 	tEntry.dwSize = sizeof(PROCESSENTRY32);
@@ -190,23 +185,19 @@ void KillProcess(const std::wstring & sProcessName)
 	DWORD iCurrentSessionId = 0;
 	if (ProcessIdToSessionId(GetCurrentProcessId(), &iCurrentSessionId) == 0) return;
 
-	// enumerate all processes, looking for match by name
-	HANDLE const hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
+	// enumerate all processes, looking for match by name 
+	SmartPointer<HANDLE> hSnapshot(CloseHandle, CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL));
 	for (BOOL bValid = Process32First(hSnapshot, &tEntry); bValid; bValid = Process32Next(hSnapshot, &tEntry))
 	{
 		if (_wcsicmp(tEntry.szExeFile, sProcessName.c_str()) != 0) continue;
 
 		// skip process if not the current session id or session id lookup fails
 		DWORD iSessionId = 0;
-		if (ProcessIdToSessionId(tEntry.th32ProcessID, &iSessionId) == 0 
+		if (ProcessIdToSessionId(tEntry.th32ProcessID, &iSessionId) == 0
 			|| iSessionId != iCurrentSessionId) continue;
 
 		// kill process
-		HANDLE const hProcess = OpenProcess(PROCESS_TERMINATE, 0, tEntry.th32ProcessID);
+		SmartPointer<HANDLE> hProcess(CloseHandle, OpenProcess(PROCESS_TERMINATE, 0, tEntry.th32ProcessID));
 		TerminateProcess(hProcess, 1);
-		CloseHandle(hProcess);
 	}
-
-	// cleanup
-	CloseHandle(hSnapshot);
 }

@@ -8,6 +8,7 @@
 
 #include <Windows.h>
 #include <winternl.h>
+#include <WinPrivShared.h>
 
 #include <map>
 #include <string>
@@ -26,7 +27,7 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 
 	// get a handle to the policy object.
 	NTSTATUS iResult = 0;
-	LSA_HANDLE policyHandle;
+	SmartPointer<LSA_HANDLE> policyHandle(LsaClose, nullptr);
 	if ((iResult = LsaOpenPolicy(nullptr, &ObjectAttributes,
 		POLICY_VIEW_LOCAL_INFORMATION, &policyHandle)) != STATUS_SUCCESS)
 	{
@@ -35,7 +36,7 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 	}
 
 	// enumerate the privileges that are settable
-	PPOLICY_PRIVILEGE_DEFINITION buffer = nullptr;
+	SmartPointer<PPOLICY_PRIVILEGE_DEFINITION> buffer(LsaFreeMemory, nullptr);
 	LSA_ENUMERATION_HANDLE enumerationContext = 0;
 	ULONG countReturned = 0;
 	while (LsaEnumeratePrivileges(policyHandle, &enumerationContext,
@@ -59,13 +60,8 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 			// cleanup
 			if (sDisplayName == nullptr) free(sDisplayName);
 		}
-
-		// cleanup
-		LsaFreeMemory(buffer);
 	}
 
-	// cleanup
-	LsaClose(policyHandle);
 	return tPrivilegeList;
 }
 
@@ -144,9 +140,9 @@ Optional Switches
 
    Specifies that any request to obtain the IP address for the specified target
    will instead receive the specified replacement IP address. This is done by
-   intercepting calls to WSALookupServiceNext() which nearly all address 
-   lookups ultimately occur. Be aware due to special security protections, 
-   this will not work for Internet Explorer and programs that use Internet 
+   intercepting calls to WSALookupServiceNext() which nearly all address
+   lookups ultimately occur. Be aware due to special security protections,
+   this will not work for Internet Explorer and programs that use Internet
    Explorer libraries but should work for most other processes.
 
    Examples:
@@ -188,9 +184,9 @@ Optional Switches
 /BreakRemoteLocks
 
    This option attempts to break remote file locks if a file cannot be accessed
-   because it is opened by another program remotely. For example, this can be 
+   because it is opened by another program remotely. For example, this can be
    used to allow programs like robocopy to mirror an area where the destination
-   system has an in-use file. This option will have no effect if the file is 
+   system has an in-use file. This option will have no effect if the file is
    in-use by a program on the same system where WinPriv is executed.
 
 /AdminImpersonate
@@ -207,11 +203,11 @@ Optional Switches
 
 /RecordCrypto <Directory>
 
-   This option records the data being inputted to common Windows encryption 
-   functions and the data being outputted from common Windows decryption 
-   functions. A separate file will be created for each operation in the 
-   specified directory. If 'SHOW' is specified instead of a directory path, 
-   information is outputted to the console and message boxes, depending of the 
+   This option records the data being inputted to common Windows encryption
+   functions and the data being outputted from common Windows decryption
+   functions. A separate file will be created for each operation in the
+   specified directory. If 'SHOW' is specified instead of a directory path,
+   information is outputted to the console and message boxes, depending of the
    type of application.
 
 /SqlConnectShow
@@ -222,26 +218,26 @@ Optional Switches
 /SqlConnectSearchReplace <SearchString> <ReplaceString>
 
    This option performs a search / replace on an ODBC connection string prior
-   to passing it to the connection Open() function.  The search string is 
+   to passing it to the connection Open() function.  The search string is
    parsed as a regular expression.
 
    Examples:
 
-   WinPrivCmd.exe /SqlConnectSearchReplace 
+   WinPrivCmd.exe /SqlConnectSearchReplace
       Provider=SQLOLEDB Provider=SQLNCLI11 LegacyApplication.exe
 
 /KillProcess <ProcessName>
 
-   Kill the process with specified name prior to running the target. This is 
+   Kill the process with specified name prior to running the target. This is
    useful if the target has logic to prevent multiple execution and needs to
    to be terminated before the effects of a WinPriv session can be effective.
 
 /ExtractLibrary
 
-   This option extracts the embedded 32-bit and 64-bit libraries to the 
+   This option extracts the embedded 32-bit and 64-bit libraries to the
    directory where WinPriv is running. These are normally dynamically extracted
-   to the users temporary directory. If WinPriv finds these libraries in the 
-   directory where it is running, it will use those instead of writing them 
+   to the users temporary directory. If WinPriv finds these libraries in the
+   directory where it is running, it will use those instead of writing them
    to the temporary directory.
 
 /WindowStyle <Style>
@@ -251,7 +247,7 @@ Optional Switches
 
 /UseShellExecute
 
-   This option will launch the target process with ShellExecute() function 
+   This option will launch the target process with ShellExecute() function
    instead of CreateProcess().  This can be useful if launching an application
    that is registered on the system but not in the system path.
 
@@ -263,6 +259,20 @@ Optional Switches
 /ListPrivileges
 
    This option displays of list of available privileges and permissions.
+
+/RunAsConsoleUser
+
+   Runs the specified program as the user that is logged into the console. 
+   If no user is logged into the console, the first active remote user 
+   session is used.  This can be useful when WinPriv is running as under
+   a system contenxt such as a scheduled task or system management agent.
+
+/RunAsUser [UserName]
+
+   Runs the specified program as the specified user. The user must be logged
+   into the system at the console or remotely. This can be useful when WinPriv
+   is running as under a system contenxt such as a scheduled task or
+   system management agent.
 
 Other Notes & Limitations
 =========================

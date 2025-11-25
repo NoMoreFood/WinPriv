@@ -5,6 +5,8 @@
 #ifdef __cplusplus
 #include <vector>
 #include <string>
+#include <functional>
+#include <ranges>
 #endif
 
 //
@@ -61,18 +63,18 @@ void KillProcess(const std::wstring& sProcessName);
 // Miscellaneous String Helper Functions
 //
 
-#define TrimBegin(x,y) (x).erase((x).begin(), std::find_if((x).begin(), \
-	(x).end(), [](int c) { return !(c == y); }));
+#ifdef __cplusplus
+constexpr std::wstring TrimString(const std::wstring& string, wchar_t ch)
+{
+	auto trimmed = string
+		| std::views::drop_while([ch](wchar_t c) { return c == ch; })
+		| std::views::reverse
+		| std::views::drop_while([ch](wchar_t c) { return c == ch; })
+		| std::views::reverse;
 
-#define TrimEnd(x,y) (x).erase(std::find_if((x).rbegin(), \
-	(x).rend(), [](int c) { return !(c == y); }).base(), (x).end());
-
-#define TrimString(x,y) do { TrimBegin(x,y); TrimEnd(x,y); } while (0)
-
-#define BeginsWith(x,y) ((x).compare(0, (y).length(), (y)) == 0)
-
-#define EndsWith(x,y) ((x).size() >= (y).size() && \
-	(x).compare(mainStr.size() - (y).size(), (x).size(), (x)) == 0)
+	return { trimmed.begin(), trimmed.end() };
+}
+#endif
 
 // generic print message that resembles printf() syntax with
 // vardiac variables but will also output to a message box
@@ -85,3 +87,97 @@ void KillProcess(const std::wstring& sProcessName);
 			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
         free(sString); \
 	} while (0)
+
+
+//
+// SmartPointer<>. Custom template for WinAPI resource cleanup.
+// Automatically invokes the provided cleanup callable in its destructor.
+//
+#ifdef __cplusplus
+template <typename T>
+class SmartPointer final
+{
+public:
+
+	SmartPointer(const SmartPointer&) = delete; // non-copyable
+	T operator=(const SmartPointer& lp) = delete; // copy assignment forbidden
+
+	SmartPointer(std::function<void(T)> cleanup) : m_Cleanup(std::move(cleanup)), m_Data(nullptr) {}
+	SmartPointer(std::function<void(T)> cleanup, T data) : m_Cleanup(std::move(cleanup)), m_Data(data) {}
+
+	~SmartPointer()
+	{
+		Cleanup();
+	}
+
+	SmartPointer(SmartPointer&& src) noexcept
+	{
+		m_Cleanup = src.m_Cleanup;
+		m_Data = src.m_Data;
+		src.m_Data = nullptr;
+	}
+
+	void Cleanup()
+	{
+		if (m_Data != nullptr && m_Data != INVALID_HANDLE_VALUE)
+		{
+			m_Cleanup(m_Data);
+		}
+	}
+
+	SmartPointer& operator=(SmartPointer&& src) noexcept
+	{
+		if (std::addressof(*this) != std::addressof(src))
+		{
+			Cleanup();
+			m_Cleanup = src.m_Cleanup;
+			m_Data = src.m_Data;
+			src.m_Data = nullptr;
+		}
+
+		return *this;
+	}
+
+	void Release() noexcept
+	{
+		m_Data = nullptr;
+	}
+
+	operator T()
+	{
+		return m_Data;
+	}
+
+	T& operator*()
+	{
+		return m_Data;
+	}
+
+	T* operator&()
+	{
+		return &m_Data;
+	}
+
+	T operator->()
+	{
+		return m_Data;
+	}
+
+	T operator=(T lp)
+	{
+		Cleanup();
+		m_Data = lp;
+		return m_Data;
+	}
+
+	bool operator!()
+	{
+		return m_Data == nullptr;
+	}
+
+private:
+
+	std::function<void(T)> m_Cleanup;
+	T m_Data;
+};
+#endif

@@ -27,8 +27,9 @@
 
 #pragma comment(lib,"rpcrt4.lib")
 
-extern int LaunchNewLogon(int iArgc, wchar_t *aArgv[]);
-extern int LaunchElevated(int iArgc, wchar_t *aArgv[]);
+extern int LaunchNewLogon(int iArgc, wchar_t* aArgv[]);
+extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
+extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {});
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
@@ -50,8 +51,9 @@ bool WriteResourceToFile(const std::wstring& sOutputDirectory, DWORD iResourceId
 		return false;
 	}
 
-	// create the library files
-	const HANDLE hTempFile = CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	// create the library files 
+	SmartPointer<HANDLE> hTempFile(CloseHandle, CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE,
+		0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
 	if (hTempFile == INVALID_HANDLE_VALUE)
 	{
 		PrintMessage(L"ERROR: Problem creating library file.\n");
@@ -66,13 +68,6 @@ bool WriteResourceToFile(const std::wstring& sOutputDirectory, DWORD iResourceId
 		return false;
 	}
 
-	// close out handles so process can use it
-	if (CloseHandle(hTempFile) == 0)
-	{
-		PrintMessage(L"ERROR: Problem closing library file.\n");
-		return false;
-	}
-	
 	return true;
 }
 
@@ -98,16 +93,16 @@ std::wstring GetLocalLibraryPath(bool bIs64Bit)
 
 	// trim of final path element
 	const std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
-	
+
 	// return directory name
 	return sBasePath + (bIs64Bit ? L"\\WinPrivLibrary-64.dll" : L"\\WinPrivLibrary-32.dll");
 }
 
-int RunProgram(int iArgc, wchar_t *aArgv[])
+int RunProgram(int iArgc, wchar_t* aArgv[])
 {
 	// get list of all privileges for general use later
 	std::map<std::wstring, std::wstring> vPrivMaps = GetPrivilegeList();
-	
+
 	// list of privs populated by command line args that will be enabled
 	std::vector<std::wstring> vPrivsToEnable;
 
@@ -155,7 +150,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
 		std::wifstream oFileStream(sCfgPath);
-		oFileStream.imbue(std::locale(std::locale::empty(), new std::codecvt_utf8<wchar_t>));
+		oFileStream.imbue(std::locale(std::locale(), new std::codecvt_utf8<wchar_t>));
 		std::wstringstream oStringStream;
 		oStringStream << oFileStream.rdbuf();
 		aArgv = CommandLineToArgvW((L"IGNORE " + oStringStream.str()).c_str(), &iArgc);
@@ -188,6 +183,33 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		{
 			// launch as elevated
 			return LaunchElevated(iArgc, aArgv);
+		}
+
+		// this switch instructs winpriv to launch the target process as the
+		// current console user when running as SYSTEM account
+		else if (_wcsicmp(sArg.c_str(), L"/RunAsConsoleUser") == 0)
+		{
+			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
+				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			return LaunchAsUser(sProcessParams);
+		}
+
+		// this switch instructs winpriv to launch the target process as the
+		// specified user when running as SYSTEM account
+		else if (_wcsicmp(sArg.c_str(), L"/RunAsUser") == 0)
+		{
+			// one additional parameter is required
+			if (iArg + 1 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			std::wstring sUser(aArgv[++iArg]);
+			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
+				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			wprintf(L"INFO: Launching process as user: %s\n", sProcessParams.c_str());
+			return LaunchAsUser(sProcessParams, sUser);
 		}
 
 		// this switch is only called by winpriv to instruct itself that is has
@@ -367,7 +389,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			if (_wcsicmp(sWindowStytle.c_str(), L"Hidden") == 0) iShowWindow = SW_HIDE;
 			iArg += iArgsRequired;
 		}
-		
+
 		// instructs winpriv to override the fips setting on the system
 		else if (_wcsicmp(sArg.c_str(), L"/FipsOn") == 0 || _wcsicmp(sArg.c_str(), L"/FipsOff") == 0)
 		{
@@ -377,7 +399,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			sRegistryOverride += L"REG_DWORD ";
 			sRegistryOverride += (_wcsicmp(sArg.c_str(), L"/FipsOn") == 0) ? L"1 " : L"0 ";
 		}
-	
+
 		// instructs winpriv to block access to popular group policy areas
 		else if (_wcsicmp(sArg.c_str(), L"/PolicyBlock") == 0)
 		{
@@ -465,7 +487,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 			SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"1");
 		}
 
-		// instruct winpriv to tell the target process that the current 
+		// instruct winpriv to tell the target process that the current
 		// operating system is a server operating sysem
 		else if (_wcsicmp(sArg.c_str(), L"/ServerEdition") == 0)
 		{
@@ -557,7 +579,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	if (bUseShellExecute && sProcess.empty() ||
 		!bUseShellExecute && sProcessParams.empty())
 	{
-		PrintMessage(L"%s",GetWinPrivHelp().c_str());
+		PrintMessage(L"%s", GetWinPrivHelp().c_str());
 		return __LINE__;
 	}
 
@@ -617,7 +639,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		AlterCurrentUserPrivs(vFailedPrivs, FALSE);
 		return iRet;
 	}
-	
+
 	// user the standard temp directory
 	std::wstring sTempDirectory;
 	sTempDirectory.resize(MAX_PATH + 1);
@@ -626,7 +648,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		return __LINE__;
 	}
 	sTempDirectory.resize(sTempDirectory.find(L'\0'));
-	
+
 	// ensure temp directory actually exists
 	if (GetFileAttributes(sTempDirectory.c_str()) == INVALID_FILE_ATTRIBUTES &&
 		CreateDirectory(sTempDirectory.c_str(), nullptr) == 0)
@@ -634,7 +656,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		PrintMessage(L"ERROR: Could not create temporary directory for library files.\n");
 		return __LINE__;
 	}
-	
+
 	// fetch the default library paths
 	bool bCleanupLibrary = false;
 	std::wstring sTempLibraryX86 = GetLocalLibraryPath(false);
@@ -673,7 +695,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 	}
 
 	// kill any processes requested
-	for (std::wstring & sProcessName : vProcessesToKill)
+	for (std::wstring& sProcessName : vProcessesToKill)
 	{
 		KillProcess(sProcessName);
 	}
@@ -705,15 +727,15 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// load the detour library into memory - the main reason we do this
 	// is so that the create process command below will load the detour library
-	// that matches the architecture of the target executable
-	HMODULE hLibrary = LoadLibrary((sizeof(INT_PTR) == sizeof(LONGLONG)) 
-		? sTempLibraryX64.c_str() : sTempLibraryX86.c_str());
+	// that matches the architecture of the target executable 
+	SmartPointer<HMODULE> hLibrary(FreeLibrary, LoadLibrary((sizeof(INT_PTR) == sizeof(LONGLONG)) ?
+		sTempLibraryX64.c_str() : sTempLibraryX86.c_str()));
 
 	// create process and detour
 	ULONGLONG iTimeStart = GetTickCount64();;
 	if (bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE ||
 		!bUseShellExecute && CreateProcess(nullptr, (LPWSTR)sProcessParams.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-		&o_StartInfo, &o_ProcessInfo) == 0)
+			&o_StartInfo, &o_ProcessInfo) == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
 		if (bCleanupLibrary)
@@ -724,11 +746,15 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 		return __LINE__;
 	}
 
-	// copy process info out of shell execute for waiting 
+	// copy process info out of shell execute for waiting
 	if (bUseShellExecute) o_ProcessInfo.hProcess = o_ShellExecute.hProcess;
 
+	// wrap process handles in SmartPointers for automatic cleanup
+	SmartPointer<HANDLE> hProcess(CloseHandle, o_ProcessInfo.hProcess);
+	SmartPointer<HANDLE> hThread(CloseHandle, o_ProcessInfo.hThread);
+
 	// wait for our process to complete
-	if (WaitForSingleObject(o_ProcessInfo.hProcess, INFINITE) == WAIT_FAILED)
+	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
 	{
 		PrintMessage(L"ERROR: Problem waiting for process to complete.");
 		if (bCleanupLibrary)
@@ -748,12 +774,9 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 
 	// fetch process exit code
 	DWORD iExitCode = 0;
-	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
-	CloseHandle(o_ProcessInfo.hProcess);
-	if (o_ProcessInfo.hThread != nullptr) CloseHandle(o_ProcessInfo.hThread);
+	GetExitCodeProcess(hProcess, &iExitCode);
 
 	// cleanup
-	if (hLibrary != nullptr) FreeLibrary(hLibrary);
 	if (bCleanupLibrary)
 	{
 		DeleteFile(sTempLibraryX86.c_str());
@@ -768,7 +791,7 @@ int RunProgram(int iArgc, wchar_t *aArgv[])
 //
 
 #ifdef _CONSOLE
-int wmain(int iArgc, wchar_t *aArgv[])
+int wmain(int iArgc, wchar_t* aArgv[])
 {
 	RunProgram(iArgc, aArgv);
 }
