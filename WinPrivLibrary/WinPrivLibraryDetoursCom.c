@@ -11,10 +11,10 @@
 // helper function used for simple search and replace
 LPWSTR SearchReplace(LPWSTR sInputString, LPWSTR sSearchString, LPWSTR sReplaceString);
 
-//   __   __            __   ___ ___  __        __   __  
-//  /  ` /  \  |\/|    |  \ |__   |  /  \ |  | |__) /__` 
-//  \__, \__/  |  |    |__/ |___  |  \__/ \__/ |  \ .__/ 
-//  
+//   __   __            __   ___ ___  __        __   __
+//  /  ` /  \  |\/|    |  \ |__   |  /  \ |  | |__) /__`
+//  \__, \__/  |  |    |__/ |___  |  \__/ \__/ |  \ .__/
+//
 
 HRESULT(STDMETHODCALLTYPE* TrueComOpen)(__RPC__in Connection15* This,
 	__RPC__in BSTR ConnectionString, __RPC__in BSTR UserID, __RPC__in BSTR Password, long Options);

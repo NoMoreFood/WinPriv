@@ -7,10 +7,15 @@
 #include <winternl.h>
 #include <cstdio>
 #include <wincred.h>
+#include <wtsapi32.h>
+#include <userenv.h>
+#include <memory>
 
 #include "WinPrivShared.h"
 
 #pragma comment(lib,"credui.lib")
+#pragma comment(lib,"wtsapi32.lib")
+#pragma comment(lib,"userenv.lib")
 
 int LaunchElevated(int iArgc, wchar_t *aArgv[])
 {
@@ -45,16 +50,13 @@ int LaunchElevated(int iArgc, wchar_t *aArgv[])
 int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 {
 	// setup the interface parameters for credential solicitation solicit credentials from the user
-	CREDUI_INFO cui;
-	cui.cbSize = sizeof(CREDUI_INFO);
-	cui.hwndParent = nullptr;
+	CREDUI_INFO cui{ .cbSize = sizeof(CREDUI_INFO) };
 	cui.pszMessageText = L"In order to active the privileges that you requested, " \
 		"you must enter your credentials to acquire a new logon token.";
 	cui.pszCaptionText = L"Enter Your Credentials";
-	cui.hbmBanner = nullptr;
 
 	// prompt the user for a set of credentials
-	VOID * oOutInformation = nullptr;
+	PVOID oOutInformation = nullptr;
 	DWORD iOutInformationSize = 0;
 	DWORD iAuthPackage = 0;
 	DWORD iErr = 0;
@@ -124,4 +126,173 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 	CloseHandle(o_ProcessInfo.hProcess);
 	CloseHandle(o_ProcessInfo.hThread);
 	return iExitCode;
+}
+#include <Windows.h>
+#include <WtsApi32.h>
+#include <UserEnv.h>
+#include <Sddl.h>
+#include <LMCons.h>
+#include <string>
+
+#pragma comment(lib, "Wtsapi32.lib")
+#pragma comment(lib, "Userenv.lib")
+
+static constexpr WCHAR SYSTEM_SID_STRING[] = L"S-1-5-18";
+static constexpr DWORD INVALID_SESSION = 0xFFFFFFFF;
+
+static std::wstring GetSidStringForUser(const std::wstring& username)
+{
+    // Prepare buffers for SID and domain lookup
+    BYTE sidBuffer[SECURITY_MAX_SID_SIZE];
+    WCHAR domainBuffer[DNLEN + 1];
+    DWORD sidSize = sizeof(sidBuffer);
+    DWORD domainSize = DNLEN + 1;
+    SID_NAME_USE sidUse;
+    SmartPointer<LPWSTR> sidString(LocalFree, nullptr);
+
+    // Resolve username to SID and convert to string
+    if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer, &sidSize, domainBuffer, &domainSize, &sidUse) ||
+        !ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuffer), &sidString))
+    {
+        return {};
+    }
+
+    return std::wstring(sidString);
+}
+
+static std::wstring GetSessionUserSidString(const DWORD sessionId)
+{
+    // Query session for username and domain
+    SmartPointer<LPWSTR> pUserName(WTSFreeMemory, nullptr);
+    SmartPointer<LPWSTR> pDomainName(WTSFreeMemory, nullptr);
+    DWORD bytesReturned = 0;
+
+    if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSUserName, &pUserName, &bytesReturned) || bytesReturned <= sizeof(WCHAR) ||
+        !WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSDomainName, &pDomainName, &bytesReturned) || bytesReturned <= sizeof(WCHAR))
+    {
+        return {};
+    }
+
+    // Convert domain\username to SID string
+    return GetSidStringForUser(std::wstring(pDomainName) + L"\\" + std::wstring(pUserName));
+}
+
+static bool IsValidUserSession(const std::wstring& sidString)
+{
+    return !sidString.empty() && sidString != SYSTEM_SID_STRING;
+}
+
+static DWORD FindTargetSession(const std::wstring& username)
+{
+    // Enumerate all sessions on the system
+    SmartPointer<PWTS_SESSION_INFOW> pSessionInfo(WTSFreeMemory, nullptr);
+    DWORD sessionCount = 0;
+
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pSessionInfo, &sessionCount))
+    {
+        return INVALID_SESSION;
+    }
+
+    // Resolve target username to SID if specified
+    const std::wstring targetSidString = username.empty() ? std::wstring{} : GetSidStringForUser(username);
+    if (!username.empty() && targetSidString.empty())
+    {
+        return INVALID_SESSION;
+    }
+
+    // Get console session ID for priority matching
+    const DWORD consoleSessionId = username.empty() ? WTSGetActiveConsoleSessionId() : INVALID_SESSION;
+    DWORD firstActiveSession = INVALID_SESSION;
+    DWORD firstDisconnectedSession = INVALID_SESSION;
+
+    // Iterate sessions to find best match
+    for (DWORD i = 0; i < sessionCount; ++i)
+    {
+        const DWORD sessionId = pSessionInfo[i].SessionId;
+        const WTS_CONNECTSTATE_CLASS state = pSessionInfo[i].State;
+        const std::wstring sessionSidString = GetSessionUserSidString(sessionId);
+
+        if (username.empty())
+        {
+            // Skip invalid or SYSTEM sessions
+            if (!IsValidUserSession(sessionSidString))
+            {
+                continue;
+            }
+            // Prefer console session if valid
+            if (sessionId == consoleSessionId)
+            {
+                return consoleSessionId;
+            }
+            // Track first active session
+            if (state == WTSActive && firstActiveSession == INVALID_SESSION)
+            {
+                firstActiveSession = sessionId;
+            }
+            // Track first disconnected session as fallback
+            if (state == WTSDisconnected && firstDisconnectedSession == INVALID_SESSION)
+            {
+                firstDisconnectedSession = sessionId;
+            }
+        }
+        else
+        {
+            // Match by SID for specified username (active or disconnected)
+            if ((state == WTSActive || state == WTSDisconnected) && sessionSidString == targetSidString)
+            {
+                return sessionId;
+            }
+        }
+    }
+
+    // Return first active, then first disconnected, then invalid
+    return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : firstDisconnectedSession;
+}
+
+int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {})
+{
+    // Find appropriate session for target user
+    const DWORD targetSessionId = FindTargetSession(username);
+    if (targetSessionId == INVALID_SESSION)
+    {
+        return __LINE__;
+    }
+
+    // Get user token and create environment block
+    SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
+    SmartPointer<HANDLE> hPrimaryToken(CloseHandle, nullptr);
+    SmartPointer<LPVOID> pEnvironment(DestroyEnvironmentBlock, nullptr);
+
+    if (!WTSQueryUserToken(targetSessionId, &hToken) ||
+        !DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr, SecurityIdentification, TokenPrimary, &hPrimaryToken) ||
+        !CreateEnvironmentBlock(&pEnvironment, hPrimaryToken, FALSE))
+    {
+        return __LINE__;
+    }
+
+    // Configure process to run on interactive desktop
+    STARTUPINFOW si = { sizeof(si) };
+    si.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_SHOW;
+
+    // Launch process as the target user
+    PROCESS_INFORMATION pi = {};
+    std::wstring cmdLineCopy = commandLine;
+
+    if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
+    {
+        return __LINE__;
+    }
+
+    // Wait for process to complete and clean up handles
+    const SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
+    const SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
+
+    if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_FAILED)
+    {
+        return __LINE__;
+    }
+
+    return 0;
 }
