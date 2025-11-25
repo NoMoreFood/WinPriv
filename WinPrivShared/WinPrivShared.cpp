@@ -22,7 +22,7 @@
 
 #include "WinPrivShared.h"
 
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs)
+std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEnd, const std::vector<LPWSTR>& vArgs)
 {
 	std::wstring sResult;
 
@@ -102,7 +102,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	return vUnavailablePrivs;
 }
 
-BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights)
+BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const BOOL bAddRights)
 {
 	// open the current token 
 	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);

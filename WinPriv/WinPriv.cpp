@@ -33,7 +33,7 @@ extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& use
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
-bool WriteResourceToFile(const std::wstring& sOutputDirectory, DWORD iResourceId)
+bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iResourceId)
 {
 	// locate the resource that has the embedded library
 	const HRSRC hRes = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
@@ -87,7 +87,7 @@ std::wstring GetRunningExecutable()
 	return sThisExecutable;
 }
 
-std::wstring GetLocalLibraryPath(bool bIs64Bit)
+std::wstring GetLocalLibraryPath(const bool bIs64Bit)
 {
 	const std::wstring sThisExecutable = GetRunningExecutable();
 
@@ -326,7 +326,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 			// format the mac address to a consistent format by removing colons or dashes
 			std::wstring sMacAddr(aArgv[iArg + 1]);
-			std::erase_if(sMacAddr, [](wchar_t c) { return c == ':' || c == '-'; });
+			std::erase_if(sMacAddr, [](const wchar_t c) { return c == ':' || c == '-'; });
 			SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str());
 			iArg += iArgsRequired;
 		}
@@ -457,8 +457,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			}
 
 			// convert the address to a string
-			WCHAR sAddress[16];
-			InetNtop(AF_INET, &((PSOCKADDR_IN)tResult->ai_addr)->sin_addr, sAddress, _countof(sAddress));
+			WCHAR sAddress[INET_ADDRSTRLEN];
+			InetNtop(AF_INET, &reinterpret_cast<PSOCKADDR_IN>(tResult->ai_addr)->sin_addr, sAddress, INET_ADDRSTRLEN);
 
 			// append the host override data which should be two params:
 			// <host name to override> <host override value>
@@ -797,7 +797,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 //
 
 #ifdef _CONSOLE
-int wmain(int iArgc, wchar_t* aArgv[])
+int wmain(const int iArgc, wchar_t* aArgv[])
 {
 	RunProgram(iArgc, aArgv);
 }

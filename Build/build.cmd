@@ -4,10 +4,9 @@ CLS
 SET PATH=%WINDIR%\system32;%WINDIR%\system32\WindowsPowerShell\v1.0
 
 :: cert info to use for signing
-SET CERT=04F071366E2A3C75B7CABF091B9CF340ABEA22A7
-set TSAURL=http://time.certum.pl/
-set LIBNAME=WinPriv
-set LIBURL=https://github.com/NoMoreFood/WinPriv
+SET TSAURL=http://time.certum.pl/
+SET LIBNAME=Repacls
+SET LIBURL=https://github.com/NoMoreFood/Repacls
 
 :: do cleanup
 RD /S /Q "%~dp0.vs" >NUL 2>&1
@@ -33,7 +32,7 @@ FOR /F "USEBACKQ DELIMS=" %%X IN (`DIR /OD /B /S "%PX86%\Windows Kits\10\SIGNTOO
 
 :: sign the main executables
 SET BINDIR=%~dp0
-%SIGNTOOL% sign /sha1 %CERT% /as /fd sha256 /tr %TSAURL% /td sha256 /d %LIBNAME% /du %LIBURL% "%BINDIR%\x86\*.exe" "%BINDIR%\x64\*.exe"
+%SIGNTOOL% sign /fd sha256 /tr %TSAURL% /td sha256 /d %LIBNAME% /du %LIBURL% "%BINDIR%\x86\*.exe" "%BINDIR%\x64\*.exe"
 
 :: zip up executatables
 PUSHD "%BINDIR%"

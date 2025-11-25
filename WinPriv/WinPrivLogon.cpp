@@ -17,7 +17,7 @@
 #pragma comment(lib,"wtsapi32.lib")
 #pragma comment(lib,"userenv.lib")
 
-int LaunchElevated(int iArgc, wchar_t *aArgv[])
+int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 {
 	// construct a command line containing just the argument passed this executable
 	const std::wstring sCommand = L"/RelaunchComplete " + ArgvToCommandLine(2, iArgc - 1,
@@ -46,7 +46,7 @@ int LaunchElevated(int iArgc, wchar_t *aArgv[])
 	return iExitCode;
 }
 
-int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
+int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 {
 	// setup the interface parameters for credential solicitation solicit credentials from the user
 	CREDUI_INFO cui{ .cbSize = sizeof(CREDUI_INFO) };
@@ -151,7 +151,7 @@ static std::wstring GetSidStringForUser(const std::wstring& username)
 
     // Resolve username to SID and convert to string
     if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer, &sidSize, domainBuffer, &domainSize, &sidUse) ||
-        !ConvertSidToStringSidW(reinterpret_cast<PSID>(sidBuffer), &sidString))
+        !ConvertSidToStringSidW(sidBuffer, &sidString))
     {
         return {};
     }
