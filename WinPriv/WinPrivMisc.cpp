@@ -50,8 +50,8 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 
 			// return privilege display name -- call lookup once to get string size
 			// and then alloc the string on the next call to get the string
-			if (LookupPrivilegeDisplayName(nullptr, (LPWSTR)buffer[iPrivIndex].Name.Buffer, nullptr, &iSize, &iIden) == 0 &&
-				LookupPrivilegeDisplayName(nullptr, (LPWSTR)buffer[iPrivIndex].Name.Buffer,
+			if (LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer, nullptr, &iSize, &iIden) == 0 &&
+				LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer,
 					sDisplayName = static_cast<LPWSTR>(malloc(sizeof(WCHAR) * (++iSize))), &iSize, &iIden) != 0)
 			{
 				tPrivilegeList[buffer[iPrivIndex].Name.Buffer] = sDisplayName;

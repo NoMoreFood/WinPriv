@@ -55,21 +55,29 @@ void KillProcess(const std::wstring& sProcessName);
 // Miscellaneous Environment Variable Helper Functions
 //
 
-#define VariableNotEmpty(x) (_wgetenv(x) != NULL && wcslen(_wgetenv(x)) > 0)
+inline BOOL VariableNotEmpty(const wchar_t* x)
+{
+	const wchar_t* ev = _wgetenv(x);
+	return ev != NULL && wcslen(ev) > 0;
+}
 
-#define VariableIsSet(x,y) (_wgetenv(x) != NULL && _wtoi(_wgetenv(x)) == (y))
+inline BOOL VariableIsSet(const wchar_t* x, const int y)
+{
+	const wchar_t* ev = _wgetenv(x);
+	return ev != NULL && _wtoi(ev) == y;
+}
 
 //
 // Miscellaneous String Helper Functions
 //
 
 #ifdef __cplusplus
-constexpr std::wstring TrimString(const std::wstring& string, wchar_t ch)
+inline std::wstring TrimString(const std::wstring& string, wchar_t ch)
 {
 	auto trimmed = string
-		| std::views::drop_while([ch](wchar_t c) { return c == ch; })
+		| std::views::drop_while([ch](const wchar_t c) { return c == ch; })
 		| std::views::reverse
-		| std::views::drop_while([ch](wchar_t c) { return c == ch; })
+		| std::views::drop_while([ch](const wchar_t c) { return c == ch; })
 		| std::views::reverse;
 
 	return { trimmed.begin(), trimmed.end() };
