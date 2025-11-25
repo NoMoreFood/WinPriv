@@ -27,17 +27,16 @@ int LaunchElevated(int iArgc, wchar_t *aArgv[])
 	WCHAR sCurrentDir[MAX_PATH + 1];
 	_wgetcwd(sCurrentDir, _countof(sCurrentDir));
 
-	// re-execute the process to run elevated
-	SHELLEXECUTEINFO tShellExecInfo;
-	ZeroMemory(&tShellExecInfo, sizeof(SHELLEXECUTEINFO));
-	tShellExecInfo.cbSize = sizeof(SHELLEXECUTEINFO);
-	tShellExecInfo.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOZONECHECKS;
-	tShellExecInfo.hwnd = nullptr;
-	tShellExecInfo.lpVerb = L"runas";
-	tShellExecInfo.lpFile = aArgv[0];
-	tShellExecInfo.lpParameters = sCommand.c_str();
-	tShellExecInfo.nShow = SW_SHOWNORMAL;
-	tShellExecInfo.hInstApp = nullptr;
+	// re-execute the process to run elevated with designated initializers
+	SHELLEXECUTEINFO tShellExecInfo{
+		.cbSize = sizeof(SHELLEXECUTEINFO),
+		.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOZONECHECKS,
+		.lpVerb = L"runas",
+		.lpFile = aArgv[0],
+		.lpParameters = sCommand.c_str(),
+		.nShow = SW_SHOWNORMAL
+	};
+	
 	ShellExecuteEx(&tShellExecInfo);
 
 	// wait for completion and return process exit code
@@ -86,13 +85,13 @@ int LaunchNewLogon(int iArgc, wchar_t *aArgv[])
 	constexpr DWORD iDomainName = _countof(sDomainName);
 	CredUIParseUserName(sUserName, sUserNameShort, iUserNameShort, sDomainName, iDomainName);
 
-	STARTUPINFO o_StartInfo;
-	PROCESS_INFORMATION o_ProcessInfo;
-	ZeroMemory(&o_ProcessInfo, sizeof(PROCESS_INFORMATION));
-	ZeroMemory(&o_StartInfo, sizeof(STARTUPINFO));
-	o_StartInfo.cb = sizeof(STARTUPINFO);
-	o_StartInfo.dwFlags = STARTF_USESHOWWINDOW;
-	o_StartInfo.wShowWindow = SW_HIDE;
+	STARTUPINFO o_StartInfo{
+		.cb = sizeof(STARTUPINFO),
+		.dwFlags = STARTF_USESHOWWINDOW,
+		.wShowWindow = SW_HIDE
+	};
+	
+	PROCESS_INFORMATION o_ProcessInfo{};
 
 	// reconstruct a command line with a flag to indicate relaunch
 	const std::vector<LPWSTR> sArgs({ aArgv, aArgv + iArgc });

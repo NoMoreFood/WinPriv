@@ -236,10 +236,16 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 			// tokenize the comma-delimited string and add the privs to the priv vector
 			std::wstring sPrivString(aArgv[++iArg]);
-			std::wregex oRegex(L",");
-			std::wsregex_token_iterator oFirst{ sPrivString.begin(), sPrivString.end(), oRegex, -1 }, oLast;
-			std::vector<std::wstring> vPrivsToAdd({ oFirst, oLast });
-			vPrivsToEnable.insert(vPrivsToEnable.end(), vPrivsToAdd.begin(), vPrivsToAdd.end());
+			auto tokens = sPrivString 
+				| std::views::split(L',')
+				| std::views::transform([](auto&& rng) {
+					return std::wstring(std::ranges::begin(rng), std::ranges::end(rng));
+				});
+			
+			for (auto&& token : tokens)
+			{
+				vPrivsToEnable.push_back(token);
+			}
 		}
 
 		// this instructs winpriv to kill any processes with the specified name
@@ -320,8 +326,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 			// format the mac address to a consistent format by removing colons or dashes
 			std::wstring sMacAddr(aArgv[iArg + 1]);
-			std::erase(sMacAddr, ':');
-			std::erase(sMacAddr, '-');
+			std::erase_if(sMacAddr, [](wchar_t c) { return c == ':' || c == '-'; });
 			SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str());
 			iArg += iArgsRequired;
 		}
@@ -700,11 +705,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		KillProcess(sProcessName);
 	}
 
-	STARTUPINFO o_StartInfo;
-	PROCESS_INFORMATION o_ProcessInfo;
-	ZeroMemory(&o_ProcessInfo, sizeof(PROCESS_INFORMATION));
-	ZeroMemory(&o_StartInfo, sizeof(STARTUPINFO));
-	o_StartInfo.cb = sizeof(STARTUPINFO);
+	STARTUPINFO o_StartInfo{
+		.cb = sizeof(STARTUPINFO)
+	};
+	
+	PROCESS_INFORMATION o_ProcessInfo{};
 
 	// apply window creation parameters
 	if (iShowWindow != SW_NORMAL)
@@ -717,12 +722,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	SHELLEXECUTEINFOW o_ShellExecute;
 	if (bUseShellExecute)
 	{
-		ZeroMemory(&o_ShellExecute, sizeof(SHELLEXECUTEINFOW));
-		o_ShellExecute.cbSize = sizeof(SHELLEXECUTEINFOW);
-		o_ShellExecute.fMask = SEE_MASK_NOCLOSEPROCESS;
-		o_ShellExecute.lpFile = sProcess.c_str();
-		o_ShellExecute.nShow = iShowWindow;
-		o_ShellExecute.lpParameters = sProcessParams.c_str();
+		o_ShellExecute = {
+			.cbSize = sizeof(SHELLEXECUTEINFOW),
+			.fMask = SEE_MASK_NOCLOSEPROCESS,
+			.lpFile = sProcess.c_str(),
+			.lpParameters = sProcessParams.c_str(),
+			.nShow = iShowWindow
+		};
 	}
 
 	// load the detour library into memory - the main reason we do this

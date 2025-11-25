@@ -955,13 +955,12 @@ EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitialize(_In_opt_ LPVOID pvReserved)
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
-//
-#define AttachDetech(bAttach,pAtt,pDet) (bAttach) ? DetourAttach(pAtt,pDet) : DetourDetach(pAtt,pDet)
+// Use constexpr for the attach/detach macro
+#define AttachDetech(bAttach,pAtt,pDet) ((bAttach) ? DetourAttach(pAtt,pDet) : DetourDetach(pAtt,pDet))
 
 EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 {
-	//decltype(&DetourAttach) AttachDetach = (bAttach) ? DetourAttach : DetourDetach;
-
+	// Skip if this is the parent process
 	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
 	{
 		return;
@@ -1034,13 +1033,22 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 
 	if (bAttach && VariableNotEmpty(WINPRIV_EV_PRIVLIST))
 	{
-		// tokenize the string
+		// tokenize the string using ranges
 		std::wstring sPrivString(_wgetenv(WINPRIV_EV_PRIVLIST));
-		std::wregex oRegex(L",");
-		std::wsregex_token_iterator oFirst{ sPrivString.begin(), sPrivString.end(), oRegex, -1 }, oLast;
+		auto tokens = sPrivString 
+			| std::views::split(L',')
+			| std::views::transform([](auto&& rng) {
+				return std::wstring(std::ranges::begin(rng), std::ranges::end(rng));
+			});
+
+		std::vector<std::wstring> vPrivs;
+		for (auto&& token : tokens)
+		{
+			vPrivs.push_back(token);
+		}
 
 		// attempt to enable the privileges
-		std::vector<std::wstring> tFailedPrivs = EnablePrivs(std::vector<std::wstring>({ oFirst, oLast }));
+		std::vector<std::wstring> tFailedPrivs = EnablePrivs(vPrivs);
 
 		// grant any privileges that cannot be enabled
 		if (!tFailedPrivs.empty())
