@@ -46,10 +46,10 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 	}
 
 	// wait for completion and return process exit code
-	WaitForSingleObject(tShellExecInfo.hProcess, INFINITE);
+	SmartPointer<HANDLE> hProcess(CloseHandle, tShellExecInfo.hProcess);
+	WaitForSingleObject(hProcess, INFINITE);
 	DWORD iExitCode = 0;
-	GetExitCodeProcess(tShellExecInfo.hProcess, &iExitCode);
-	CloseHandle(tShellExecInfo.hProcess);
+	GetExitCodeProcess(hProcess, &iExitCode);
 	return iExitCode;
 }
 
@@ -62,7 +62,7 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	cui.pszCaptionText = L"Enter Your Credentials";
 
 	// prompt the user for a set of credentials
-	PVOID oOutInformation = nullptr;
+	SmartPointer<PVOID> oOutInformation(CoTaskMemFree, nullptr);
 	DWORD iOutInformationSize = 0;
 	DWORD iAuthPackage = 0;
 	DWORD iErr = 0;
@@ -114,10 +114,9 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	}
 	
 	// relaunch process under altered security policy
-	const LPWSTR sBlock = GetEnvironmentStrings();
+	SmartPointer<LPWSTR> sBlock(FreeEnvironmentStrings, GetEnvironmentStrings());
 	const BOOL bCreateResult = CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE, nullptr, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock,
 		sCurrentDir, &o_StartInfo, &o_ProcessInfo);
-	FreeEnvironmentStrings(sBlock);
 
 	// zero out the password from memory as early as possible
 	SecureZeroMemory(sPassword, sizeof(sPassword));
@@ -129,11 +128,11 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	}
 
 	// return process exit code
-	WaitForSingleObject(o_ProcessInfo.hProcess, INFINITE);
+	SmartPointer<HANDLE> hProcess(CloseHandle, o_ProcessInfo.hProcess);
+	SmartPointer<HANDLE> hThread(CloseHandle, o_ProcessInfo.hThread);
+	WaitForSingleObject(hProcess, INFINITE);
 	DWORD iExitCode = 0;
-	GetExitCodeProcess(o_ProcessInfo.hProcess, &iExitCode);
-	CloseHandle(o_ProcessInfo.hProcess);
-	CloseHandle(o_ProcessInfo.hThread);
+	GetExitCodeProcess(hProcess, &iExitCode);
 	return iExitCode;
 }
 

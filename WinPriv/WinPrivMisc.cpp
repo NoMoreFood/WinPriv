@@ -44,21 +44,19 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 	{
 		for (ULONG iPrivIndex = 0; iPrivIndex < countReturned; iPrivIndex++)
 		{
-			LPWSTR sDisplayName = nullptr;
 			DWORD iSize = 0;
 			DWORD iIden = 0;
 
 			// return privilege display name -- call lookup once to get string size
 			// and then alloc the string on the next call to get the string
-			if (LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer, nullptr, &iSize, &iIden) == 0 &&
-				LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer,
-					sDisplayName = static_cast<LPWSTR>(malloc(sizeof(WCHAR) * (++iSize))), &iSize, &iIden) != 0)
+			if (LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer, nullptr, &iSize, &iIden) == 0)
 			{
-				tPrivilegeList[buffer[iPrivIndex].Name.Buffer] = sDisplayName;
+				SmartPointer<LPWSTR> sDisplayName(free, static_cast<LPWSTR>(malloc(sizeof(WCHAR) * (++iSize))));
+				if (LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer, sDisplayName, &iSize, &iIden) != 0)
+				{
+					tPrivilegeList[buffer[iPrivIndex].Name.Buffer] = static_cast<LPWSTR>(sDisplayName);
+				}
 			}
-
-			// cleanup
-			if (sDisplayName != nullptr) free(sDisplayName);
 		}
 	}
 
