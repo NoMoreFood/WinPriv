@@ -76,7 +76,8 @@ std::wstring GetRunningExecutable()
 	// attempt to get the directory to the path to this executable
 	std::wstring sThisExecutable;
 	sThisExecutable.resize(MAX_PATH + 1);
-	if (GetModuleFileName(nullptr, sThisExecutable.data(), MAX_PATH + 1) == 0)
+	const DWORD iResult = GetModuleFileName(nullptr, sThisExecutable.data(), MAX_PATH + 1);
+	if (iResult == 0 || iResult >= MAX_PATH + 1)
 	{
 		PrintMessage(L"ERROR: Error fetching currently executable path.\n");
 		std::exit(0);
@@ -146,7 +147,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 	// read command line from cfg file if it exists
 	std::wstring sExecutable = GetRunningExecutable();
-	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.find_last_of(L".exe") - 3) + L".cfg";
+	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.rfind(L".exe")) + L".cfg";
 	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
 		std::wifstream oFileStream(sCfgPath);
@@ -386,12 +387,12 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			}
 
 			// decode the parameter into a windowstyle parameter
-			std::wstring sWindowStytle(aArgv[iArg + 1]);
-			if (_wcsicmp(sWindowStytle.c_str(), L"NoActive") == 0) iShowWindow = SW_SHOWNOACTIVATE;
-			if (_wcsicmp(sWindowStytle.c_str(), L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
-			if (_wcsicmp(sWindowStytle.c_str(), L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
-			if (_wcsicmp(sWindowStytle.c_str(), L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
-			if (_wcsicmp(sWindowStytle.c_str(), L"Hidden") == 0) iShowWindow = SW_HIDE;
+			std::wstring sWindowStyle(aArgv[iArg + 1]);
+			if (_wcsicmp(sWindowStyle.c_str(), L"NoActive") == 0) iShowWindow = SW_SHOWNOACTIVATE;
+			if (_wcsicmp(sWindowStyle.c_str(), L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
+			if (_wcsicmp(sWindowStyle.c_str(), L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
+			if (_wcsicmp(sWindowStyle.c_str(), L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
+			if (_wcsicmp(sWindowStyle.c_str(), L"Hidden") == 0) iShowWindow = SW_HIDE;
 			iArg += iArgsRequired;
 		}
 
@@ -433,7 +434,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			constexpr int iArgsRequired = 2;
 
-			// four additional parameters are required
+			// two additional parameters are required
 			if (iArg + iArgsRequired >= iArgc)
 			{
 				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
@@ -459,6 +460,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			// convert the address to a string
 			WCHAR sAddress[INET_ADDRSTRLEN];
 			InetNtop(AF_INET, &reinterpret_cast<PSOCKADDR_IN>(tResult->ai_addr)->sin_addr, sAddress, INET_ADDRSTRLEN);
+			FreeAddrInfoW(tResult);
 
 			// append the host override data which should be two params:
 			// <host name to override> <host override value>
@@ -493,7 +495,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		}
 
 		// instruct winpriv to tell the target process that the current
-		// operating system is a server operating sysem
+		// operating system is a server operating system
 		else if (_wcsicmp(sArg.c_str(), L"/ServerEdition") == 0)
 		{
 			SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"1");
@@ -518,7 +520,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				if (CreateDirectory(sRecordCrypto.c_str(), nullptr) == FALSE &&
 					ERROR_ALREADY_EXISTS != GetLastError())
 				{
-					PrintMessage(L"ERROR: Could not create the specified directory for /CrytpoRecord");
+					PrintMessage(L"ERROR: Could not create the specified directory for /RecordCrypto\n");
 					return __LINE__;
 				}
 			}
@@ -581,19 +583,19 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	}
 
 	// display help if no target was specified
-	if (bUseShellExecute && sProcess.empty() ||
-		!bUseShellExecute && sProcessParams.empty())
+	if ((bUseShellExecute && sProcess.empty()) ||
+		(!bUseShellExecute && sProcessParams.empty()))
 	{
 		PrintMessage(L"%s", GetWinPrivHelp().c_str());
 		return __LINE__;
 	}
 
 	// setup the registry override and block values to pass to child processes
-	TrimString(sRegistryOverride, L' ');
+	sRegistryOverride = TrimString(sRegistryOverride, L' ');
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, sRegistryOverride.c_str());
 
 	// setup the host override values to pass to child processes
-	TrimString(sHostOverride, L' ');
+	sHostOverride = TrimString(sHostOverride, L' ');
 	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, sHostOverride.c_str());
 
 	// sort privs, remove duplicate privs, and reconstruct into a list of privs
@@ -614,14 +616,14 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	}
 
 	// setup priv list environment variable to pass to child processes
-	TrimString(sPrivsToSetList, L',');
+	sPrivsToSetList = TrimString(sPrivsToSetList, L',');
 	SetEnvironmentVariable(WINPRIV_EV_PRIVLIST, sPrivsToSetList.c_str());
 
 	// attempt to enable all privileges specified
 	std::vector<std::wstring> vFailedPrivs = EnablePrivs(vPrivsToEnable);
 
 	// grant any privileges that cannot be enabled
-	if (vFailedPrivs.size() > 0)
+	if (!vFailedPrivs.empty())
 	{
 		// ensure we did not get here by means of relaunching as elevated
 		if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
@@ -665,7 +667,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// fetch the default library paths
 	bool bCleanupLibrary = false;
 	std::wstring sTempLibraryX86 = GetLocalLibraryPath(false);
-	std::wstring sTempLibraryX64 = GetLocalLibraryPath(true);;
+	std::wstring sTempLibraryX64 = GetLocalLibraryPath(true);
 
 	if (GetFileAttributes(sTempLibraryX86.c_str()) == INVALID_FILE_ATTRIBUTES ||
 		GetFileAttributes(sTempLibraryX64.c_str()) == INVALID_FILE_ATTRIBUTES)
@@ -738,10 +740,10 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		sTempLibraryX64.c_str() : sTempLibraryX86.c_str()));
 
 	// create process and detour
-	ULONGLONG iTimeStart = GetTickCount64();;
-	if (bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE ||
-		!bUseShellExecute && CreateProcess(nullptr, (LPWSTR)sProcessParams.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-			&o_StartInfo, &o_ProcessInfo) == 0)
+	ULONGLONG iTimeStart = GetTickCount64();
+	if ((bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE) ||
+		(!bUseShellExecute && CreateProcess(nullptr, (LPWSTR)sProcessParams.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+			&o_StartInfo, &o_ProcessInfo) == 0))
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
 		if (bCleanupLibrary)
@@ -799,7 +801,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 #ifdef _CONSOLE
 int wmain(const int iArgc, wchar_t* aArgv[])
 {
-	RunProgram(iArgc, aArgv);
+	return RunProgram(iArgc, aArgv);
 }
 #else
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ PWSTR pCmdLine, _In_ int nCmdShow)

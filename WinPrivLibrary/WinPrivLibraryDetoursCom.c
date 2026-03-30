@@ -71,7 +71,10 @@ VOID WINAPI DllExtraAttachDetachCom(BOOL bAttach)
 		}
 		else
 		{
+			DetourTransactionBegin();
+			DetourUpdateThread(GetCurrentThread());
 			DetourDetach((PVOID*)(&TrueComOpen), (PVOID)DetourComOpen);
+			DetourTransactionCommit();
 		}
 	}
 }

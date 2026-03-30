@@ -65,7 +65,7 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
 	{
 		// error
-		PrintMessage(L"ERROR: Could retrieve process token information.\n");
+		PrintMessage(L"ERROR: Could not retrieve process token information.\n");
 		return vRequestedPrivs;
 	}
 
@@ -121,7 +121,7 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 	if (bRet == 0)
 	{
 		// error
-		PrintMessage(L"ERROR: Could retrieve process token information.\n");
+		PrintMessage(L"ERROR: Could not retrieve process token information.\n");
 		return FALSE;
 	}
 

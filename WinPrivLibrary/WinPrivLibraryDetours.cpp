@@ -140,7 +140,7 @@ EXTERN_C NTSTATUS NTAPI DetourNtOpenFile(OUT PHANDLE FileHandle,
 		OpenOptions |= FILE_OPEN_FOR_BACKUP_INTENT;
 	}
 
-	DWORD iStatus = TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes,
+	NTSTATUS iStatus = TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes,
 		IoStatusBlock, ShareAccess, OpenOptions);
 
 	if (VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
@@ -242,7 +242,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			else break;
 
 			// lookup the real key name after all redirection has been done
-			SmartPointer<HKEY> hKey(CloseHandle, nullptr);
+			SmartPointer<HKEY> hKey(RegCloseKey, nullptr);
 			if (RegOpenKeyEx(hRootKey, sSubKeyName, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
 			{
 				DWORD iSize;
@@ -258,7 +258,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			}
 
 			// verify key name lookup succeeded
-			if (tInterceptInfo->RegKeyName.Length == NULL) break;
+			if (tInterceptInfo->RegKeyName.Length == 0) break;
 
 			// fetch value name
 			const LPWSTR sValueName = sParams[iParam + 1];
@@ -481,7 +481,7 @@ VOID NTAPI DetourRtlExitUserProcess(_In_ NTSTATUS ExitStatus)
 {
 	if (GetConsoleWindow() != nullptr && VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
-		wprintf(L"\n\nWinPriv target process has finished execution. Please any key to exit this window.\n");
+		wprintf(L"\n\nWinPriv target process has finished execution. Press any key to exit this window.\n");
 		(void)_getch();
 	}
 
@@ -669,13 +669,16 @@ static BOOL __stdcall DetourIsUserAnAdmin()
 static decltype(&CheckTokenMembership) TrueCheckTokenMembership = CheckTokenMembership;
 
 static BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
-                                                _In_ PSID SidToCheck, _Out_ PBOOL IsMember)
+												_In_ PSID SidToCheck, _Out_ PBOOL IsMember)
 {
-	// fetch and allocate the local admin structure
+	// fetch and allocate the local admin structure (once)
 	static SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
-	static PSID LocalAdministratorsGroup = nullptr;
-	AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-		DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &LocalAdministratorsGroup);
+	static PSID LocalAdministratorsGroup = []() -> PSID {
+		PSID pSid = nullptr;
+		AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+			DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &pSid);
+		return pSid;
+	}();
 
 	// get the real value of the function - return if failure
 	const BOOL bRealResult = TrueCheckTokenMembership(TokenHandle, SidToCheck, IsMember);
@@ -770,9 +773,10 @@ static BOOL WINAPI DetourVerifyVersionInfoW(_Inout_ LPOSVERSIONINFOEXW lpVersion
 //  \__, |  \  |  |     |  \__/    |  \ |___ /~~\ |__/
 //
 
-static std::wstring IntToString(int iValue, int iPadding = 5)
+static std::wstring IntToString(int iValue, size_t iPadding = 5)
 {
 	const std::wstring sValue = std::to_wstring(iValue);
+	if (sValue.length() >= iPadding) return sValue;
 	return std::wstring(iPadding - sValue.length(), '0') + sValue;
 }
 
@@ -806,12 +810,11 @@ static void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
 
 		// create the crypto data file
 		DWORD iSizeWritten = 0;
-		SmartPointer<const HANDLE> hFile(CloseHandle, CreateFile(sFilePath.c_str(), GENERIC_ALL, 
+		SmartPointer<HANDLE> hFile(CloseHandle, CreateFile(sFilePath.c_str(), GENERIC_ALL, 
 			FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
 		if (hFile == INVALID_HANDLE_VALUE ||
 			WriteFile(hFile, pData, iDataLen, &iSizeWritten, nullptr) == 0 ||
-			iDataLen != iSizeWritten ||
-			CloseHandle(hFile) == 0)
+			iDataLen != iSizeWritten)
 		{
 			PrintMessage(L"ERROR: Problem committing data to crypto data file.\n");
 			return;
@@ -894,13 +897,15 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
                                                  _Out_opt_ SQLSMALLINT* pcchConnStrOut, SQLUSMALLINT fDriverCompletion)
 {
 	// handle search and replace
+	LPWSTR szAllocatedConnStr = nullptr;
 	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
 		// do search replace and create a new string from the result
 		const std::wstring sPassedConnection(szConnStrIn, (cchConnStrIn == SQL_NTS) ? wcslen(szConnStrIn) : cchConnStrIn);
 		const std::wstring sModifiedConnection = std::regex_replace(sPassedConnection,
 			std::wregex(_wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH)), _wgetenv(WINPRIV_EV_SQL_CONNECT_REPLACE));
-		szConnStrIn = _wcsdup(sModifiedConnection.c_str());
+		szAllocatedConnStr = _wcsdup(sModifiedConnection.c_str());
+		szConnStrIn = szAllocatedConnStr;
 		cchConnStrIn = SQL_NTS;
 	}
 
@@ -912,8 +917,10 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 		PrintMessage(L"SQL Connection String: %s", sPassedConnection.c_str());
 	}
 
-	return TrueSQLDriverConnectW(hdbc, hwnd, szConnStrIn, cchConnStrIn, szConnStrOut,
+	const SQLRETURN iResult = TrueSQLDriverConnectW(hdbc, hwnd, szConnStrIn, cchConnStrIn, szConnStrOut,
 		cchConnStrOutMax, pcchConnStrOut, fDriverCompletion);
+	free(szAllocatedConnStr);
+	return iResult;
 }
 
 //   __   __            __   ___ ___  __        __   __
@@ -1068,8 +1075,6 @@ EXTERN_C VOID WINAPI DllExtraAttachDetach(bool bAttach)
 
 EXTERN_C LPWSTR SearchReplace(LPWSTR sInputString, LPWSTR sSearchString, LPWSTR sReplaceString)
 {
-	std::wstring sSearch(sSearchString);
-	std::wstring sReplace(sReplaceString);
 	const std::wstring sResult = std::regex_replace(sInputString, std::wregex(sSearchString), sReplaceString);
 	return _wcsdup(sResult.c_str());
 }
