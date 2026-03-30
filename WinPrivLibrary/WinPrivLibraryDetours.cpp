@@ -328,7 +328,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 
 	// allocate space for name and lookup
 	NTSTATUS iStatus = -1;
-	const PKEY_NAME_INFORMATION pNameInfo = static_cast<PKEY_NAME_INFORMATION>(malloc(iKeyNameSize));
+	SmartPointer<PKEY_NAME_INFORMATION> pNameInfo(free, static_cast<PKEY_NAME_INFORMATION>(malloc(iKeyNameSize)));
 	if (pNameInfo != nullptr && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo,
 		iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
 	{
@@ -429,9 +429,6 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			}
 		}
 	}
-
-	// cleanup
-	if (pNameInfo != nullptr) free(pNameInfo);
 
 	// return the real value if no match was found
 	if (iStatus == -1)
