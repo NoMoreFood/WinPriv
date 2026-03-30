@@ -10,6 +10,8 @@
 #include <wtsapi32.h>
 #include <userenv.h>
 #include <memory>
+#include <Sddl.h>
+#include <LMCons.h>
 
 #include "WinPrivShared.h"
 
@@ -37,12 +39,17 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 		.nShow = SW_SHOWNORMAL
 	};
 	
-	ShellExecuteEx(&tShellExecInfo);
+	if (ShellExecuteEx(&tShellExecInfo) == FALSE)
+	{
+		PrintMessage(L"ERROR: Could not relaunch as elevated.\n");
+		return __LINE__;
+	}
 
 	// wait for completion and return process exit code
 	WaitForSingleObject(tShellExecInfo.hProcess, INFINITE);
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(tShellExecInfo.hProcess, &iExitCode);
+	CloseHandle(tShellExecInfo.hProcess);
 	return iExitCode;
 }
 
@@ -108,15 +115,18 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	
 	// relaunch process under altered security policy
 	const LPWSTR sBlock = GetEnvironmentStrings();
-	if (CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE, nullptr, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock,
-		sCurrentDir, &o_StartInfo, &o_ProcessInfo) == 0)
+	const BOOL bCreateResult = CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE, nullptr, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock,
+		sCurrentDir, &o_StartInfo, &o_ProcessInfo);
+	FreeEnvironmentStrings(sBlock);
+
+	// zero out the password from memory as early as possible
+	SecureZeroMemory(sPassword, sizeof(sPassword));
+
+	if (bCreateResult == 0)
 	{
 		PrintMessage(L"ERROR: Problem starting process (%d) (%s).\n", GetLastError(), sCommand.c_str());
 		return __LINE__;
 	}
-
-	// zero out the password from memory
-	SecureZeroMemory(sPassword, _countof(sPassword));
 
 	// return process exit code
 	WaitForSingleObject(o_ProcessInfo.hProcess, INFINITE);
@@ -126,15 +136,6 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	CloseHandle(o_ProcessInfo.hThread);
 	return iExitCode;
 }
-#include <Windows.h>
-#include <WtsApi32.h>
-#include <UserEnv.h>
-#include <Sddl.h>
-#include <LMCons.h>
-#include <string>
-
-#pragma comment(lib, "Wtsapi32.lib")
-#pragma comment(lib, "Userenv.lib")
 
 static constexpr WCHAR SYSTEM_SID_STRING[] = L"S-1-5-18";
 static constexpr DWORD INVALID_SESSION = 0xFFFFFFFF;
@@ -248,7 +249,7 @@ static DWORD FindTargetSession(const std::wstring& username)
     return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : firstDisconnectedSession;
 }
 
-int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {})
+int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username)
 {
     // Find appropriate session for target user
     const DWORD targetSessionId = FindTargetSession(username);
@@ -285,13 +286,15 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username =
     }
 
     // Wait for process to complete and clean up handles
-    const SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
-    const SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
+    SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
+    SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
 
-    if (WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_FAILED)
+    if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
     {
         return __LINE__;
     }
 
-    return 0;
+    DWORD iExitCode = 0;
+    GetExitCodeProcess(hProcess, &iExitCode);
+    return iExitCode;
 }

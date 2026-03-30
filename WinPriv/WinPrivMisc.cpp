@@ -58,7 +58,7 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 			}
 
 			// cleanup
-			if (sDisplayName == nullptr) free(sDisplayName);
+			if (sDisplayName != nullptr) free(sDisplayName);
 		}
 	}
 
@@ -160,7 +160,7 @@ Optional Switches
 /PolicyBlock
 
    This option will cause all registry queries to HKCU\Software\Policies and
-   HKCU\Software\Policies. This option is convenience option that actually uses
+   HKLM\Software\Policies. This option is convenience option that actually uses
    the /RegBlock functionality.
 
 /BypassFileSecurity
@@ -265,13 +265,13 @@ Optional Switches
    Runs the specified program as the user that is logged into the console. 
    If no user is logged into the console, the first active remote user 
    session is used.  This can be useful when WinPriv is running as under
-   a system contenxt such as a scheduled task or system management agent.
+   a system context such as a scheduled task or system management agent.
 
 /RunAsUser [UserName]
 
    Runs the specified program as the specified user. The user must be logged
    into the system at the console or remotely. This can be useful when WinPriv
-   is running as under a system contenxt such as a scheduled task or
+   is running as under a system context such as a scheduled task or
    system management agent.
 
 Other Notes & Limitations

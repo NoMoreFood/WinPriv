@@ -120,9 +120,10 @@ public:
 
 	SmartPointer(SmartPointer&& src) noexcept
 	{
-		m_Cleanup = src.m_Cleanup;
+		m_Cleanup = std::move(src.m_Cleanup);
 		m_Data = src.m_Data;
 		src.m_Data = nullptr;
+		src.m_Cleanup = nullptr;
 	}
 
 	void Cleanup()
@@ -130,6 +131,7 @@ public:
 		if (m_Data != nullptr && m_Data != INVALID_HANDLE_VALUE)
 		{
 			m_Cleanup(m_Data);
+			m_Data = nullptr;
 		}
 	}
 
@@ -138,9 +140,10 @@ public:
 		if (std::addressof(*this) != std::addressof(src))
 		{
 			Cleanup();
-			m_Cleanup = src.m_Cleanup;
+			m_Cleanup = std::move(src.m_Cleanup);
 			m_Data = src.m_Data;
 			src.m_Data = nullptr;
+			src.m_Cleanup = nullptr;
 		}
 
 		return *this;
