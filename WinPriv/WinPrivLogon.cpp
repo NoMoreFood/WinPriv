@@ -248,7 +248,7 @@ static DWORD FindTargetSession(const std::wstring& username)
     return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : firstDisconnectedSession;
 }
 
-int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username)
+int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait)
 {
     // Find appropriate session for target user
     const DWORD targetSessionId = FindTargetSession(username);
@@ -284,10 +284,15 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username)
         return __LINE__;
     }
 
-    // Wait for process to complete and clean up handles
     SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
     SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
 
+    if (!bWait)
+    {
+        return 0;
+    }
+
+    // Wait for process to complete and clean up handles
     if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
     {
         return __LINE__;
