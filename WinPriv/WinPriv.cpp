@@ -29,7 +29,7 @@
 
 extern int LaunchNewLogon(int iArgc, wchar_t* aArgv[]);
 extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
-extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {});
+extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {}, bool bWait = true);
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
@@ -193,6 +193,15 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 			return LaunchAsUser(sProcessParams);
+		}
+
+		// this switch instructs winpriv to launch the target process as the
+		// current console user without waiting for it to complete
+		else if (_wcsicmp(sArg.c_str(), L"/RunAsConsoleUserNoWait") == 0)
+		{
+			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
+				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			return LaunchAsUser(sProcessParams, {}, false);
 		}
 
 		// this switch instructs winpriv to launch the target process as the

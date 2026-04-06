@@ -187,7 +187,7 @@ Optional Switches
    system has an in-use file. This option will have no effect if the file is
    in-use by a program on the same system where WinPriv is executed.
 
-/AdminImpersonate
+)" LR"(/AdminImpersonate
 
    This option causes any local administrator check using IsUserAnAdmin() or
    CheckTokenMembership() to unconditionally succeed regardless if the user is
@@ -264,6 +264,12 @@ Optional Switches
    If no user is logged into the console, the first active remote user 
    session is used.  This can be useful when WinPriv is running as under
    a system context such as a scheduled task or system management agent.
+
+/RunAsConsoleUserNoWait
+
+   Same as /RunAsConsoleUser but does not wait for the launched process to
+   complete before returning. WinPriv will return immediately after the
+   process is started.
 
 /RunAsUser [UserName]
 
