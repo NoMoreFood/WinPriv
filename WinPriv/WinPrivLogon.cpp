@@ -10,6 +10,7 @@
 #include <wtsapi32.h>
 #include <userenv.h>
 #include <memory>
+#include <array>
 #include <Sddl.h>
 #include <LMCons.h>
 
@@ -27,7 +28,7 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 
 	// get the current working directory to pass to the child process
 	WCHAR sCurrentDir[MAX_PATH + 1];
-	_wgetcwd(sCurrentDir, _countof(sCurrentDir));
+	(void) _wgetcwd(sCurrentDir, _countof(sCurrentDir));
 
 	// re-execute the process to run elevated with designated initializers
 	SHELLEXECUTEINFO tShellExecInfo{
@@ -142,16 +143,16 @@ static constexpr DWORD INVALID_SESSION = 0xFFFFFFFF;
 static std::wstring GetSidStringForUser(const std::wstring& username)
 {
     // Prepare buffers for SID and domain lookup
-    BYTE sidBuffer[SECURITY_MAX_SID_SIZE];
+    std::array<BYTE, SECURITY_MAX_SID_SIZE> sidBuffer{};
     WCHAR domainBuffer[DNLEN + 1];
-    DWORD sidSize = sizeof(sidBuffer);
+    DWORD sidSize = sidBuffer.size();
     DWORD domainSize = DNLEN + 1;
     SID_NAME_USE sidUse;
     SmartPointer<LPWSTR> sidString(LocalFree, nullptr);
 
     // Resolve username to SID and convert to string
-    if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer, &sidSize, domainBuffer, &domainSize, &sidUse) ||
-        !ConvertSidToStringSidW(sidBuffer, &sidString))
+    if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer.data(), &sidSize, domainBuffer, &domainSize, &sidUse) ||
+        !ConvertSidToStringSidW(sidBuffer.data(), &sidString))
     {
         return {};
     }

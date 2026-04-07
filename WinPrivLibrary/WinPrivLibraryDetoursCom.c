@@ -53,10 +53,10 @@ VOID WINAPI DllExtraAttachDetachCom(BOOL bAttach)
 		{
 			const IID CLSID_CADOConnection = { 0x00000514, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x6D, 0x2E, 0xA4 } };
 			const IID IID_Connection15 = { 0x00000515, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x6D, 0x2E, 0xA4 } };
-			Connection15* tConnection;
+			Connection15* tConnection = NULL;
 
 			// create an object in order to get the virtual table pointer
-			CoCreateInstance(&CLSID_CADOConnection, NULL, CLSCTX_INPROC_SERVER, &IID_Connection15, &tConnection);
+			(void) CoCreateInstance(&CLSID_CADOConnection, NULL, CLSCTX_INPROC_SERVER, &IID_Connection15, &tConnection);
 			if (tConnection == NULL) return;
 
 			// apply the detour to the vtable function
