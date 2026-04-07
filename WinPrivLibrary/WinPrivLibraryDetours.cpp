@@ -32,7 +32,6 @@
 #include <vector>
 #include <regex>
 #include <locale>
-#include <codecvt>
 #include <fstream>
 #include <atomic>
 
@@ -73,7 +72,8 @@ static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 
 		// get the real path name using the computer and share name
 		SmartPointer<PSHARE_INFO_502> tShareInfo(NetApiBufferFree, nullptr);
-		(void) NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)&tShareInfo);
+		if (NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)&tShareInfo) != NERR_Success || tShareInfo == nullptr)
+			return false;
 		const bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
 		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
 	}
@@ -81,14 +81,12 @@ static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 	// see if the path looks like a local path
 	else if (std::regex_match(sFileName, tMatches, tRegexLocal))
 	{
-		wprintf(L"Local Path %s!\r\n", tMatches[1].str().c_str());
 		sPath = tMatches[1].str();
 	}
 
 	// unrecognized path type
 	else
 	{
-		wprintf(L"Unrecognized Path: %s!\r\n", sFileName.c_str());
 		return false;
 	}
 
@@ -127,9 +125,9 @@ static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 }
 
 static decltype(&NtOpenFile) TrueNtOpenFile = (decltype(&NtOpenFile))
-GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtOpenFile");
+GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtOpenFile");
 static decltype(&NtCreateFile) TrueNtCreateFile = (decltype(&NtCreateFile))
-GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtCreateFile");
+GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtCreateFile");
 
 EXTERN_C NTSTATUS NTAPI DetourNtOpenFile(OUT PHANDLE FileHandle,
 	IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, OUT PIO_STATUS_BLOCK IoStatusBlock,
@@ -205,7 +203,7 @@ RegInterceptInfo;
 
 static NTSTATUS(WINAPI* TrueNtQueryValueKey)(_In_ HANDLE KeyHandle, _In_ PUNICODE_STRING ValueName, _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
                                              _Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength) = (decltype(TrueNtQueryValueKey))
-	GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtQueryValueKey");
+	GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryValueKey");
 
 EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	_In_ PUNICODE_STRING ValueName, _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
@@ -327,7 +325,8 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	}
 
 	// allocate space for name and lookup
-	NTSTATUS iStatus = -1;
+	bool bIntercepted = false;
+	NTSTATUS iStatus = STATUS_UNSUCCESSFUL;
 	SmartPointer<PKEY_NAME_INFORMATION> pNameInfo(free, static_cast<PKEY_NAME_INFORMATION>(malloc(iKeyNameSize)));
 	if (pNameInfo != nullptr && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo,
 		iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
@@ -343,6 +342,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 				tRegOverrideInfo->RegValueType == -1)
 			{
 				*ResultLength = 0;
+				bIntercepted = true;
 				iStatus = STATUS_OBJECT_NAME_NOT_FOUND;
 				break;
 			}
@@ -355,6 +355,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 					KeyValueInformationClass == KeyValueFullInformationAlign64)
 				{
 					const UINT_PTR alignment = (KeyValueInformationClass == KeyValueFullInformation) ? 32 : 64;
+					bIntercepted = true;
 					iStatus = Length >= sizeof(ULONG) ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
 					*ResultLength = static_cast<ULONG>(align(offsetof(KEY_VALUE_FULL_INFORMATION, Name) + tRegOverrideInfo->RegValueName.Length + tRegOverrideInfo->RegValueDataSize,
 						alignment));
@@ -400,6 +401,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 				{
 					// calculate required size and set default status
 					const UINT_PTR alignment = (KeyValueInformationClass == KeyValuePartialInformation) ? 32 : 64;
+					bIntercepted = true;
 					iStatus = Length >= sizeof(ULONG) ? STATUS_BUFFER_OVERFLOW : STATUS_BUFFER_TOO_SMALL;
 					*ResultLength = static_cast<ULONG>(align(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) + tRegOverrideInfo->RegValueDataSize, alignment));
 
@@ -431,7 +433,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 	}
 
 	// return the real value if no match was found
-	if (iStatus == -1)
+	if (!bIntercepted)
 	{
 		iStatus = TrueNtQueryValueKey(KeyHandle, ValueName, KeyValueInformationClass,
 			KeyValueInformation, Length, ResultLength);
@@ -443,7 +445,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 static NTSTATUS(WINAPI* TrueNtEnumerateValueKey)(_In_ HANDLE KeyHandle, _In_ ULONG Index,
                                                  _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass, _Out_opt_ PVOID KeyValueInformation,
                                                  _In_ ULONG Length, _Out_ PULONG ResultLength) = (decltype(TrueNtEnumerateValueKey))
-	GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtEnumerateValueKey");
+	GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtEnumerateValueKey");
 
 EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ ULONG Index,
 	_In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass, _Out_opt_ PVOID KeyValueInformation,
@@ -472,7 +474,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 //
 
 VOID(NTAPI* TrueRtlExitUserProcess)(_In_ NTSTATUS 	ExitStatus) =
-(decltype(TrueRtlExitUserProcess))GetProcAddress(LoadLibrary(L"ntdll.dll"), "RtlExitUserProcess");
+(decltype(TrueRtlExitUserProcess))GetProcAddress(GetModuleHandle(L"ntdll.dll"), "RtlExitUserProcess");
 
 VOID NTAPI DetourRtlExitUserProcess(_In_ NTSTATUS ExitStatus)
 {
@@ -643,8 +645,10 @@ static INT WSAAPI DetourWSALookupServiceNextA(_In_ HANDLE hLookup, _In_ DWORD dw
 	if (iRet == -1 || lpqsResults->dwNumberOfCsAddrs == 0) return iRet;
 
 	// inspect the packet and update the address
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> tConverter;
-	const std::wstring sQueryNameWide = tConverter.from_bytes(lpqsResults->lpszServiceInstanceName);
+	const std::string sNarrow(lpqsResults->lpszServiceInstanceName);
+	const int iWideLen = MultiByteToWideChar(CP_ACP, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), nullptr, 0);
+	std::wstring sQueryNameWide(iWideLen, L'\0');
+	MultiByteToWideChar(CP_ACP, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), sQueryNameWide.data(), iWideLen);
 	UpdateIpAddress(sQueryNameWide.c_str(),
 		lpqsResults->lpcsaBuffer->RemoteAddr.lpSockaddr);
 
@@ -926,17 +930,16 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 //
 
 EXTERN_C VOID WINAPI DllExtraAttachDetachCom(BOOL bAttach);
-static bool bComDetoursNeedToBeInitialized = true;
+static std::atomic<bool> bComDetoursNeedToBeInitialized = true;
 
 static decltype(&CoInitializeEx) TrueCoInitializeEx = CoInitializeEx;
 
 EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitializeEx(_In_opt_ LPVOID pvReserved, _In_ DWORD dwCoInit)
 {
 	const HRESULT iResult = TrueCoInitializeEx(pvReserved, dwCoInit);
-	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized)
+	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized.exchange(false))
 	{
 		// attach com-based detours
-		bComDetoursNeedToBeInitialized = false;
 		DllExtraAttachDetachCom(TRUE);
 	}
 	return iResult;
@@ -947,10 +950,9 @@ static decltype(&CoInitialize) TrueCoInitialize = CoInitialize;
 EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitialize(_In_opt_ LPVOID pvReserved)
 {
 	const HRESULT iResult = TrueCoInitialize(pvReserved);
-	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized)
+	if ((iResult == S_OK || iResult == S_FALSE) && bComDetoursNeedToBeInitialized.exchange(false))
 	{
 		// attach com-based detours
-		bComDetoursNeedToBeInitialized = false;
 		DllExtraAttachDetachCom(TRUE);
 	}
 	return iResult;

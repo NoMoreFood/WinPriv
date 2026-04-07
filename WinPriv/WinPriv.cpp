@@ -20,7 +20,6 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#include <codecvt>
 
 #include "WinPrivShared.h"
 #include "WinPrivResource.h"
@@ -61,8 +60,9 @@ bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iReso
 	}
 
 	// write the resource into the temporary file
-	DWORD wSizeRes = SizeofResource(nullptr, hRes);
-	if (WriteFile(hTempFile, hResourceLoadedX86, wSizeRes, &wSizeRes, nullptr) == 0)
+	const DWORD wSizeRes = SizeofResource(nullptr, hRes);
+	DWORD wBytesWritten = 0;
+	if (WriteFile(hTempFile, hResourceLoadedX86, wSizeRes, &wBytesWritten, nullptr) == 0 || wBytesWritten != wSizeRes)
 	{
 		PrintMessage(L"ERROR: Problem writing library file.\n");
 		return false;
@@ -150,11 +150,14 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.rfind(L".exe")) + L".cfg";
 	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
-		std::wifstream oFileStream(sCfgPath);
-		oFileStream.imbue(std::locale(std::locale(), new std::codecvt_utf8<wchar_t>));
-		std::wstringstream oStringStream;
+		std::ifstream oFileStream(sCfgPath);
+		std::ostringstream oStringStream;
 		oStringStream << oFileStream.rdbuf();
-		aArgv = CommandLineToArgvW((L"IGNORE " + oStringStream.str()).c_str(), &iArgc);
+		const std::string sNarrow = oStringStream.str();
+		const int iWideLen = MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), nullptr, 0);
+		std::wstring sWide(iWideLen, L'\0');
+		MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), sWide.data(), iWideLen);
+		aArgv = CommandLineToArgvW((L"IGNORE " + sWide).c_str(), &iArgc);
 	}
 
 	// enumerate arguments
@@ -596,7 +599,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		(!bUseShellExecute && sProcessParams.empty()))
 	{
 		PrintMessage(L"%s", GetWinPrivHelp().c_str());
-		return __LINE__;
+		return 0;
 	}
 
 	// setup the registry override and block values to pass to child processes

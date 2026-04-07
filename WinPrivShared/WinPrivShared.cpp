@@ -15,6 +15,7 @@
 #define _NTDEF_
 #include <NTSecAPI.h>
 
+#include <array>
 #include <string>
 #include <vector>
 #include <cctype>
@@ -31,7 +32,7 @@ std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEn
 		std::wstring sArg(vArgs.at(iCurrent));
 
 		if (std::ranges::count_if(sArg,
-			[](const wchar_t c) { return isblank(c); }) > 0)
+			[](const wchar_t c) { return iswblank(c); }) > 0)
 		{
 			// enclose the parameter in double quotes
 			sArg = L'"' + sArg + L'"';
@@ -59,10 +60,10 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	}
 
 	// get the current user sid out of the token
-	const BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
-	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
+	std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aBuffer = {};
+	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer.data());
 	DWORD iBytesFilled = 0;
-	if (GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled) == 0)
+	if (GetTokenInformation(hToken, TokenUser, tTokenUser, aBuffer.size(), &iBytesFilled) == 0)
 	{
 		// error
 		PrintMessage(L"ERROR: Could not retrieve process token information.\n");
@@ -114,10 +115,10 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 	}
 
 	// get the current user sid out of the token
-	const BYTE aBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
-	const PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer);
+	std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aBuffer = {};
+	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer.data());
 	DWORD iBytesFilled = 0;
-	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, sizeof(aBuffer), &iBytesFilled);
+	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, aBuffer.size(), &iBytesFilled);
 	if (bRet == 0)
 	{
 		// error
