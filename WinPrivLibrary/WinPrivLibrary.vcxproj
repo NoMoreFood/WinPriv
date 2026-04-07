@@ -86,9 +86,6 @@
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalDependencies>kernel32.lib;user32.lib;ws2_32.lib;iphlpapi.lib;netapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
-    <PostBuildEvent>
-      <Command>signtool.exe sign /fd sha256 /tr http://time.certum.pl/ /td sha256 /d WinPriv /du https://github.com/NoMoreFood/WinPriv "$(TargetPath)"</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -122,9 +119,6 @@
     <Bscmake>
       <PreserveSbr>true</PreserveSbr>
     </Bscmake>
-    <PostBuildEvent>
-      <Command>signtool.exe sign /fd sha256 /tr http://time.certum.pl/ /td sha256 /d WinPriv /du https://github.com/NoMoreFood/WinPriv "$(TargetPath)"</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="WinPrivLibraryDetours.cpp" />
@@ -142,4 +136,5 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <Import Project="$(MSBuildThisFileDirectory)..\CodeSigning.targets" />
 </Project>
