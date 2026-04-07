@@ -73,7 +73,7 @@ static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 
 		// get the real path name using the computer and share name
 		SmartPointer<PSHARE_INFO_502> tShareInfo(NetApiBufferFree, nullptr);
-		NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)&tShareInfo);
+		(void) NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)&tShareInfo);
 		const bool bNeedsBackslash = tShareInfo->shi502_path[wcslen(tShareInfo->shi502_path) - 1] != L'\\';
 		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
 	}
@@ -279,13 +279,13 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			if (tInterceptInfo->RegValueType == REG_DWORD)
 			{
 				tInterceptInfo->RegValueData = static_cast<DWORD*>(malloc(sizeof(DWORD)));
-				swscanf(sData, L"%li", static_cast<DWORD*>(tInterceptInfo->RegValueData));
+				(void) swscanf(sData, L"%li", static_cast<DWORD*>(tInterceptInfo->RegValueData));
 				tInterceptInfo->RegValueDataSize = sizeof(DWORD);
 			}
 			else if (tInterceptInfo->RegValueType == REG_QWORD)
 			{
 				tInterceptInfo->RegValueData = static_cast<unsigned __int64*>(malloc(sizeof(unsigned __int64)));
-				swscanf(sData, L"%lli", static_cast<unsigned __int64*>(tInterceptInfo->RegValueData));
+				(void) swscanf(sData, L"%lli", static_cast<unsigned __int64*>(tInterceptInfo->RegValueData));
 				tInterceptInfo->RegValueDataSize = sizeof(unsigned __int64);
 			}
 			else if (tInterceptInfo->RegValueType == REG_SZ)
@@ -297,7 +297,7 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 			{
 				tInterceptInfo->RegValueData = malloc(wcslen(sData) / 2);
 				for (size_t iChar = 0; iChar < wcslen(sData) / 2; iChar++)
-					swscanf(&sData[iChar * 2], L"%02hhX", &(static_cast<PBYTE>(tInterceptInfo->RegValueData)[iChar]));
+					(void) swscanf(&sData[iChar * 2], L"%02hhX", &(static_cast<PBYTE>(tInterceptInfo->RegValueData)[iChar]));
 				tInterceptInfo->RegValueDataSize = static_cast<DWORD>(wcslen(sData) / 2);
 			}
 			else if (tInterceptInfo->RegValueType == -1)
@@ -527,7 +527,7 @@ static ULONG WINAPI DetourGetAdaptersInfo(_Out_ PIP_ADAPTER_INFO AdapterInfo, _I
 		for (size_t iByte = 0; iByte < wcslen(sAddressString) / 2 &&
 			iByte < MAX_ADAPTER_ADDRESS_LENGTH; iByte++)
 		{
-			swscanf(&sAddressString[iByte * 2], L"%2hhx", &pInfo->Address[iByte]);
+			(void) swscanf(&sAddressString[iByte * 2], L"%2hhx", &pInfo->Address[iByte]);
 			pInfo->AddressLength = static_cast<UINT>(iByte + 1);
 		}
 	}
@@ -553,7 +553,7 @@ static ULONG WINAPI DetourGetAdaptersAddresses(_In_ ULONG Family, _In_ ULONG Fla
 		for (size_t iByte = 0; iByte < wcslen(sAddressString) / 2 &&
 			iByte < MAX_ADAPTER_ADDRESS_LENGTH; iByte++)
 		{
-			swscanf(&sAddressString[iByte * 2], L"%2hhx", &pInfo->PhysicalAddress[iByte]);
+			(void) swscanf(&sAddressString[iByte * 2], L"%2hhx", &pInfo->PhysicalAddress[iByte]);
 			pInfo->PhysicalAddressLength = static_cast<ULONG>(iByte + 1);
 		}
 	}
