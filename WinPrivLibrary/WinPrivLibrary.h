@@ -8,7 +8,7 @@
 
 NTSTATUS(WINAPI * NtQueryKey)(_In_ HANDLE KeyHandle, _In_ DWORD KeyInformationClass,
 	_Out_opt_ PVOID KeyInformation, _In_ ULONG Length, _Out_ PULONG ResultLength) = (decltype(NtQueryKey))
-	GetProcAddress(LoadLibrary(L"ntdll.dll"), "NtQueryKey");
+	GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryKey");
 
 typedef enum _KEY_INFORMATION_CLASS {
 	KeyBasicInformation = 0,
