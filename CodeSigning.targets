@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="SignOutput" AfterTargets="Link">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -Command &quot;$cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object { $_.NotAfter -gt (Get-Date) } | Sort-Object NotAfter -Descending | Select-Object -First 1; if ($cert) { try { $r = Set-AuthenticodeSignature -FilePath '$(TargetPath)' -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://time.certum.pl/' -ErrorAction Stop; if ($r.Status -ne 'Valid') { Write-Host $r.StatusMessage; exit 1 } else { Write-Host $r.Path } } catch { Write-Host $_; exit 1 } }&quot;" />
+  </Target>
+</Project>
