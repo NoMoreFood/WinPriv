@@ -187,7 +187,15 @@ Optional Switches
    system has an in-use file. This option will have no effect if the file is
    in-use by a program on the same system where WinPriv is executed.
 
-)" LR"(/AdminImpersonate
+/MediumPlus
+
+   This option launches the target process using the plus variant of the
+   current user token's mandatory integrity level. For example, a process
+   running at Medium integrity will be launched at Medium Plus integrity.
+   This can be useful when an application requires a higher integrity level
+   than the current user's token provides without fully elevating to High.
+
+/AdminImpersonate
 
    This option causes any local administrator check using IsUserAnAdmin() or
    CheckTokenMembership() to unconditionally succeed regardless if the user is

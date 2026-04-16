@@ -120,6 +120,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SHOW, L"");
 	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SEARCH, L"");
 	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_REPLACE, L"");
+	SetEnvironmentVariable(WINPRIV_EV_MEDIUM_PLUS, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_PARENT_PID, std::to_wstring(GetCurrentProcessId()).c_str());
 
@@ -187,6 +188,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			// launch as elevated
 			return LaunchElevated(iArgc, aArgv);
+		}
+
+		// this switch instructs winpriv to launch the sub-process using the plus variant
+		// of the impersonated user token's current mandatory integrity level
+		else if (_wcsicmp(sArg.c_str(), L"/MediumPlus") == 0)
+		{
+			SetEnvironmentVariable(WINPRIV_EV_MEDIUM_PLUS, L"1");
 		}
 
 		// this switch instructs winpriv to launch the target process as the
