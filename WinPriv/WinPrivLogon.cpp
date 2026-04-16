@@ -270,6 +270,24 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
         return __LINE__;
     }
 
+    // if requested, set the token integrity level to the "plus" variant of the current level
+    if (VariableIsSet(WINPRIV_EV_MEDIUM_PLUS, 1))
+    {
+        // build the new integrity SID at Medium Plus level
+        SID_IDENTIFIER_AUTHORITY mlAuthority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+        SmartPointer<PSID> pNewSid(FreeSid, nullptr);
+        PSID pRawSid = nullptr;
+        if (AllocateAndInitializeSid(&mlAuthority, 1, SECURITY_MANDATORY_MEDIUM_PLUS_RID, 0, 0, 0, 0, 0, 0, 0, &pRawSid))
+        {
+            pNewSid = pRawSid;
+            TOKEN_MANDATORY_LABEL tml{};
+            tml.Label.Attributes = SE_GROUP_INTEGRITY;
+            tml.Label.Sid = pNewSid;
+            SetTokenInformation(hPrimaryToken, TokenIntegrityLevel, &tml,
+                sizeof(TOKEN_MANDATORY_LABEL) + GetLengthSid(pNewSid));
+        }
+    }
+
     // Configure process to run on interactive desktop
     STARTUPINFOW si = { sizeof(si) };
     si.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
