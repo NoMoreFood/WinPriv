@@ -119,7 +119,7 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 	std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aBuffer = {};
 	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer.data());
 	DWORD iBytesFilled = 0;
-	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, aBuffer.size(), &iBytesFilled);
+	const BOOL bRet = GetTokenInformation(hToken, TokenUser, tTokenUser, static_cast<DWORD>(aBuffer.size()), &iBytesFilled);
 	if (bRet == 0)
 	{
 		// error
