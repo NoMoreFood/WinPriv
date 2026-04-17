@@ -145,7 +145,7 @@ static std::wstring GetSidStringForUser(const std::wstring& username)
     // Prepare buffers for SID and domain lookup
     std::array<BYTE, SECURITY_MAX_SID_SIZE> sidBuffer{};
     WCHAR domainBuffer[DNLEN + 1];
-    DWORD sidSize = sidBuffer.size();
+    DWORD sidSize = static_cast<DWORD>(sidBuffer.size());
     DWORD domainSize = DNLEN + 1;
     SID_NAME_USE sidUse;
     SmartPointer<LPWSTR> sidString(LocalFree, nullptr);
@@ -273,18 +273,19 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
     // if requested, set the token integrity level to the "plus" variant of the current level
     if (VariableIsSet(WINPRIV_EV_MEDIUM_PLUS, 1))
     {
-        // build the new integrity SID at Medium Plus level
         SID_IDENTIFIER_AUTHORITY mlAuthority = SECURITY_MANDATORY_LABEL_AUTHORITY;
         SmartPointer<PSID> pNewSid(FreeSid, nullptr);
-        PSID pRawSid = nullptr;
-        if (AllocateAndInitializeSid(&mlAuthority, 1, SECURITY_MANDATORY_MEDIUM_PLUS_RID, 0, 0, 0, 0, 0, 0, 0, &pRawSid))
+        if (AllocateAndInitializeSid(&mlAuthority, 1, SECURITY_MANDATORY_MEDIUM_PLUS_RID,
+            0, 0, 0, 0, 0, 0, 0, &pNewSid))
         {
-            pNewSid = pRawSid;
             TOKEN_MANDATORY_LABEL tml{};
             tml.Label.Attributes = SE_GROUP_INTEGRITY;
             tml.Label.Sid = pNewSid;
-            SetTokenInformation(hPrimaryToken, TokenIntegrityLevel, &tml,
-                sizeof(TOKEN_MANDATORY_LABEL) + GetLengthSid(pNewSid));
+            if (!SetTokenInformation(hPrimaryToken, TokenIntegrityLevel, &tml,
+                sizeof(TOKEN_MANDATORY_LABEL) + GetLengthSid(pNewSid)))
+            {
+                return __LINE__;
+            }
         }
     }
 

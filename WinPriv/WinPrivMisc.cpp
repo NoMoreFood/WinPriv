@@ -268,27 +268,24 @@ Optional Switches
 
    This option displays a list of available privileges and permissions.
 
-/RunAsConsoleUser
+/RunAsConsoleUser, /RunAsConsoleUserNoWait
 
    Runs the specified program as the user that is logged into the console.
    If no user is logged into the console, the first active remote user
    session is used. This can be useful when WinPriv is running under a system
    context such as a scheduled task or system management agent.
-
-/RunAsConsoleUserNoWait
-
-   Same as /RunAsConsoleUser but does not wait for the launched process to
-   complete before returning. WinPriv will return immediately after the
+   With /RunAsConsoleUserNoWait, WinPriv will return immediately after the
    process is started.
 
-/RunAsUser [UserName]
+/RunAsUser [UserName], /RunAsUserNoWait [UserName]
 
    Runs the specified program as the specified user. The user must be logged
    into the system at the console or remotely. This can be useful when WinPriv
    is running under a system context such as a scheduled task or system
-   management agent.
+   management agent. With /RunAsUserNoWait, WinPriv will return immediately 
+   after the process is started.
 
-Other Notes & Limitations
+Other Notes
 =========================
 - Multiple switches can be specified in a single command. For example, one
   can use multiple /RegBlock and /RegOverride switches to block and override

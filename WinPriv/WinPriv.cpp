@@ -233,6 +233,24 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			return LaunchAsUser(sProcessParams, sUser);
 		}
 
+		// this switch instructs winpriv to launch the target process as the
+		// specified user without waiting for it to complete
+		else if (_wcsicmp(sArg.c_str(), L"/RunAsUserNoWait") == 0)
+		{
+			// one additional parameter is required
+			if (iArg + 1 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			std::wstring sUser(aArgv[++iArg]);
+			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
+				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			wprintf(L"INFO: Launching process as user: %s\n", sProcessParams.c_str());
+			return LaunchAsUser(sProcessParams, sUser, false);
+		}
+
 		// this switch is only called by winpriv to instruct itself that is has
 		// been launched with a new, privileged logon and it now should be able
 		// to launch the target process with the newly acquired privileges.

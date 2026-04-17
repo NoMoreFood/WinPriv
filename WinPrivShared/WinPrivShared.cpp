@@ -63,7 +63,8 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aBuffer = {};
 	PTOKEN_USER tTokenUser = (PTOKEN_USER)(aBuffer.data());
 	DWORD iBytesFilled = 0;
-	if (GetTokenInformation(hToken, TokenUser, tTokenUser, aBuffer.size(), &iBytesFilled) == 0)
+	if (GetTokenInformation(hToken, TokenUser, tTokenUser, 
+		static_cast<DWORD>(aBuffer.size()), &iBytesFilled) == 0)
 	{
 		// error
 		PrintMessage(L"ERROR: Could not retrieve process token information.\n");
