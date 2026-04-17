@@ -20,6 +20,7 @@ FORFILES /S /P "%~dp0." /M "*.last*" /C "CMD /C DEL /Q @path" >NUL 2>&1
 :: zip up executatables
 SET BINDIR=%~dp0
 PUSHD "%BINDIR%"
+SET POWERSHELL=POWERSHELL.EXE -NoProfile -NonInteractive -NoLogo
 %POWERSHELL% -Command "Compress-Archive -LiteralPath @('x86','x64') -DestinationPath '%BINDIR%\WinPriv.zip'"
 POPD
 
