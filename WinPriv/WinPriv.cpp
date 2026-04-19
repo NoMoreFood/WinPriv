@@ -31,6 +31,8 @@ extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
 extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {}, bool bWait = true);
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
+extern BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
+extern BOOL ClearDenyRights(const std::wstring& sAccountName);
 
 bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iResourceId)
 {
@@ -597,6 +599,41 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		else if (_wcsicmp(sArg.c_str(), L"/UseShellExecute") == 0)
 		{
 			bUseShellExecute = true;
+		}
+
+		// grants or revokes a single LSA account right / privilege for a named user account
+		// on the local machine — equivalent to ntrights.exe +r/-r functionality
+		else if (_wcsicmp(sArg.c_str(), L"/GrantRight") == 0 || _wcsicmp(sArg.c_str(), L"/RevokeRight") == 0)
+		{
+			const bool bGrant = _wcsicmp(sArg.c_str(), L"/GrantRight") == 0;
+
+			// two additional parameters are required: <right> <user>
+			if (iArg + 2 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			std::wstring sRight(aArgv[++iArg]);
+			std::wstring sUser(aArgv[++iArg]);
+
+			return ModifyAccountRights(sUser, { sRight }, bGrant) ? 0 : __LINE__;
+		}
+
+		// removes all deny-logon rights from a named user account so that nothing
+		// explicitly blocks the account from network, interactive, RDP, batch, or
+		// service logons on the local machine
+		else if (_wcsicmp(sArg.c_str(), L"/ClearDenyRights") == 0)
+		{
+			// if no username is specified, clear deny rights for all accounts
+			if (iArg + 1 >= iArgc)
+			{
+				return ClearDenyRights(L"") ? 0 : __LINE__;
+			}
+
+			std::wstring sUser(aArgv[++iArg]);
+
+			return ClearDenyRights(sUser) ? 0 : __LINE__;
 		}
 
 		// instruct winpriv to display process execution time
