@@ -268,6 +268,46 @@ Optional Switches
 
    This option displays a list of available privileges and permissions.
 
+/GrantRight <Right> <UserName>
+
+   Grants the specified LSA account right or privilege to the named user or
+   group account on the local machine. The right can be any privilege
+   constant (e.g. SeDebugPrivilege) or logon-right constant (e.g.
+   SeInteractiveLogonRight). Administrator rights are required. This
+   operation takes effect immediately for new logon sessions.
+
+   Examples:
+
+	  /GrantRight SeDebugPrivilege DOMAIN\JDoe
+	  /GrantRight SeBatchLogonRight LocalSvcAccount
+	  /GrantRight SeServiceLogonRight "NT SERVICE\MyService"
+
+/RevokeRight <Right> <UserName>
+
+   Revokes the specified LSA account right or privilege from the named user
+   or group account on the local machine. All arguments follow the same
+   rules as /GrantRight.
+
+   Examples:
+
+	  /RevokeRight SeShutdownPrivilege DOMAIN\JDoe
+	  /RevokeRight SeRemoteInteractiveLogonRight LocalSvcAccount
+
+/ClearDenyRights [UserName]
+
+   Removes all deny-logon rights from the named user or group account,
+   lifting any explicit LSA-level blocks on how the account may log on.
+   If no UserName is specified, deny-logon rights are removed from every
+   account on the local machine. Accounts that have none of those rights
+   are silently skipped. Administrator rights are required.
+   The following rights are cleared if present:
+
+	  SeDenyNetworkLogonRight           (Deny access from the network)
+	  SeDenyInteractiveLogonRight       (Deny local logon)
+	  SeDenyBatchLogonRight             (Deny logon as a batch job)
+	  SeDenyServiceLogonRight           (Deny logon as a service)
+	  SeDenyRemoteInteractiveLogonRight (Deny Remote Desktop logon)
+
 /RunAsConsoleUser, /RunAsConsoleUserNoWait
 
    Runs the specified program as the user that is logged into the console.

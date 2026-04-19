@@ -11,9 +11,7 @@
 #include <wincred.h>
 #include <cinttypes>
 #include <TlHelp32.h>
-
-#define _NTDEF_
-#include <NTSecAPI.h>
+#include <ntlsa.h>
 
 #include <array>
 #include <string>
@@ -176,6 +174,257 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 
 	return bSuccessful;
 }
+
+// deny-logon rights that can explicitly block an account's access
+static const std::vector<std::wstring> g_vDenyRights = {
+	L"SeDenyNetworkLogonRight",             // Deny access to this computer from the network
+	L"SeDenyInteractiveLogonRight",          // Deny log on locally
+	L"SeDenyRemoteInteractiveLogonRight",    // Deny log on through Remote Desktop Services
+	L"SeDenyBatchLogonRight",               // Deny log on as a batch job
+	L"SeDenyServiceLogonRight",             // Deny log on as a service
+};
+
+BOOL ModifyAccountRights(const std::wstring& sAccountName,
+	const std::vector<std::wstring>& vRights, const BOOL bGrant)
+{
+	// resolve the SID for the named account on the local machine
+	BYTE aSidBuffer[SECURITY_MAX_SID_SIZE] = {};
+	DWORD iSidSize = sizeof(aSidBuffer);
+	WCHAR sReferencedDomain[MAX_PATH] = {};
+	DWORD iDomainSize = MAX_PATH;
+	SID_NAME_USE tSidType;
+	if (LookupAccountName(nullptr, sAccountName.c_str(), aSidBuffer, &iSidSize,
+		sReferencedDomain, &iDomainSize, &tSidType) == 0)
+	{
+		PrintMessage(L"ERROR: Could not resolve account '%s': %lu\n",
+			sAccountName.c_str(), GetLastError());
+		return FALSE;
+	}
+
+	// open LSA policy on the local machine
+	LSA_OBJECT_ATTRIBUTES tAttrs{};
+	SmartPointer<LSA_HANDLE> hPolicy(LsaClose, nullptr);
+	NTSTATUS iResult = LsaOpenPolicy(nullptr, &tAttrs,
+		POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT, &hPolicy);
+	if (iResult != STATUS_SUCCESS)
+	{
+		PrintMessage(L"ERROR: Could not open security policy: %lu\n",
+			LsaNtStatusToWinError(iResult));
+		return FALSE;
+	}
+
+	BOOL bSuccessful = TRUE;
+	std::ranges::for_each(vRights, [&](const std::wstring& sRight) {
+		LSA_UNICODE_STRING tRight{
+			.Length = static_cast<USHORT>(sRight.length() * sizeof(WCHAR)),
+			.MaximumLength = static_cast<USHORT>((sRight.length() + 1) * sizeof(WCHAR)),
+			.Buffer = const_cast<PWSTR>(sRight.c_str())
+		};
+
+		if (bGrant)
+		{
+			iResult = LsaAddAccountRights(hPolicy, aSidBuffer, &tRight, 1);
+			if (iResult != STATUS_SUCCESS)
+			{
+				bSuccessful = FALSE;
+				PrintMessage(L"ERROR: Failed to grant right '%s' to '%s': %lu\n",
+					sRight.c_str(), sAccountName.c_str(), LsaNtStatusToWinError(iResult));
+			}
+			else
+			{
+				PrintMessage(L"INFO: Granted right '%s' to '%s'\n",
+					sRight.c_str(), sAccountName.c_str());
+			}
+		}
+		else
+		{
+			iResult = LsaRemoveAccountRights(hPolicy, aSidBuffer, FALSE, &tRight, 1);
+			if (iResult == STATUS_OBJECT_NAME_NOT_FOUND)
+			{
+				// right was not assigned — desired end state already reached, not an error
+			}
+			else if (iResult != STATUS_SUCCESS)
+			{
+				bSuccessful = FALSE;
+				PrintMessage(L"ERROR: Failed to revoke right '%s' from '%s': %lu\n",
+					sRight.c_str(), sAccountName.c_str(), LsaNtStatusToWinError(iResult));
+			}
+			else
+			{
+				PrintMessage(L"INFO: Revoked right '%s' from '%s'\n",
+					sRight.c_str(), sAccountName.c_str());
+			}
+		}
+	});
+
+	return bSuccessful;
+}
+
+static std::vector<std::wstring> QueryAccountRights(const std::wstring& sAccountName)
+{
+	std::vector<std::wstring> vRights;
+
+	// resolve the SID for the named account on the local machine
+	BYTE aSidBuffer[SECURITY_MAX_SID_SIZE] = {};
+	DWORD iSidSize = sizeof(aSidBuffer);
+	WCHAR sReferencedDomain[MAX_PATH] = {};
+	DWORD iDomainSize = MAX_PATH;
+	SID_NAME_USE tSidType;
+	if (LookupAccountName(nullptr, sAccountName.c_str(), aSidBuffer, &iSidSize,
+		sReferencedDomain, &iDomainSize, &tSidType) == 0)
+	{
+		PrintMessage(L"ERROR: Could not resolve account '%s': %lu\n",
+			sAccountName.c_str(), GetLastError());
+		return vRights;
+	}
+
+	// open LSA policy on the local machine
+	LSA_OBJECT_ATTRIBUTES tAttrs{};
+	SmartPointer<LSA_HANDLE> hPolicy(LsaClose, nullptr);
+	NTSTATUS iResult = LsaOpenPolicy(nullptr, &tAttrs, POLICY_LOOKUP_NAMES, &hPolicy);
+	if (iResult != STATUS_SUCCESS)
+	{
+		PrintMessage(L"ERROR: Could not open security policy: %lu\n",
+			LsaNtStatusToWinError(iResult));
+		return vRights;
+	}
+
+	// enumerate all rights currently assigned to this account
+	SmartPointer<PLSA_UNICODE_STRING> pRights(LsaFreeMemory, nullptr);
+	ULONG iCount = 0;
+	iResult = LsaEnumerateAccountRights(hPolicy, aSidBuffer, &pRights, &iCount);
+	if (iResult == STATUS_OBJECT_NAME_NOT_FOUND)
+	{
+		// account exists but has no rights assigned — not an error
+		return vRights;
+	}
+	if (iResult != STATUS_SUCCESS)
+	{
+		PrintMessage(L"ERROR: Could not enumerate rights for '%s': %lu\n",
+			sAccountName.c_str(), LsaNtStatusToWinError(iResult));
+		return vRights;
+	}
+
+	for (ULONG i = 0; i < iCount; i++)
+	{
+		vRights.emplace_back(pRights[i].Buffer, pRights[i].Length / sizeof(WCHAR));
+	}
+
+	return vRights;
+}
+
+BOOL ClearDenyRights(const std::wstring& sAccountName)
+{
+	// if no account name specified, clear deny rights for every account on the machine
+	if (sAccountName.empty())
+	{
+		// open LSA policy with the access needed to enumerate accounts,
+		// read their rights, and remove rights
+		LSA_OBJECT_ATTRIBUTES tAttrs{};
+		SmartPointer<LSA_HANDLE> hPolicy(LsaClose, nullptr);
+		NTSTATUS iResult = LsaOpenPolicy(nullptr, &tAttrs,
+			POLICY_VIEW_LOCAL_INFORMATION | POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT, &hPolicy);
+		if (iResult != STATUS_SUCCESS)
+		{
+			PrintMessage(L"ERROR: Could not open security policy: %lu\n",
+				LsaNtStatusToWinError(iResult));
+			return FALSE;
+		}
+
+		// enumerate all accounts that have any rights assigned on this machine
+		LSA_ENUMERATION_HANDLE hEnum = 0;
+		ULONG iAccountCount = 0;
+		BOOL bSuccessful = TRUE;
+		SmartPointer<PLSA_ENUMERATION_INFORMATION> pAccounts(LsaFreeMemory, nullptr);
+
+		while (LsaEnumerateAccounts(hPolicy, &hEnum,
+			reinterpret_cast<PVOID*>(&pAccounts), ULONG_MAX, &iAccountCount) == STATUS_SUCCESS)
+		{
+			for (ULONG i = 0; i < iAccountCount; i++)
+			{
+				PSID pSid = pAccounts[i].Sid;
+
+				// resolve the SID to an account name for display purposes
+				WCHAR sName[MAX_PATH] = {};
+				DWORD iNameSize = MAX_PATH;
+				WCHAR sDomainName[MAX_PATH] = {};
+				DWORD iDomainNameSize = MAX_PATH;
+				SID_NAME_USE tSidType;
+				LookupAccountSid(nullptr, pSid,
+					sName, &iNameSize,
+					sDomainName, &iDomainNameSize, &tSidType);
+
+				const std::wstring sDisplayName = (iDomainNameSize > 0 && sDomainName[0] != L'\0')
+					? std::wstring(sDomainName) + L"\\" + sName
+					: sName;
+
+				// enumerate all rights currently assigned to this account
+				SmartPointer<PLSA_UNICODE_STRING> pRights(LsaFreeMemory, nullptr);
+				ULONG iRightCount = 0;
+				iResult = LsaEnumerateAccountRights(hPolicy, pSid, &pRights, &iRightCount);
+				if (iResult == STATUS_OBJECT_NAME_NOT_FOUND || iResult != STATUS_SUCCESS) continue;
+
+				// collect whichever deny rights are present on this account
+				std::vector<std::wstring> vToRemove;
+				for (ULONG j = 0; j < iRightCount; j++)
+				{
+					std::wstring sRight(pRights[j].Buffer, pRights[j].Length / sizeof(WCHAR));
+					if (std::ranges::find(g_vDenyRights, sRight) != g_vDenyRights.end())
+					{
+						vToRemove.push_back(sRight);
+					}
+				}
+
+				// remove each deny right directly using the resolved SID
+				for (const auto& sRight : vToRemove)
+				{
+					LSA_UNICODE_STRING tRight{
+						.Length = static_cast<USHORT>(sRight.length() * sizeof(WCHAR)),
+						.MaximumLength = static_cast<USHORT>((sRight.length() + 1) * sizeof(WCHAR)),
+						.Buffer = const_cast<PWSTR>(sRight.c_str())
+					};
+
+					iResult = LsaRemoveAccountRights(hPolicy, pSid, FALSE, &tRight, 1);
+					if (iResult != STATUS_SUCCESS)
+					{
+						bSuccessful = FALSE;
+						PrintMessage(L"ERROR: Failed to revoke '%s' from '%s': %lu\n",
+							sRight.c_str(), sDisplayName.c_str(), LsaNtStatusToWinError(iResult));
+					}
+					else
+					{
+						PrintMessage(L"INFO: Revoked '%s' from '%s'\n",
+							sRight.c_str(), sDisplayName.c_str());
+					}
+				}
+			}
+		}
+
+		return bSuccessful;
+	}
+
+	// enumerate rights actually assigned so we only act on ones that are present
+	const std::vector<std::wstring> vAssigned = QueryAccountRights(sAccountName);
+
+	// intersect the deny list with what is actually assigned so output is meaningful
+	std::vector<std::wstring> vToRemove;
+	for (const auto& sRight : g_vDenyRights)
+	{
+		if (std::ranges::find(vAssigned, sRight) != vAssigned.end())
+		{
+			vToRemove.push_back(sRight);
+		}
+	}
+
+	if (vToRemove.empty())
+	{
+		PrintMessage(L"INFO: No deny rights are assigned to '%s'\n", sAccountName.c_str());
+		return TRUE;
+	}
+
+	return ModifyAccountRights(sAccountName, vToRemove, FALSE);
+}
+
 
 void KillProcess(const std::wstring& sProcessName)
 {

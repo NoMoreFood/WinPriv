@@ -15,6 +15,8 @@
 #ifdef __cplusplus
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
 BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights);
+BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
+BOOL ClearDenyRights(const std::wstring& sAccountName = L"");
 std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
 void KillProcess(const std::wstring& sProcessName);
 #endif
