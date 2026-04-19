@@ -308,6 +308,15 @@ Optional Switches
 	  SeDenyServiceLogonRight           (Deny logon as a service)
 	  SeDenyRemoteInteractiveLogonRight (Deny Remote Desktop logon)
 
+/GrantAllRights <UserName>
+
+   Grants all system privileges and non-deny logon rights to the named user
+   or group account. This includes every privilege enumerated on the local
+   machine (e.g. SeDebugPrivilege, SeShutdownPrivilege) as well as all
+   allow-logon rights. Deny-logon rights are not granted. Administrator
+   rights are required. This operation takes effect immediately for new
+   logon sessions.
+
 /RunAsConsoleUser, /RunAsConsoleUserNoWait
 
    Runs the specified program as the user that is logged into the console.

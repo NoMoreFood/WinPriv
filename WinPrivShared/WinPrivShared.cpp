@@ -184,6 +184,15 @@ static const std::vector<std::wstring> g_vDenyRights = {
 	L"SeDenyServiceLogonRight",             // Deny log on as a service
 };
 
+// allow-logon rights that permit an account to log on in various ways
+static const std::vector<std::wstring> g_vLogonRights = {
+	L"SeNetworkLogonRight",                 // Access this computer from the network
+	L"SeInteractiveLogonRight",             // Allow log on locally
+	L"SeRemoteInteractiveLogonRight",       // Allow log on through Remote Desktop Services
+	L"SeBatchLogonRight",                   // Log on as a batch job
+	L"SeServiceLogonRight",                 // Log on as a service
+};
+
 BOOL ModifyAccountRights(const std::wstring& sAccountName,
 	const std::vector<std::wstring>& vRights, const BOOL bGrant)
 {
@@ -425,6 +434,42 @@ BOOL ClearDenyRights(const std::wstring& sAccountName)
 	return ModifyAccountRights(sAccountName, vToRemove, FALSE);
 }
 
+BOOL GrantAllRights(const std::wstring& sAccountName)
+{
+	// open LSA policy to enumerate all privileges defined on the system
+	LSA_OBJECT_ATTRIBUTES tAttrs{};
+	SmartPointer<LSA_HANDLE> hPolicy(LsaClose, nullptr);
+	NTSTATUS iResult = LsaOpenPolicy(nullptr, &tAttrs, POLICY_VIEW_LOCAL_INFORMATION, &hPolicy);
+	if (iResult != STATUS_SUCCESS)
+	{
+		PrintMessage(L"ERROR: Could not open security policy: %lu\n",
+			LsaNtStatusToWinError(iResult));
+		return FALSE;
+	}
+
+	// enumerate all privileges on the system
+	std::vector<std::wstring> vRightsToGrant;
+	LSA_ENUMERATION_HANDLE hEnum = 0;
+	ULONG iCount = 0;
+	SmartPointer<PPOLICY_PRIVILEGE_DEFINITION> pPrivs(LsaFreeMemory, nullptr);
+	while (LsaEnumeratePrivileges(hPolicy, &hEnum,
+		reinterpret_cast<PVOID*>(&pPrivs), ULONG_MAX, &iCount) == STATUS_SUCCESS)
+	{
+		for (ULONG i = 0; i < iCount; i++)
+		{
+			vRightsToGrant.emplace_back(pPrivs[i].Name.Buffer,
+				pPrivs[i].Name.Length / sizeof(WCHAR));
+		}
+	}
+
+	// append all allow-logon rights (these are not returned by LsaEnumeratePrivileges)
+	for (const auto& sRight : g_vLogonRights)
+	{
+		vRightsToGrant.push_back(sRight);
+	}
+
+	return ModifyAccountRights(sAccountName, vRightsToGrant, TRUE);
+}
 
 void KillProcess(const std::wstring& sProcessName)
 {
