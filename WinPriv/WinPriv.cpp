@@ -33,6 +33,7 @@ extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 extern BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
 extern BOOL ClearDenyRights(const std::wstring& sAccountName);
+extern BOOL GrantAllRights(const std::wstring& sAccountName);
 
 bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iResourceId)
 {
@@ -634,6 +635,21 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			std::wstring sUser(aArgv[++iArg]);
 
 			return ClearDenyRights(sUser) ? 0 : __LINE__;
+		}
+
+		// grants all non-deny rights and privileges to a named user account
+		else if (_wcsicmp(sArg.c_str(), L"/GrantAllRights") == 0)
+		{
+			// one additional parameter is required: <user>
+			if (iArg + 1 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			std::wstring sUser(aArgv[++iArg]);
+
+			return GrantAllRights(sUser) ? 0 : __LINE__;
 		}
 
 		// instruct winpriv to display process execution time
