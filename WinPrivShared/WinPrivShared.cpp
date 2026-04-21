@@ -407,6 +407,8 @@ BOOL ClearDenyRights(const std::wstring& sAccountName)
 					}
 				}
 			}
+
+			pAccounts.Cleanup();
 		}
 
 		return bSuccessful;
@@ -460,6 +462,8 @@ BOOL GrantAllRights(const std::wstring& sAccountName)
 			vRightsToGrant.emplace_back(pPrivs[i].Name.Buffer,
 				pPrivs[i].Name.Length / sizeof(WCHAR));
 		}
+
+		pPrivs.Cleanup();
 	}
 
 	// append all allow-logon rights (these are not returned by LsaEnumeratePrivileges)
