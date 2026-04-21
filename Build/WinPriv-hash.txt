@@ -1,30 +1,30 @@
 
 Algorithm       Hash                                                                   Path
 ---------       ----                                                                   ----
-SHA256          906848E105B370004F4E089611E00B557939B7D40614A4FED536A0C7272F6D03       x64\WinPriv.exe
-SHA256          8E4B4AAFBC1AE0C7E41977DEA2729BF4690E4EAD064E82AEA5AE062A8B6AB1D0       x64\WinPrivCmd.exe
-SHA256          A2F92AE4209B74732F356EFC15685349677BE0E78DBB501E30C1CB1272A7C3C7       x86\WinPriv.exe
-SHA256          44C8785C5D4F4B2E2832B998B09A83A0B7D1EDCC8D838ABFBAF0721DCCD92091       x86\WinPrivCmd.exe
-SHA256          E4566E2DDBDA6FEBAB5A7F503FFBB862F5FB996011765FC596A8F3BD7F7445EC       WinPriv.zip
+SHA256          EF01625C992B1984A45F2ABC232821573C5F175DCDCFDF2847E3CCF0F5795930       x64\WinPriv.exe
+SHA256          96F2F7E6A439FAF5B59C5A2C788EE94530E5FF45A5F191D162A1929DF9D746BC       x64\WinPrivCmd.exe
+SHA256          FBA895C1A622744EE6087C674FCFE6F4F6E5298EC443C294EC2AF7F4626BA1C5       x86\WinPriv.exe
+SHA256          6B38C8943CC521F8D0663E8DA5F874BCB72E94E7A53D4FC2506CFEDF6B7D44C6       x86\WinPrivCmd.exe
+SHA256          D82A9A5EF6EA8DAE822874729E2C130CAF8BB53E2D70CC37E141FC7FE6201461       WinPriv.zip
 
 
 
 Algorithm       Hash                                                                   Path
 ---------       ----                                                                   ----
-SHA1            2547E3068035F20C81792289496BDEAFFB0DDC26                               x64\WinPriv.exe
-SHA1            C65B536F2AF1E1E50BE64B3E2FEF2AC6D0DAB8B4                               x64\WinPrivCmd.exe
-SHA1            6A721B128107C4A37C48DAA9169F8A6B12FFB39E                               x86\WinPriv.exe
-SHA1            480B77B7E99F9756AEC057B7C5157DD229FEAC15                               x86\WinPrivCmd.exe
-SHA1            2577D9AAA56D3B48EAC6FFD451342CA515E0400C                               WinPriv.zip
+SHA1            8720075D2DAF318A9F13BE02CA912A127FB64B65                               x64\WinPriv.exe
+SHA1            20CC470610365688AB102FE14D777E0FD029B806                               x64\WinPrivCmd.exe
+SHA1            177E48F82BBC91FC3B3CB6A47FA947E7C2A91D33                               x86\WinPriv.exe
+SHA1            3584F929381999262D114F24BFD679894022FD62                               x86\WinPrivCmd.exe
+SHA1            66961A95F5A284CDDD5836ACD2C2C09BFDA4909A                               WinPriv.zip
 
 
 
 Algorithm       Hash                                                                   Path
 ---------       ----                                                                   ----
-MD5             BCD5C4EC5DE5B9CFC21FE0ECABFEF974                                       x64\WinPriv.exe
-MD5             38993960F8FC5E4B601058522CFD8A04                                       x64\WinPrivCmd.exe
-MD5             262E18A181A101C803D0FF87669119F0                                       x86\WinPriv.exe
-MD5             67B9D6E597251BF98E480C7DFD2D5096                                       x86\WinPrivCmd.exe
-MD5             3C3891F96B0745FAD93A68F9F4696577                                       WinPriv.zip
+MD5             F0958E6A04BA03DE414D8B6B43C4D0E5                                       x64\WinPriv.exe
+MD5             6CFDA97F7E086C94E410768661E8BE54                                       x64\WinPrivCmd.exe
+MD5             FD5A89DA470FFBC6BC65EA12A9DBCEF7                                       x86\WinPriv.exe
+MD5             B87DE6B53C76B4BEFB83AC38C787DEA9                                       x86\WinPrivCmd.exe
+MD5             BB07D1FB87F0A3966217C7AEC7199247                                       WinPriv.zip
 
 
