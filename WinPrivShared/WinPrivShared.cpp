@@ -471,14 +471,17 @@ BOOL GrantAllRights(const std::wstring& sAccountName)
 	return ModifyAccountRights(sAccountName, vRightsToGrant, TRUE);
 }
 
-void KillProcess(const std::wstring& sProcessName)
+void KillProcess(const std::wstring& sProcessName, DWORD iSessionId)
 {
 	PROCESSENTRY32 tEntry = {};
 	tEntry.dwSize = sizeof(PROCESSENTRY32);
 
-	// fetch current session id
-	DWORD iCurrentSessionId = 0;
-	if (ProcessIdToSessionId(GetCurrentProcessId(), &iCurrentSessionId) == 0) return;
+	// use the caller's own session id if no explicit session was specified
+	DWORD iCurrentSessionId = iSessionId;
+	if (iCurrentSessionId == MAXDWORD)
+	{
+		if (ProcessIdToSessionId(GetCurrentProcessId(), &iCurrentSessionId) == 0) return;
+	}
 
 	// enumerate all processes, looking for match by name 
 	SmartPointer<HANDLE> hSnapshot(CloseHandle, CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL));

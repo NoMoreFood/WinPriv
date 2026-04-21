@@ -249,13 +249,19 @@ static DWORD FindTargetSession(const std::wstring& username)
     return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : firstDisconnectedSession;
 }
 
-int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait)
+int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait, const std::vector<std::wstring>& vProcessesToKill)
 {
     // Find appropriate session for target user
     const DWORD targetSessionId = FindTargetSession(username);
     if (targetSessionId == INVALID_SESSION)
     {
         return __LINE__;
+    }
+
+    // kill any requested processes in the target session before launching
+    for (const std::wstring& sProcessName : vProcessesToKill)
+    {
+        KillProcess(sProcessName, targetSessionId);
     }
 
     // Get user token and create environment block

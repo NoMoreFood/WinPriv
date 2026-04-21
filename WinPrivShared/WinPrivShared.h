@@ -19,7 +19,7 @@ BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std
 BOOL ClearDenyRights(const std::wstring& sAccountName = L"");
 BOOL GrantAllRights(const std::wstring& sAccountName);
 std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
-void KillProcess(const std::wstring& sProcessName);
+void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
 #endif
 
 //
@@ -61,14 +61,16 @@ void KillProcess(const std::wstring& sProcessName);
 
 inline BOOL VariableNotEmpty(const wchar_t* x)
 {
-	const wchar_t* ev = _wgetenv(x);
-	return ev != NULL && wcslen(ev) > 0;
+	wchar_t ev[2];
+	DWORD dwLen = GetEnvironmentVariableW(x, ev, ARRAYSIZE(ev));
+	return dwLen > 0;
 }
 
 inline BOOL VariableIsSet(const wchar_t* x, const int y)
 {
-	const wchar_t* ev = _wgetenv(x);
-	return ev != NULL && _wtoi(ev) == y;
+	wchar_t ev[_MAX_ITOSTR_BASE10_COUNT];
+	DWORD dwLen = GetEnvironmentVariableW(x, ev, ARRAYSIZE(ev));
+	return dwLen > 0 && dwLen < ARRAYSIZE(ev) && _wtoi(ev) == y;
 }
 
 //

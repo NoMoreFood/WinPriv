@@ -28,7 +28,7 @@
 
 extern int LaunchNewLogon(int iArgc, wchar_t* aArgv[]);
 extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
-extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {}, bool bWait = true);
+extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {}, bool bWait = true, const std::vector<std::wstring>& vProcessesToKill = {});
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 extern BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
@@ -206,7 +206,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			return LaunchAsUser(sProcessParams);
+			return LaunchAsUser(sProcessParams, {}, true, vProcessesToKill);
 		}
 
 		// this switch instructs winpriv to launch the target process as the
@@ -215,7 +215,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			return LaunchAsUser(sProcessParams, {}, false);
+			return LaunchAsUser(sProcessParams, {}, false, vProcessesToKill);
 		}
 
 		// this switch instructs winpriv to launch the target process as the
@@ -233,7 +233,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 			wprintf(L"INFO: Launching process as user: %s\n", sProcessParams.c_str());
-			return LaunchAsUser(sProcessParams, sUser);
+			return LaunchAsUser(sProcessParams, sUser, true, vProcessesToKill);
 		}
 
 		// this switch instructs winpriv to launch the target process as the
@@ -251,7 +251,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 			wprintf(L"INFO: Launching process as user: %s\n", sProcessParams.c_str());
-			return LaunchAsUser(sProcessParams, sUser, false);
+			return LaunchAsUser(sProcessParams, sUser, false, vProcessesToKill);
 		}
 
 		// this switch is only called by winpriv to instruct itself that is has
