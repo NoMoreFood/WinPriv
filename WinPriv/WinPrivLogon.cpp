@@ -9,15 +9,19 @@
 #include <wincred.h>
 #include <wtsapi32.h>
 #include <userenv.h>
+#include <aclapi.h>
+#include <LMCons.h>
+#include <Sddl.h>
+
 #include <memory>
 #include <array>
-#include <Sddl.h>
-#include <LMCons.h>
+#include <vector>
 
 #include "WinPrivShared.h"
 
 #pragma comment(lib,"credui.lib")
 #pragma comment(lib,"wtsapi32.lib")
+#pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"userenv.lib")
 
 int LaunchElevated(const int iArgc, wchar_t *aArgv[])
@@ -56,9 +60,9 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 
 int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 {
-	// setup the interface parameters for credential solicitation solicit credentials from the user
+	// setup the interface parameters for credential solicitation
 	CREDUI_INFO cui{ .cbSize = sizeof(CREDUI_INFO) };
-	cui.pszMessageText = L"In order to active the privileges that you requested, " \
+	cui.pszMessageText = L"In order to activate the privileges that you requested, " \
 		"you must enter your credentials to acquire a new logon token.";
 	cui.pszCaptionText = L"Enter Your Credentials";
 
@@ -270,7 +274,7 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
     SmartPointer<LPVOID> pEnvironment(DestroyEnvironmentBlock, nullptr);
 
     if (!WTSQueryUserToken(targetSessionId, &hToken) ||
-        !DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr, SecurityIdentification, TokenPrimary, &hPrimaryToken) ||
+        !DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &hPrimaryToken) ||
         !CreateEnvironmentBlock(&pEnvironment, hPrimaryToken, FALSE))
     {
         return __LINE__;
