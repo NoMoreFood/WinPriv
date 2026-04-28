@@ -149,10 +149,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// whether or not to kill any processes
 	std::vector<std::wstring> vProcessesToKill;
 
-	// read command line from cfg file if it exists
-	std::wstring sExecutable = GetRunningExecutable();
-	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.rfind(L".exe")) + L".cfg";
-	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	// helper to load arguments from a cfg file and return them as a command-line string
+	auto LoadCfgFile = [](const std::wstring& sCfgPath) -> std::wstring
 	{
 		std::ifstream oFileStream(sCfgPath);
 		std::ostringstream oStringStream;
@@ -170,8 +168,15 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		std::wstring sExpanded(iExpandedLen, L'\0');
 		ExpandEnvironmentStringsW(sWide.c_str(), sExpanded.data(), iExpandedLen);
 		sExpanded.resize(sExpanded.find(L'\0'));
+		return sExpanded;
+	};
 
-		aArgv = CommandLineToArgvW((L"IGNORE " + sExpanded).c_str(), &iArgc);
+	// read command line from cfg file if it exists
+	std::wstring sExecutable = GetRunningExecutable();
+	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.rfind(L".exe")) + L".cfg";
+	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	{
+		aArgv = CommandLineToArgvW((L"IGNORE " + LoadCfgFile(sCfgPath)).c_str(), &iArgc);
 	}
 
 	// enumerate arguments
@@ -274,6 +279,31 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			// update relaunch phase to prevent recursion
 			SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"1");
+		}
+
+		// this instructs winpriv to load additional arguments from the specified cfg file
+		else if (_wcsicmp(sArg.c_str(), L"/LoadCommands") == 0)
+		{
+			// one additional parameter is required
+			if (iArg + 1 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			const std::wstring sExtraCfgPath(aArgv[++iArg]);
+			if (GetFileAttributes(sExtraCfgPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+			{
+				PrintMessage(L"ERROR: Cfg file not found: %s\n", sExtraCfgPath.c_str());
+				return __LINE__;
+			}
+
+			// build a new command line: "IGNORE" + cfg file args + remaining original args
+			std::wstring sCfgArgs = LoadCfgFile(sExtraCfgPath);
+			std::wstring sRemainingArgs = ArgvToCommandLine(iArg + 1, iArgc - 1,
+				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			aArgv = CommandLineToArgvW((L"IGNORE " + sCfgArgs + L" " + sRemainingArgs).c_str(), &iArgc);
+			iArg = 0;
 		}
 
 		// this instructs winpriv to attempt to enable a user-provided list of privs
