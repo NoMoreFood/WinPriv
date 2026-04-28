@@ -101,6 +101,18 @@ WinPriv.
 Optional Switches
 =================
 
+/LoadCommands <Path>
+
+   Specifies an additional config file to load command line paramters
+   from, similiar to automatically loaded configuration file but not
+   mandatory. The switches in the specified file are merged with any
+   remaining command-line arguments and processed as if they had been
+   provided directly on the command line.
+
+   Examples:
+
+	  /LoadCommands C:\Config\MySettings.cfg
+
 /RegOverride <Registry Key Path> <Value Name> <Data Type> <Data Value>
 
    Specifies a registry value to override. Instead of returning the true
