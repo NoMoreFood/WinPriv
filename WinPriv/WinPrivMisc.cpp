@@ -259,6 +259,17 @@ Optional Switches
    instead of CreateProcess(). This can be useful if launching an application
    that is registered on the system but not in the system path.
 
+/ShowMessage <Message>
+
+   This option displays a message box with the specified message before
+   launching the target process. The caption of the message box is "Message".
+
+/AskMessage <Message>
+
+   This option displays a Yes/No message box with the specified message before
+   launching the target process. If No is clicked, execution is cancelled.
+   The caption of the message box is "Message".
+
 /MeasureTime
 
    This option measures the execution time of the target process and displays

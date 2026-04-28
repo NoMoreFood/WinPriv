@@ -161,7 +161,17 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		const int iWideLen = MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), nullptr, 0);
 		std::wstring sWide(iWideLen, L'\0');
 		MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), sWide.data(), iWideLen);
-		aArgv = CommandLineToArgvW((L"IGNORE " + sWide).c_str(), &iArgc);
+
+		// replace newlines with spaces so CommandLineToArgvW treats them as token separators
+		std::ranges::replace_if(sWide, [](wchar_t c) { return c == L'\r' || c == L'\n'; }, L' ');
+
+		// expand environment variables in the config content
+		const DWORD iExpandedLen = ExpandEnvironmentStringsW(sWide.c_str(), nullptr, 0);
+		std::wstring sExpanded(iExpandedLen, L'\0');
+		ExpandEnvironmentStringsW(sWide.c_str(), sExpanded.data(), iExpandedLen);
+		sExpanded.resize(sExpanded.find(L'\0'));
+
+		aArgv = CommandLineToArgvW((L"IGNORE " + sExpanded).c_str(), &iArgc);
 	}
 
 	// enumerate arguments
@@ -650,6 +660,39 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			std::wstring sUser(aArgv[++iArg]);
 
 			return GrantAllRights(sUser) ? 0 : __LINE__;
+		}
+
+		// instructs winpriv to display a message box with the specified message
+		else if (_wcsicmp(sArg.c_str(), L"/ShowMessage") == 0)
+		{
+			constexpr int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			MessageBox(nullptr, aArgv[++iArg], L"Message", MB_OK);
+		}
+
+		// instructs winpriv to display a yes/no message box; cancels execution if No is clicked
+		else if (_wcsicmp(sArg.c_str(), L"/AskMessage") == 0)
+		{
+			constexpr int iArgsRequired = 1;
+
+			// one additional parameter is required
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			if (MessageBox(nullptr, aArgv[++iArg], L"Message", MB_YESNO) == IDNO)
+			{
+				return __LINE__;
+			}
 		}
 
 		// instruct winpriv to display process execution time
