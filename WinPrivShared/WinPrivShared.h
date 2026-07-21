@@ -53,8 +53,6 @@ void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
 #define UnicodeStringPrefix(x,y) (((x)->Length <= (y)->Length) ? \
 	_wcsnicmp((x)->Buffer,(y)->Buffer,(x)->Length / sizeof(WCHAR)) == 0 : FALSE)
 
-#define UnicodeStringInit(x) { (wcslen(x) * sizeof(WCHAR)), (wcslen(x) * sizeof(WCHAR)), x }
-
 //
 // Miscellaneous Environment Variable Helper Functions
 //
@@ -90,6 +88,15 @@ inline std::wstring TrimString(const std::wstring& string, wchar_t ch)
 }
 #endif
 
+static __inline BOOL WinPrivUsesConsoleSubsystem(void)
+{
+	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)GetModuleHandleW(NULL);
+	if (pDosHeader == NULL || pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
+	PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((PBYTE)pDosHeader + pDosHeader->e_lfanew);
+	return pNtHeaders->Signature == IMAGE_NT_SIGNATURE &&
+		pNtHeaders->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI;
+}
+
 // generic print message that resembles printf() syntax with
 // vardiac variables but will also output to a message box
 // if not compiled on a console
@@ -97,7 +104,7 @@ inline std::wstring TrimString(const std::wstring& string, wchar_t ch)
 		LPWSTR sString = (LPWSTR) calloc((size_t) (_scwprintf(format, __VA_ARGS__) + 1), sizeof(WCHAR)); \
 		if (sString == NULL) exit(0); \
 		_swprintf(sString, format, __VA_ARGS__); \
-		if (GetConsoleWindow() != NULL) wprintf(L"%s", sString); else \
+		if (WinPrivUsesConsoleSubsystem()) wprintf(L"%s", sString); else \
 			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
         free(sString); \
 	} while (0)
@@ -116,20 +123,11 @@ public:
 	SmartPointer(const SmartPointer&) = delete; // non-copyable
 	T operator=(const SmartPointer& lp) = delete; // copy assignment forbidden
 
-	SmartPointer(std::function<void(T)> cleanup) : m_Cleanup(std::move(cleanup)), m_Data(nullptr) {}
 	SmartPointer(std::function<void(T)> cleanup, T data) : m_Cleanup(std::move(cleanup)), m_Data(data) {}
 
 	~SmartPointer()
 	{
 		Cleanup();
-	}
-
-	SmartPointer(SmartPointer&& src) noexcept
-	{
-		m_Cleanup = std::move(src.m_Cleanup);
-		m_Data = src.m_Data;
-		src.m_Data = nullptr;
-		src.m_Cleanup = nullptr;
 	}
 
 	void Cleanup()
@@ -141,31 +139,7 @@ public:
 		}
 	}
 
-	SmartPointer& operator=(SmartPointer&& src) noexcept
-	{
-		if (std::addressof(*this) != std::addressof(src))
-		{
-			Cleanup();
-			m_Cleanup = std::move(src.m_Cleanup);
-			m_Data = src.m_Data;
-			src.m_Data = nullptr;
-			src.m_Cleanup = nullptr;
-		}
-
-		return *this;
-	}
-
-	void Release() noexcept
-	{
-		m_Data = nullptr;
-	}
-
 	operator T()
-	{
-		return m_Data;
-	}
-
-	T& operator*()
 	{
 		return m_Data;
 	}
@@ -177,13 +151,6 @@ public:
 
 	T operator->()
 	{
-		return m_Data;
-	}
-
-	T operator=(T lp)
-	{
-		Cleanup();
-		m_Data = lp;
 		return m_Data;
 	}
 

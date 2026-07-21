@@ -10,19 +10,21 @@
 #include <ShlObj.h>
 #include <WS2tcpip.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <map>
 #include <string>
 #include <vector>
-#include <cctype>
-#include <regex>
 #include <sstream>
-#include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <filesystem>
+#include <memory>
+#include <set>
 
 #include "WinPrivShared.h"
-#include "WinPrivResource.h"
+#include "WinPriv.h"
 
 #pragma comment(lib,"rpcrt4.lib")
 
@@ -31,9 +33,6 @@ extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
 extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {}, bool bWait = true, const std::vector<std::wstring>& vProcessesToKill = {});
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
-extern BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
-extern BOOL ClearDenyRights(const std::wstring& sAccountName);
-extern BOOL GrantAllRights(const std::wstring& sAccountName);
 
 bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iResourceId)
 {
@@ -52,6 +51,12 @@ bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iReso
 		PrintMessage(L"ERROR: Could not load internal resource data.\n");
 		return false;
 	}
+	const LPVOID pResourceData = LockResource(hResourceLoadedX86);
+	if (pResourceData == nullptr)
+	{
+		PrintMessage(L"ERROR: Could not access internal resource data.\n");
+		return false;
+	}
 
 	// create the library files 
 	SmartPointer<HANDLE> hTempFile(CloseHandle, CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE,
@@ -65,7 +70,7 @@ bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iReso
 	// write the resource into the temporary file
 	const DWORD wSizeRes = SizeofResource(nullptr, hRes);
 	DWORD wBytesWritten = 0;
-	if (WriteFile(hTempFile, hResourceLoadedX86, wSizeRes, &wBytesWritten, nullptr) == 0 || wBytesWritten != wSizeRes)
+	if (WriteFile(hTempFile, pResourceData, wSizeRes, &wBytesWritten, nullptr) == 0 || wBytesWritten != wSizeRes)
 	{
 		PrintMessage(L"ERROR: Problem writing library file.\n");
 		return false;
@@ -83,23 +88,38 @@ std::wstring GetRunningExecutable()
 	if (iResult == 0 || iResult >= MAX_PATH + 1)
 	{
 		PrintMessage(L"ERROR: Error fetching currently executable path.\n");
-		std::exit(0);
-		return L"";
+		std::exit(EXIT_FAILURE);
 	}
 
 	sThisExecutable.resize(sThisExecutable.find(L'\0'));
 	return sThisExecutable;
 }
 
-std::wstring GetLocalLibraryPath(const bool bIs64Bit)
+enum class LibraryArchitecture
+{
+	X86,
+	X64,
+	Arm64
+};
+
+std::wstring GetLocalLibraryPath(const LibraryArchitecture eArchitecture)
 {
 	const std::wstring sThisExecutable = GetRunningExecutable();
 
 	// trim of final path element
 	const std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
 
-	// return directory name
-	return sBasePath + (bIs64Bit ? L"\\WinPrivLibrary-64.dll" : L"\\WinPrivLibrary-32.dll");
+	switch (eArchitecture)
+	{
+	case LibraryArchitecture::X86:
+		return sBasePath + L"\\WinPrivLibrary-32.dll";
+	case LibraryArchitecture::X64:
+		return sBasePath + L"\\WinPrivLibrary-64.dll";
+	case LibraryArchitecture::Arm64:
+		return sBasePath + L"\\WinPrivLibrary-arm64.dll";
+	}
+
+	return L"";
 }
 
 int RunProgram(int iArgc, wchar_t* aArgv[])
@@ -115,6 +135,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
+	SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
@@ -150,12 +171,31 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	std::vector<std::wstring> vProcessesToKill;
 
 	// helper to load arguments from a cfg file and return them as a command-line string
-	auto LoadCfgFile = [](const std::wstring& sCfgPath) -> std::wstring
+	bool bCfgLoadFailed = false;
+	auto LoadCfgFile = [&bCfgLoadFailed](const std::wstring& sCfgPath) -> std::wstring
 	{
 		std::ifstream oFileStream(sCfgPath);
+		if (!oFileStream.is_open())
+		{
+			PrintMessage(L"ERROR: Could not open cfg file: %s\n", sCfgPath.c_str());
+			bCfgLoadFailed = true;
+			return {};
+		}
 		std::ostringstream oStringStream;
 		oStringStream << oFileStream.rdbuf();
-		const std::string sNarrow = oStringStream.str();
+		if (oFileStream.bad() || oStringStream.bad())
+		{
+			PrintMessage(L"ERROR: Could not read cfg file: %s\n", sCfgPath.c_str());
+			bCfgLoadFailed = true;
+			return {};
+		}
+		std::string sNarrow = oStringStream.str();
+		if (sNarrow.starts_with("\xEF\xBB\xBF"))
+		{
+			// A UTF-8 BOM otherwise becomes U+FEFF at the start of the first
+			// switch, causing it to be mistaken for the target executable.
+			sNarrow.erase(0, 3);
+		}
 		const int iWideLen = MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), nullptr, 0);
 		std::wstring sWide(iWideLen, L'\0');
 		MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), sWide.data(), iWideLen);
@@ -171,12 +211,32 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		return sExpanded;
 	};
 
+	// Bound dynamic command-file expansion and remember each resulting command
+	// line. The state check catches direct and indirect cycles without rejecting
+	// a finite sequence that intentionally loads the same file more than once.
+	constexpr size_t iMaxCommandFileExpansions = 64;
+	size_t iCommandFileExpansions = 0;
+	std::set<std::wstring> vExpandedCommandLines;
+	// CommandLineToArgvW uses LocalAlloc. Keep only dynamically parsed argument
+	// arrays here; the original CRT-owned argv must not be released by us.
+	std::unique_ptr<void, decltype(&LocalFree)> pOwnedArgv(nullptr, &LocalFree);
+
 	// read command line from cfg file if it exists
-	std::wstring sExecutable = GetRunningExecutable();
-	std::wstring sCfgPath = sExecutable.substr(0, sExecutable.rfind(L".exe")) + L".cfg";
+	const std::wstring sExecutable = GetRunningExecutable();
+	const std::wstring sCfgPath = std::filesystem::path(sExecutable).replace_extension(L".cfg").wstring();
 	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
-		aArgv = CommandLineToArgvW((L"IGNORE " + LoadCfgFile(sCfgPath)).c_str(), &iArgc);
+		const std::wstring sCfgArgs = LoadCfgFile(sCfgPath);
+		if (bCfgLoadFailed) return __LINE__;
+		const std::wstring sCfgCommandLine = L"\"" + sExecutable + L"\" " + sCfgArgs;
+		LPWSTR* pParsedArgv = CommandLineToArgvW(sCfgCommandLine.c_str(), &iArgc);
+		if (pParsedArgv == nullptr)
+		{
+			PrintMessage(L"ERROR: Could not parse arguments loaded from cfg file.\n");
+			return __LINE__;
+		}
+		pOwnedArgv.reset(pParsedArgv);
+		aArgv = pParsedArgv;
 	}
 
 	// enumerate arguments
@@ -298,11 +358,30 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				return __LINE__;
 			}
 
-			// build a new command line: "IGNORE" + cfg file args + remaining original args
-			std::wstring sCfgArgs = LoadCfgFile(sExtraCfgPath);
-			std::wstring sRemainingArgs = ArgvToCommandLine(iArg + 1, iArgc - 1,
+			// build a new command line from the executable, cfg file args, and remaining original args
+			const std::wstring sCfgArgs = LoadCfgFile(sExtraCfgPath);
+			if (bCfgLoadFailed) return __LINE__;
+			const std::wstring sRemainingArgs = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			aArgv = CommandLineToArgvW((L"IGNORE " + sCfgArgs + L" " + sRemainingArgs).c_str(), &iArgc);
+			std::wstring sExpandedCommandLine = L"\"" + sExecutable + L"\"";
+			if (!sCfgArgs.empty()) sExpandedCommandLine += L" " + sCfgArgs;
+			if (!sRemainingArgs.empty()) sExpandedCommandLine += L" " + sRemainingArgs;
+
+			if (++iCommandFileExpansions > iMaxCommandFileExpansions ||
+				!vExpandedCommandLines.insert(sExpandedCommandLine).second)
+			{
+				PrintMessage(L"ERROR: Recursive or excessively nested /LoadCommands expansion detected.\n");
+				return __LINE__;
+			}
+
+			LPWSTR* pParsedArgv = CommandLineToArgvW(sExpandedCommandLine.c_str(), &iArgc);
+			if (pParsedArgv == nullptr)
+			{
+				PrintMessage(L"ERROR: Could not parse arguments loaded from cfg file.\n");
+				return __LINE__;
+			}
+			pOwnedArgv.reset(pParsedArgv);
+			aArgv = pParsedArgv;
 			iArg = 0;
 		}
 
@@ -350,8 +429,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// this instructs winpriv to write out any temporary dlls into the following directory
 		else if (_wcsicmp(sArg.c_str(), L"/ExtractLibrary") == 0)
 		{
-			if (WriteResourceToFile(GetLocalLibraryPath(false), IDR_RT_RCDATA_X86) == false ||
-				WriteResourceToFile(GetLocalLibraryPath(true), IDR_RT_RCDATA_X64) == false)
+			if (WriteResourceToFile(GetLocalLibraryPath(LibraryArchitecture::X86), IDR_RT_RCDATA_X86) == false ||
+				WriteResourceToFile(GetLocalLibraryPath(LibraryArchitecture::X64), IDR_RT_RCDATA_X64) == false ||
+				WriteResourceToFile(GetLocalLibraryPath(LibraryArchitecture::Arm64), IDR_RT_RCDATA_ARM64) == false)
 			{
 				PrintMessage(L"ERROR: Failed to extract libraries.\n");
 				return __LINE__;
@@ -371,7 +451,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		}
 
 		// instructs winpriv to create a list of privs and display it to the user
-		else if (_wcsicmp(sArg.c_str(), L"/ListPrivs") == 0)
+		else if (_wcsicmp(sArg.c_str(), L"/ListPrivileges") == 0 ||
+			_wcsicmp(sArg.c_str(), L"/ListPrivs") == 0)
 		{
 			// calculate column display size
 			size_t iColumnSize = 0;
@@ -531,8 +612,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 			// first lookup the address
 			PADDRINFOW tResult;
-			INT iGetAddrInfoResult = GetAddrInfoW(aArgv[iArg + 2], nullptr, nullptr, &tResult);
-			WSACleanup();
+			ADDRINFOW tHints{ .ai_family = AF_INET };
+			INT iGetAddrInfoResult = GetAddrInfoW(aArgv[iArg + 2], nullptr, &tHints, &tResult);
+			SmartPointer<LPWSADATA> oWinsockCleanup([](LPWSADATA) { WSACleanup(); }, &tWSAData);
 			if (iGetAddrInfoResult != 0)
 			{
 				return __LINE__;
@@ -540,7 +622,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 			// convert the address to a string
 			WCHAR sAddress[INET_ADDRSTRLEN];
-			InetNtop(AF_INET, &reinterpret_cast<PSOCKADDR_IN>(tResult->ai_addr)->sin_addr, sAddress, INET_ADDRSTRLEN);
+			if (InetNtop(AF_INET, &reinterpret_cast<PSOCKADDR_IN>(tResult->ai_addr)->sin_addr, sAddress, INET_ADDRSTRLEN) == nullptr) { FreeAddrInfoW(tResult); return __LINE__; }
 			FreeAddrInfoW(tResult);
 
 			// append the host override data which should be two params:
@@ -598,11 +680,16 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			std::wstring sRecordCrypto(aArgv[iArg + 1]);
 			if (_wcsicmp(sRecordCrypto.c_str(), L"SHOW") != 0)
 			{
-				if (CreateDirectory(sRecordCrypto.c_str(), nullptr) == FALSE &&
-					ERROR_ALREADY_EXISTS != GetLastError())
+				if (CreateDirectory(sRecordCrypto.c_str(), nullptr) == FALSE)
 				{
-					PrintMessage(L"ERROR: Could not create the specified directory for /RecordCrypto\n");
-					return __LINE__;
+					const DWORD iCreateError = GetLastError();
+					const DWORD iAttributes = GetFileAttributes(sRecordCrypto.c_str());
+					if (iCreateError != ERROR_ALREADY_EXISTS || iAttributes == INVALID_FILE_ATTRIBUTES ||
+						(iAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+					{
+						PrintMessage(L"ERROR: Could not create the specified directory for /RecordCrypto\n");
+						return __LINE__;
+					}
 				}
 			}
 
@@ -719,7 +806,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				return __LINE__;
 			}
 
-			if (MessageBox(nullptr, aArgv[++iArg], L"Message", MB_YESNO) == IDNO)
+			if (MessageBox(nullptr, aArgv[++iArg], L"Message", MB_YESNO) != IDYES)
 			{
 				return __LINE__;
 			}
@@ -807,7 +894,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		int iRet = LaunchNewLogon(iArgc, aArgv);
 
 		// restore original privs and return
-		AlterCurrentUserPrivs(vFailedPrivs, FALSE);
+		if (AlterCurrentUserPrivs(vFailedPrivs, FALSE) == FALSE && iRet == 0) return __LINE__;
 		return iRet;
 	}
 
@@ -830,17 +917,20 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 	// fetch the default library paths
 	bool bCleanupLibrary = false;
-	std::wstring sTempLibraryX86 = GetLocalLibraryPath(false);
-	std::wstring sTempLibraryX64 = GetLocalLibraryPath(true);
+	std::wstring sTempLibraryX86 = GetLocalLibraryPath(LibraryArchitecture::X86);
+	std::wstring sTempLibraryX64 = GetLocalLibraryPath(LibraryArchitecture::X64);
+	std::wstring sTempLibraryArm64 = GetLocalLibraryPath(LibraryArchitecture::Arm64);
 
 	if (GetFileAttributes(sTempLibraryX86.c_str()) == INVALID_FILE_ATTRIBUTES ||
-		GetFileAttributes(sTempLibraryX64.c_str()) == INVALID_FILE_ATTRIBUTES)
+		GetFileAttributes(sTempLibraryX64.c_str()) == INVALID_FILE_ATTRIBUTES ||
+		GetFileAttributes(sTempLibraryArm64.c_str()) == INVALID_FILE_ATTRIBUTES)
 	{
 		// generate a uuid string to create the temporary file
 		bCleanupLibrary = true;
 		RPC_WSTR sUUID;
 		UUID tUUID;
-		if (UuidCreate(&tUUID) != RPC_S_OK ||
+		const RPC_STATUS iUuidResult = UuidCreate(&tUUID);
+		if ((iUuidResult != RPC_S_OK && iUuidResult != RPC_S_UUID_LOCAL_ONLY) ||
 			UuidToString(&tUUID, &sUUID) != RPC_S_OK)
 		{
 			PrintMessage(L"ERROR: Could not generate name for temporary file.\n");
@@ -850,16 +940,19 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// generate the files names to use for library names
 		sTempLibraryX86 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-32.dll";
 		sTempLibraryX64 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-64.dll";
+		sTempLibraryArm64 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-arm64.dll";
 
 		// cleanup the guid structure
 		RpcStringFree(&sUUID);
 
 		// create the library files
 		if (WriteResourceToFile(sTempLibraryX86, IDR_RT_RCDATA_X86) == false ||
-			WriteResourceToFile(sTempLibraryX64, IDR_RT_RCDATA_X64) == false)
+			WriteResourceToFile(sTempLibraryX64, IDR_RT_RCDATA_X64) == false ||
+			WriteResourceToFile(sTempLibraryArm64, IDR_RT_RCDATA_ARM64) == false)
 		{
 			DeleteFile(sTempLibraryX86.c_str());
 			DeleteFile(sTempLibraryX64.c_str());
+			DeleteFile(sTempLibraryArm64.c_str());
 			PrintMessage(L"ERROR: Problem creating temporary library file.\n");
 			return __LINE__;
 		}
@@ -890,30 +983,62 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	{
 		o_ShellExecute = {
 			.cbSize = sizeof(SHELLEXECUTEINFOW),
-			.fMask = SEE_MASK_NOCLOSEPROCESS,
+			.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
 			.lpFile = sProcess.c_str(),
 			.lpParameters = sProcessParams.c_str(),
 			.nShow = iShowWindow
 		};
 	}
 
-	// load the detour library into memory - the main reason we do this
-	// is so that the create process command below will load the detour library
-	// that matches the architecture of the target executable 
-	SmartPointer<HMODULE> hLibrary(FreeLibrary, LoadLibrary((sizeof(INT_PTR) == sizeof(LONGLONG)) ?
-		sTempLibraryX64.c_str() : sTempLibraryX86.c_str()));
+	// Load the injection library matching this launcher. Its CreateProcess hook
+	// propagates the matching library into target processes.
+#if defined(_M_ARM64)
+	const std::wstring& sCurrentLibrary = sTempLibraryArm64;
+#elif defined(_WIN64)
+	const std::wstring& sCurrentLibrary = sTempLibraryX64;
+#else
+	const std::wstring& sCurrentLibrary = sTempLibraryX86;
+#endif
+	SmartPointer<HMODULE> hLibrary(FreeLibrary, LoadLibrary(sCurrentLibrary.c_str()));
+	if (!hLibrary)
+	{
+		const DWORD iLoadError = GetLastError();
+		PrintMessage(L"ERROR: Could not load injection library: %s (error %lu)\n",
+			sCurrentLibrary.c_str(), iLoadError);
+		if (bCleanupLibrary)
+		{
+			DeleteFile(sTempLibraryX86.c_str());
+			DeleteFile(sTempLibraryX64.c_str());
+			DeleteFile(sTempLibraryArm64.c_str());
+		}
+		return __LINE__;
+	}
 
 	// create process and detour
 	ULONGLONG iTimeStart = GetTickCount64();
 	if ((bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE) ||
-		(!bUseShellExecute && CreateProcess(nullptr, (LPWSTR)sProcessParams.c_str(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+		(!bUseShellExecute && CreateProcess(nullptr, sProcessParams.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
 			&o_StartInfo, &o_ProcessInfo) == 0))
 	{
 		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
 		if (bCleanupLibrary)
 		{
+			hLibrary.Cleanup();
 			DeleteFile(sTempLibraryX86.c_str());
 			DeleteFile(sTempLibraryX64.c_str());
+			DeleteFile(sTempLibraryArm64.c_str());
+		}
+		return __LINE__;
+	}
+	if (bUseShellExecute && o_ShellExecute.hProcess == nullptr)
+	{
+		PrintMessage(L"ERROR: ShellExecute did not return a target process handle.\n");
+		if (bCleanupLibrary)
+		{
+			hLibrary.Cleanup();
+			DeleteFile(sTempLibraryX86.c_str());
+			DeleteFile(sTempLibraryX64.c_str());
+			DeleteFile(sTempLibraryArm64.c_str());
 		}
 		return __LINE__;
 	}
@@ -931,8 +1056,10 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		PrintMessage(L"ERROR: Problem waiting for process to complete.");
 		if (bCleanupLibrary)
 		{
+			hLibrary.Cleanup();
 			DeleteFile(sTempLibraryX86.c_str());
 			DeleteFile(sTempLibraryX64.c_str());
+			DeleteFile(sTempLibraryArm64.c_str());
 		}
 		return __LINE__;
 	}
@@ -951,8 +1078,10 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// cleanup
 	if (bCleanupLibrary)
 	{
+		hLibrary.Cleanup();
 		DeleteFile(sTempLibraryX86.c_str());
 		DeleteFile(sTempLibraryX64.c_str());
+		DeleteFile(sTempLibraryArm64.c_str());
 	}
 	return iExitCode;
 }

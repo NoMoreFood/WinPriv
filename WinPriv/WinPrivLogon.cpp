@@ -9,12 +9,12 @@
 #include <wincred.h>
 #include <wtsapi32.h>
 #include <userenv.h>
-#include <aclapi.h>
 #include <LMCons.h>
 #include <Sddl.h>
+#include <shellapi.h>
 
-#include <memory>
 #include <array>
+#include <filesystem>
 #include <vector>
 
 #include "WinPrivShared.h"
@@ -23,6 +23,8 @@
 #pragma comment(lib,"wtsapi32.lib")
 #pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"userenv.lib")
+
+static std::wstring GetSidStringForUser(const std::wstring& username);
 
 int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 {
@@ -37,7 +39,7 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 	// re-execute the process to run elevated with designated initializers
 	SHELLEXECUTEINFO tShellExecInfo{
 		.cbSize = sizeof(SHELLEXECUTEINFO),
-		.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOZONECHECKS,
+		.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOZONECHECKS | SEE_MASK_NOASYNC,
 		.lpVerb = L"runas",
 		.lpFile = aArgv[0],
 		.lpParameters = sCommand.c_str(),
@@ -47,6 +49,11 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 	if (ShellExecuteEx(&tShellExecInfo) == FALSE)
 	{
 		PrintMessage(L"ERROR: Could not relaunch as elevated.\n");
+		return __LINE__;
+	}
+	if (tShellExecInfo.hProcess == nullptr)
+	{
+		PrintMessage(L"ERROR: Elevated relaunch did not return a process handle.\n");
 		return __LINE__;
 	}
 
@@ -67,12 +74,15 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	cui.pszCaptionText = L"Enter Your Credentials";
 
 	// prompt the user for a set of credentials
-	SmartPointer<PVOID> oOutInformation(CoTaskMemFree, nullptr);
 	DWORD iOutInformationSize = 0;
+	SmartPointer<PVOID> oOutInformation([&](PVOID p) { SecureZeroMemory(p, iOutInformationSize); CoTaskMemFree(p); }, nullptr);
 	DWORD iAuthPackage = 0;
 	DWORD iErr = 0;
+	DWORD iPromptFlags = CREDUIWIN_GENERIC;
+	BOOL bWow64 = FALSE;
+	if (IsWow64Process(GetCurrentProcess(), &bWow64) && bWow64) iPromptFlags |= CREDUIWIN_PACK_32_WOW;
 	if ((iErr = CredUIPromptForWindowsCredentials(&cui, 0, &iAuthPackage, nullptr, 0,
-		&oOutInformation, &iOutInformationSize, nullptr, 0)) != NO_ERROR)
+		&oOutInformation, &iOutInformationSize, nullptr, iPromptFlags)) != NO_ERROR)
 	{
 		PrintMessage(L"A problem occurred while soliciting the credentials.\n");
 		return __LINE__;
@@ -82,11 +92,29 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	WCHAR sUserName[CREDUI_MAX_USERNAME_LENGTH + 1] = L"";
 	DWORD iUserName = _countof(sUserName);
 	WCHAR sPassword[CREDUI_MAX_PASSWORD_LENGTH + 1] = L"";
+	SmartPointer<PWSTR> oPasswordCleanup([&](PWSTR p) { SecureZeroMemory(p, sizeof(sPassword)); }, sPassword);
 	DWORD iPassword = _countof(sPassword);
-	if ((iErr = CredUnPackAuthenticationBuffer(CRED_PACK_PROTECTED_CREDENTIALS,
+	if ((iErr = CredUnPackAuthenticationBuffer(0,
 		oOutInformation, iOutInformationSize, sUserName, &iUserName, nullptr, nullptr, sPassword, &iPassword)) == FALSE)
 	{
 		PrintMessage(L"A problem occurred while decoding the credentials.\n");
+		return __LINE__;
+	}
+	SmartPointer<HANDLE> hCurrentToken(CloseHandle, nullptr);
+	alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aCurrentUserBuffer{};
+	DWORD iCurrentUserBytes = 0;
+	SmartPointer<LPWSTR> sCurrentUserSid(LocalFree, nullptr);
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hCurrentToken) ||
+		!GetTokenInformation(hCurrentToken, TokenUser, aCurrentUserBuffer.data(),
+			static_cast<DWORD>(aCurrentUserBuffer.size()), &iCurrentUserBytes) ||
+		!ConvertSidToStringSidW(reinterpret_cast<PTOKEN_USER>(aCurrentUserBuffer.data())->User.Sid, &sCurrentUserSid))
+	{
+		PrintMessage(L"ERROR: Could not validate the current user identity.\n");
+		return __LINE__;
+	}
+	if (GetSidStringForUser(sUserName) != std::wstring(sCurrentUserSid))
+	{
+		PrintMessage(L"ERROR: Credentials must be for the current user.\n");
 		return __LINE__;
 	}
 
@@ -107,7 +135,7 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 
 	// reconstruct a command line with a flag to indicate relaunch
 	const std::vector<LPWSTR> sArgs({ aArgv, aArgv + iArgc });
-	const std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) +
+	std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) +
 		L" /RelaunchElevated " + ArgvToCommandLine(1, iArgc - 1, sArgs);
 
 	// get the current working directory to pass to the child process
@@ -119,8 +147,9 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	}
 	
 	// relaunch process under altered security policy
-	SmartPointer<LPWSTR> sBlock(FreeEnvironmentStrings, GetEnvironmentStrings());
-	const BOOL bCreateResult = CreateProcessWithLogonW(sUserNameShort, sDomainName, sPassword, LOGON_WITH_PROFILE, nullptr, (LPWSTR) sCommand.c_str(), CREATE_UNICODE_ENVIRONMENT, sBlock,
+	const LPCWSTR pDomainName = sDomainName[0] == L'\0' ? nullptr : sDomainName;
+	const BOOL bCreateResult = CreateProcessWithLogonW(sUserNameShort, pDomainName, sPassword,
+		LOGON_WITH_PROFILE, nullptr, sCommand.data(), CREATE_UNICODE_ENVIRONMENT, nullptr,
 		sCurrentDir, &o_StartInfo, &o_ProcessInfo);
 
 	// zero out the password from memory as early as possible
@@ -146,189 +175,214 @@ static constexpr DWORD INVALID_SESSION = 0xFFFFFFFF;
 
 static std::wstring GetSidStringForUser(const std::wstring& username)
 {
-    // Prepare buffers for SID and domain lookup
-    std::array<BYTE, SECURITY_MAX_SID_SIZE> sidBuffer{};
-    WCHAR domainBuffer[DNLEN + 1];
-    DWORD sidSize = static_cast<DWORD>(sidBuffer.size());
-    DWORD domainSize = DNLEN + 1;
-    SID_NAME_USE sidUse;
-    SmartPointer<LPWSTR> sidString(LocalFree, nullptr);
+	// Prepare buffers for SID and domain lookup
+	std::array<BYTE, SECURITY_MAX_SID_SIZE> sidBuffer{};
+	WCHAR domainBuffer[DNLEN + 1];
+	DWORD sidSize = static_cast<DWORD>(sidBuffer.size());
+	DWORD domainSize = DNLEN + 1;
+	SID_NAME_USE sidUse;
+	SmartPointer<LPWSTR> sidString(LocalFree, nullptr);
 
-    // Resolve username to SID and convert to string
-    if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer.data(), &sidSize, domainBuffer, &domainSize, &sidUse) ||
-        !ConvertSidToStringSidW(sidBuffer.data(), &sidString))
-    {
-        return {};
-    }
+	// Resolve username to SID and convert to string
+	if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer.data(), &sidSize, domainBuffer, &domainSize, &sidUse) ||
+		!ConvertSidToStringSidW(sidBuffer.data(), &sidString))
+	{
+		return {};
+	}
 
-    return std::wstring(sidString);
+	return std::wstring(sidString);
 }
 
 static std::wstring GetSessionUserSidString(const DWORD sessionId)
 {
-    // Query session for username and domain
-    SmartPointer<LPWSTR> pUserName(WTSFreeMemory, nullptr);
-    SmartPointer<LPWSTR> pDomainName(WTSFreeMemory, nullptr);
-    DWORD bytesReturned = 0;
+	// Query session for username and domain
+	SmartPointer<LPWSTR> pUserName(WTSFreeMemory, nullptr);
+	SmartPointer<LPWSTR> pDomainName(WTSFreeMemory, nullptr);
+	DWORD bytesReturned = 0;
 
-    if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSUserName, &pUserName, &bytesReturned) || bytesReturned <= sizeof(WCHAR) ||
-        !WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSDomainName, &pDomainName, &bytesReturned) || bytesReturned <= sizeof(WCHAR))
-    {
-        return {};
-    }
+	if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSUserName, &pUserName, &bytesReturned) || bytesReturned <= sizeof(WCHAR) ||
+		!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSDomainName, &pDomainName, &bytesReturned) || bytesReturned <= sizeof(WCHAR))
+	{
+		return {};
+	}
 
-    // Convert domain\username to SID string
-    return GetSidStringForUser(std::wstring(pDomainName) + L"\\" + std::wstring(pUserName));
+	// Convert domain\username to SID string
+	return GetSidStringForUser(std::wstring(pDomainName) + L"\\" + std::wstring(pUserName));
 }
 
 static bool IsValidUserSession(const std::wstring& sidString)
 {
-    return !sidString.empty() && sidString != SYSTEM_SID_STRING;
+	return !sidString.empty() && sidString != SYSTEM_SID_STRING;
 }
 
 static DWORD FindTargetSession(const std::wstring& username)
 {
-    // Enumerate all sessions on the system
-    SmartPointer<PWTS_SESSION_INFOW> pSessionInfo(WTSFreeMemory, nullptr);
-    DWORD sessionCount = 0;
+	// Enumerate all sessions on the system
+	SmartPointer<PWTS_SESSION_INFOW> pSessionInfo(WTSFreeMemory, nullptr);
+	DWORD sessionCount = 0;
 
-    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pSessionInfo, &sessionCount))
-    {
-        return INVALID_SESSION;
-    }
+	if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pSessionInfo, &sessionCount))
+	{
+		return INVALID_SESSION;
+	}
 
-    // Resolve target username to SID if specified
-    const std::wstring targetSidString = username.empty() ? std::wstring{} : GetSidStringForUser(username);
-    if (!username.empty() && targetSidString.empty())
-    {
-        return INVALID_SESSION;
-    }
+	// Resolve target username to SID if specified
+	const std::wstring targetSidString = username.empty() ? std::wstring{} : GetSidStringForUser(username);
+	if (!username.empty() && targetSidString.empty())
+	{
+		return INVALID_SESSION;
+	}
 
-    // Get console session ID for priority matching
-    const DWORD consoleSessionId = username.empty() ? WTSGetActiveConsoleSessionId() : INVALID_SESSION;
-    DWORD firstActiveSession = INVALID_SESSION;
-    DWORD firstDisconnectedSession = INVALID_SESSION;
+	// Get console session ID for priority matching
+	const DWORD consoleSessionId = username.empty() ? WTSGetActiveConsoleSessionId() : INVALID_SESSION;
+	DWORD firstActiveSession = INVALID_SESSION;
+	DWORD firstDisconnectedSession = INVALID_SESSION;
 
-    // Iterate sessions to find best match
-    for (DWORD i = 0; i < sessionCount; ++i)
-    {
-        const DWORD sessionId = pSessionInfo[i].SessionId;
-        const WTS_CONNECTSTATE_CLASS state = pSessionInfo[i].State;
-        const std::wstring sessionSidString = GetSessionUserSidString(sessionId);
+	// Iterate sessions to find best match
+	for (DWORD i = 0; i < sessionCount; ++i)
+	{
+		const DWORD sessionId = pSessionInfo[i].SessionId;
+		const WTS_CONNECTSTATE_CLASS state = pSessionInfo[i].State;
+		const std::wstring sessionSidString = GetSessionUserSidString(sessionId);
 
-        if (username.empty())
-        {
-            // Skip invalid or SYSTEM sessions
-            if (!IsValidUserSession(sessionSidString))
-            {
-                continue;
-            }
-            // Prefer console session if valid
-            if (sessionId == consoleSessionId)
-            {
-                return consoleSessionId;
-            }
-            // Track first active session
-            if (state == WTSActive && firstActiveSession == INVALID_SESSION)
-            {
-                firstActiveSession = sessionId;
-            }
-            // Track first disconnected session as fallback
-            if (state == WTSDisconnected && firstDisconnectedSession == INVALID_SESSION)
-            {
-                firstDisconnectedSession = sessionId;
-            }
-        }
-        else
-        {
-            // Match by SID for specified username (active or disconnected)
-            if ((state == WTSActive || state == WTSDisconnected) && sessionSidString == targetSidString)
-            {
-                return sessionId;
-            }
-        }
-    }
+		if (username.empty())
+		{
+			// Skip invalid or SYSTEM sessions
+			if (!IsValidUserSession(sessionSidString))
+			{
+				continue;
+			}
+			// Prefer console session if valid
+			if (sessionId == consoleSessionId && state == WTSActive)
+			{
+				return consoleSessionId;
+			}
+			// Track first active session
+			if (state == WTSActive && firstActiveSession == INVALID_SESSION)
+			{
+				firstActiveSession = sessionId;
+			}
+			// Track first disconnected session as fallback
+			if (state == WTSDisconnected && firstDisconnectedSession == INVALID_SESSION)
+			{
+				firstDisconnectedSession = sessionId;
+			}
+		}
+		else
+		{
+			// Match by SID for specified username (active or disconnected)
+			if (sessionSidString == targetSidString && (state == WTSActive || (state == WTSDisconnected && firstDisconnectedSession == INVALID_SESSION)))
+			{
+				if (state == WTSActive) return sessionId; else firstDisconnectedSession = sessionId;
+			}
+		}
+	}
 
-    // Return first active, then first disconnected, then invalid
-    return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : firstDisconnectedSession;
+	// Return an active session; named lookups may fall back to a disconnected one
+	return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : (username.empty() ? INVALID_SESSION : firstDisconnectedSession);
 }
 
 int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait, const std::vector<std::wstring>& vProcessesToKill)
 {
-    // Find appropriate session for target user
-    const DWORD targetSessionId = FindTargetSession(username);
-    if (targetSessionId == INVALID_SESSION)
-    {
-        return __LINE__;
-    }
+	// Find appropriate session for target user
+	const DWORD targetSessionId = FindTargetSession(username);
+	if (targetSessionId == INVALID_SESSION)
+	{
+		return __LINE__;
+	}
 
-    // kill any requested processes in the target session before launching
-    for (const std::wstring& sProcessName : vProcessesToKill)
-    {
-        KillProcess(sProcessName, targetSessionId);
-    }
+	// kill any requested processes in the target session before launching
+	for (const std::wstring& sProcessName : vProcessesToKill)
+	{
+		KillProcess(sProcessName, targetSessionId);
+	}
 
-    // Get user token and create environment block
-    SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
-    SmartPointer<HANDLE> hPrimaryToken(CloseHandle, nullptr);
-    SmartPointer<LPVOID> pEnvironment(DestroyEnvironmentBlock, nullptr);
+	// Get user token and create environment block
+	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
+	SmartPointer<HANDLE> hPrimaryToken(CloseHandle, nullptr);
+	SmartPointer<LPVOID> pEnvironment(DestroyEnvironmentBlock, nullptr);
 
-    if (!WTSQueryUserToken(targetSessionId, &hToken) ||
-        !DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &hPrimaryToken) ||
-        !CreateEnvironmentBlock(&pEnvironment, hPrimaryToken, FALSE))
-    {
-        return __LINE__;
-    }
+	if (!WTSQueryUserToken(targetSessionId, &hToken) ||
+		!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &hPrimaryToken) ||
+		!CreateEnvironmentBlock(&pEnvironment, hPrimaryToken, FALSE))
+	{
+		return __LINE__;
+	}
 
-    // if requested, set the token integrity level to the "plus" variant of the current level
-    if (VariableIsSet(WINPRIV_EV_MEDIUM_PLUS, 1))
-    {
-        SID_IDENTIFIER_AUTHORITY mlAuthority = SECURITY_MANDATORY_LABEL_AUTHORITY;
-        SmartPointer<PSID> pNewSid(FreeSid, nullptr);
-        if (AllocateAndInitializeSid(&mlAuthority, 1, SECURITY_MANDATORY_MEDIUM_PLUS_RID,
-            0, 0, 0, 0, 0, 0, 0, &pNewSid))
-        {
-            TOKEN_MANDATORY_LABEL tml{};
-            tml.Label.Attributes = SE_GROUP_INTEGRITY;
-            tml.Label.Sid = pNewSid;
-            if (!SetTokenInformation(hPrimaryToken, TokenIntegrityLevel, &tml,
-                sizeof(TOKEN_MANDATORY_LABEL) + GetLengthSid(pNewSid)))
-            {
-                return __LINE__;
-            }
-        }
-    }
+	// if requested, set the token integrity level to the "plus" variant of the current level
+	if (VariableIsSet(WINPRIV_EV_MEDIUM_PLUS, 1))
+	{
+		SID_IDENTIFIER_AUTHORITY mlAuthority = SECURITY_MANDATORY_LABEL_AUTHORITY;
+		SmartPointer<PSID> pNewSid(FreeSid, nullptr);
+		if (!AllocateAndInitializeSid(&mlAuthority, 1, SECURITY_MANDATORY_MEDIUM_PLUS_RID,
+			0, 0, 0, 0, 0, 0, 0, &pNewSid))
+		{
+			PrintMessage(L"ERROR: Could not allocate the MediumPlus integrity SID: %lu\n", GetLastError());
+			return __LINE__;
+		}
+		TOKEN_MANDATORY_LABEL tml{};
+		tml.Label.Attributes = SE_GROUP_INTEGRITY;
+		tml.Label.Sid = pNewSid;
+		if (!SetTokenInformation(hPrimaryToken, TokenIntegrityLevel, &tml,
+			sizeof(TOKEN_MANDATORY_LABEL) + GetLengthSid(pNewSid)))
+		{
+			return __LINE__;
+		}
+	}
 
-    // Configure process to run on interactive desktop
-    STARTUPINFOW si = { sizeof(si) };
-    si.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOW;
+	// Configure process to run on interactive desktop
+	STARTUPINFOW si = { sizeof(si) };
+	si.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
+	si.dwFlags = STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_SHOW;
 
-    // Launch process as the target user
-    PROCESS_INFORMATION pi = {};
-    std::wstring cmdLineCopy = commandLine;
+	// Launch process as the target user
+	PROCESS_INFORMATION pi = {};
+	std::wstring cmdLineCopy = commandLine;
+	int iCommandArgc = 0;
+	LPWSTR* pParsedCommand = CommandLineToArgvW(commandLine.c_str(), &iCommandArgc);
+	SmartPointer<LPWSTR*> pCommandArgv(LocalFree, pParsedCommand);
+	if (pParsedCommand != nullptr && iCommandArgc > 0)
+	{
+		const std::wstring sExtension = std::filesystem::path(pParsedCommand[0]).extension().wstring();
+		if (_wcsicmp(sExtension.c_str(), L".cmd") == 0 || _wcsicmp(sExtension.c_str(), L".bat") == 0)
+		{
+			std::wstring sBatchCommand;
+			for (int i = 0; i < iCommandArgc; i++)
+			{
+				const std::wstring sArgument(pParsedCommand[i]);
+				if (sArgument.find_first_of(L"\"%\r\n") != std::wstring::npos)
+				{
+					PrintMessage(L"ERROR: Batch commands cannot contain quotes, percent signs, or newlines.\n");
+					return __LINE__;
+				}
+				if (!sBatchCommand.empty()) sBatchCommand += L' ';
+				sBatchCommand += L"\"" + sArgument + L"\"";
+			}
+			cmdLineCopy = L"cmd.exe /d /v:off /s /c \"" + sBatchCommand + L"\"";
+		}
+	}
 
-    if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
-    {
-        return __LINE__;
-    }
+	if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
+	{
+		return __LINE__;
+	}
 
-    SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
-    SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
+	SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
+	SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
 
-    if (!bWait)
-    {
-        return 0;
-    }
+	if (!bWait)
+	{
+		return 0;
+	}
 
-    // Wait for process to complete and clean up handles
-    if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
-    {
-        return __LINE__;
-    }
+	// Wait for process to complete and clean up handles
+	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
+	{
+		return __LINE__;
+	}
 
-    DWORD iExitCode = 0;
-    GetExitCodeProcess(hProcess, &iExitCode);
-    return iExitCode;
+	DWORD iExitCode = 0;
+	GetExitCodeProcess(hProcess, &iExitCode);
+	return iExitCode;
 }

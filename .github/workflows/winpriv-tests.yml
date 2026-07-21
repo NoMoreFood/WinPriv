@@ -1,0 +1,98 @@
+name: WinPriv tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safe:
+    name: Safe (x86 + x64)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify PowerShell 7.6 runner
+        shell: pwsh
+        run: |
+          $minimum = [version]'7.6'
+          if ($PSVersionTable.PSVersion -lt $minimum) {
+            throw "WinPriv tests require PowerShell $minimum or newer; found $($PSVersionTable.PSVersion)."
+          }
+          Write-Host "Using PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))."
+
+      - name: Cache Pester
+        uses: actions/cache@v4
+        with:
+          path: Tests/.tools
+          key: pester-5.7.1-${{ runner.os }}-${{ hashFiles('Tests/RequiredModules.psd1') }}
+
+      - name: Run safe suite
+        shell: pwsh
+        run: >-
+          ./Tests/Invoke-WinPrivTests.ps1
+          -Profile Safe
+          -Architecture x86,x64
+          -ResultsPath "$env:RUNNER_TEMP/WinPriv-Safe"
+
+      - name: Upload safe results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winpriv-safe-results
+          path: ${{ runner.temp }}/WinPriv-Safe
+          if-no-files-found: error
+
+  admin:
+    name: Admin (x86 + x64)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 75
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify PowerShell 7.6 runner
+        shell: pwsh
+        run: |
+          $minimum = [version]'7.6'
+          if ($PSVersionTable.PSVersion -lt $minimum) {
+            throw "WinPriv tests require PowerShell $minimum or newer; found $($PSVersionTable.PSVersion)."
+          }
+          Write-Host "Using PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))."
+
+      - name: Cache Pester
+        uses: actions/cache@v4
+        with:
+          path: Tests/.tools
+          key: pester-5.7.1-${{ runner.os }}-${{ hashFiles('Tests/RequiredModules.psd1') }}
+
+      - name: Confirm elevated runner token
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'The Admin test job requires an elevated administrator token.'
+          }
+
+      - name: Run admin suite
+        shell: pwsh
+        run: >-
+          ./Tests/Invoke-WinPrivTests.ps1
+          -Profile Admin
+          -Architecture x86,x64
+          -AllowGlobalPolicyMutation
+          -ResultsPath "$env:RUNNER_TEMP/WinPriv-Admin"
+
+      - name: Upload admin results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winpriv-admin-results
+          path: ${{ runner.temp }}/WinPriv-Admin
+          if-no-files-found: error
