@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Target Name="SignOutput" AfterTargets="Link">
-    <Exec Command="powershell.exe -NoProfile -NonInteractive -Command &quot;$cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object { $_.NotAfter -gt (Get-Date) } | Sort-Object NotAfter -Descending | Select-Object -First 1; if ($cert) { try { $r = Set-AuthenticodeSignature -FilePath '$(TargetPath)' -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://time.certum.pl/' -ErrorAction Stop; if ($r.Status -ne 'Valid') { Write-Host $r.StatusMessage; exit 1 } else { Write-Host $r.Path } } catch { Write-Host $_; exit 1 } }&quot;" />
+  <PropertyGroup>
+    <CodeSigningTimestampServer Condition="'$(CodeSigningTimestampServer)' == ''">http://time.certum.pl/</CodeSigningTimestampServer>
+    <RequireCodeSigning Condition="'$(RequireCodeSigning)' == ''">false</RequireCodeSigning>
+  </PropertyGroup>
+  <Target Name="SignOutput" AfterTargets="Link" Condition="'$(SkipCodeSigning)' != 'true'">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -Command &quot;$ErrorActionPreference = 'Stop'; $signingPath = '$(TargetDir)$(TargetName).signing$(TargetExt)'; try { $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'CurrentUser'); try { $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly); $cert = $store.Certificates | Where-Object { $eku = $_.Extensions['2.5.29.37']; $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) -and $null -ne $eku -and ($eku.EnhancedKeyUsages.Value -contains '1.3.6.1.5.5.7.3.3') } | Sort-Object NotAfter -Descending | Select-Object -First 1 } finally { $store.Close() }; if (-not $cert) { Write-Host 'No valid code-signing certificate was found.'; exit 2 }; Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; Copy-Item -LiteralPath '$(TargetPath)' -Destination $signingPath -Force; try { $r = Set-AuthenticodeSignature -FilePath $signingPath -Certificate $cert -HashAlgorithm SHA256 -TimestampServer '$(CodeSigningTimestampServer)' -ErrorAction Stop; if ($r.Status -ne 'Valid') { throw $r.StatusMessage }; Copy-Item -LiteralPath $signingPath -Destination '$(TargetPath)' -Force; Write-Host '$(TargetPath)' } finally { Remove-Item -LiteralPath $signingPath -Force -ErrorAction SilentlyContinue } } catch { Remove-Item -LiteralPath $signingPath -Force -ErrorAction SilentlyContinue; Write-Host $_; exit 1 }&quot;" IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="_CodeSigningExitCode" />
+    </Exec>
+    <Warning Condition="'$(_CodeSigningExitCode)' != '0' And '$(RequireCodeSigning)' != 'true'" Text="Code signing failed or was unavailable for $(TargetPath). The build will continue with the unsigned generated output." />
+    <Error Condition="'$(_CodeSigningExitCode)' != '0' And '$(RequireCodeSigning)' == 'true'" Text="Code signing failed or was unavailable for $(TargetPath)." />
   </Target>
 </Project>

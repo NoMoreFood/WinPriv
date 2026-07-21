@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <WinPrivSolutionDir>$(SolutionDir)</WinPrivSolutionDir>
+    <WinPrivSolutionDir Condition="'$(SolutionPath)'=='' Or '$(SolutionPath)'=='*Undefined*' Or '$(WinPrivSolutionDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\'))</WinPrivSolutionDir>
+    <WinPrivOutputArchitecture Condition="'$(Platform)'=='Win32'">x86</WinPrivOutputArchitecture>
+    <WinPrivOutputArchitecture Condition="'$(Platform)'!='Win32'">$(Platform)</WinPrivOutputArchitecture>
+    <OutDir>$(WinPrivSolutionDir)Tests\Native\Build\$(Configuration)\$(WinPrivOutputArchitecture)\</OutDir>
+    <IntDir>$(OutDir)Temp\$(ProjectName)\</IntDir>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <Optimization Condition="'$(Configuration)'=='Debug'">Disabled</Optimization>
+      <Optimization Condition="'$(Configuration)'!='Debug'">Full</Optimization>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'!='Debug'">MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat Condition="'$(Configuration)'=='Debug'">ProgramDatabase</DebugInformationFormat>
+      <DebugInformationFormat Condition="'$(Configuration)'!='Debug'">None</DebugInformationFormat>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <PreprocessorDefinitions>STRICT;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;$(WinPrivHookLoadingMode);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
+      <GenerateDebugInformation Condition="'$(Configuration)'=='Debug'">true</GenerateDebugInformation>
+      <GenerateDebugInformation Condition="'$(Configuration)'!='Debug'">false</GenerateDebugInformation>
+      <AdditionalDependencies>$(WinPrivHookAdditionalDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <DelayLoadDLLs Condition="'$(WinPrivHookDelayLoadDlls)'!=''">$(WinPrivHookDelayLoadDlls);%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

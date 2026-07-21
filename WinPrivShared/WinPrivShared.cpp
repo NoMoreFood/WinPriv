@@ -8,16 +8,14 @@
 
 #include <Windows.h>
 #include <winternl.h>
-#include <wincred.h>
-#include <cinttypes>
 #include <TlHelp32.h>
 #include <ntlsa.h>
 
+#include <algorithm>
 #include <array>
+#include <optional>
 #include <string>
 #include <vector>
-#include <cctype>
-#include <regex>
 
 #include "WinPrivShared.h"
 
@@ -25,24 +23,53 @@ std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEn
 {
 	std::wstring sResult;
 
-	for (unsigned int iCurrent = iStart; iCurrent <= iEnd && iEnd < vArgs.size(); iCurrent++)
-	{
-		std::wstring sArg(vArgs.at(iCurrent));
+	if (iStart > iEnd || iEnd >= vArgs.size()) return sResult;
 
-		if (std::ranges::count_if(sArg,
-			[](const wchar_t c) { return iswblank(c); }) > 0)
+	for (unsigned int iCurrent = iStart; iCurrent <= iEnd; iCurrent++)
+	{
+		const std::wstring sArg(vArgs.at(iCurrent));
+		if (!sResult.empty()) sResult += L' ';
+
+		// CommandLineToArgvW and the Microsoft C runtime give backslashes
+		// special meaning only when they precede a quote. Quote empty arguments
+		// and arguments containing delimiters, doubling the appropriate runs of
+		// backslashes so parsing the resulting command line reproduces sArg.
+		const bool bNeedsQuotes = sArg.empty() || sArg.find_first_of(L" \t\"") != std::wstring::npos;
+		if (!bNeedsQuotes)
 		{
-			// enclose the parameter in double quotes
-			sArg = L'"' + sArg + L'"';
+			sResult += sArg;
+			continue;
 		}
 
-		sResult += sArg + L' ';
+		sResult += L'"';
+		size_t iBackslashes = 0;
+		for (const wchar_t c : sArg)
+		{
+			if (c == L'\\')
+			{
+				iBackslashes++;
+				continue;
+			}
+
+			if (c == L'"')
+			{
+				// Escape both the accumulated backslashes and the quote itself.
+				sResult.append((iBackslashes * 2) + 1, L'\\');
+				sResult += c;
+			}
+			else
+			{
+				sResult.append(iBackslashes, L'\\');
+				sResult += c;
+			}
+			iBackslashes = 0;
+		}
+
+		// Backslashes immediately before the closing quote must be doubled.
+		sResult.append(iBackslashes * 2, L'\\');
+		sResult += L'"';
 	}
 
-	// trim off last character if space
-	if (!sResult.empty() && sResult.back() == L' ') sResult.pop_back();
-
-	// append a space for the next param
 	return sResult;
 }
 
@@ -82,12 +109,13 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 
 		// rights do not have to be enabled since they are automatically established
 		constexpr std::wstring_view sRight(L"Right");
-		if (std::equal(sRight.rbegin(), sRight.rend(), sPrivilege.rbegin())) return;
+		if (sPrivilege.ends_with(sRight)) return;
 
 		// translate the privilege name into the binary representation
 		if (LookupPrivilegeValue(nullptr, sPrivilege.c_str(), &tPrivEntry.Privileges[0].Luid) == 0)
 		{
 			PrintMessage(L"ERROR: Could not lookup privilege: %s\n", sPrivilege.c_str());
+			vUnavailablePrivs.emplace_back(sPrivilege);
 			return;
 		}
 
@@ -269,7 +297,7 @@ BOOL ModifyAccountRights(const std::wstring& sAccountName,
 	return bSuccessful;
 }
 
-static std::vector<std::wstring> QueryAccountRights(const std::wstring& sAccountName)
+static std::optional<std::vector<std::wstring>> QueryAccountRights(const std::wstring& sAccountName)
 {
 	std::vector<std::wstring> vRights;
 
@@ -284,7 +312,7 @@ static std::vector<std::wstring> QueryAccountRights(const std::wstring& sAccount
 	{
 		PrintMessage(L"ERROR: Could not resolve account '%s': %lu\n",
 			sAccountName.c_str(), GetLastError());
-		return vRights;
+		return std::nullopt;
 	}
 
 	// open LSA policy on the local machine
@@ -295,7 +323,7 @@ static std::vector<std::wstring> QueryAccountRights(const std::wstring& sAccount
 	{
 		PrintMessage(L"ERROR: Could not open security policy: %lu\n",
 			LsaNtStatusToWinError(iResult));
-		return vRights;
+		return std::nullopt;
 	}
 
 	// enumerate all rights currently assigned to this account
@@ -311,7 +339,7 @@ static std::vector<std::wstring> QueryAccountRights(const std::wstring& sAccount
 	{
 		PrintMessage(L"ERROR: Could not enumerate rights for '%s': %lu\n",
 			sAccountName.c_str(), LsaNtStatusToWinError(iResult));
-		return vRights;
+		return std::nullopt;
 	}
 
 	for (ULONG i = 0; i < iCount; i++)
@@ -345,9 +373,11 @@ BOOL ClearDenyRights(const std::wstring& sAccountName)
 		ULONG iAccountCount = 0;
 		BOOL bSuccessful = TRUE;
 		SmartPointer<PLSA_ENUMERATION_INFORMATION> pAccounts(LsaFreeMemory, nullptr);
+		NTSTATUS iEnumerationStatus = STATUS_SUCCESS;
 
-		while (LsaEnumerateAccounts(hPolicy, &hEnum,
-			reinterpret_cast<PVOID*>(&pAccounts), ULONG_MAX, &iAccountCount) == STATUS_SUCCESS)
+		while ((iEnumerationStatus = LsaEnumerateAccounts(hPolicy, &hEnum,
+			reinterpret_cast<PVOID*>(&pAccounts), ULONG_MAX, &iAccountCount)) == STATUS_SUCCESS ||
+			iEnumerationStatus == STATUS_MORE_ENTRIES)
 		{
 			for (ULONG i = 0; i < iAccountCount; i++)
 			{
@@ -371,7 +401,14 @@ BOOL ClearDenyRights(const std::wstring& sAccountName)
 				SmartPointer<PLSA_UNICODE_STRING> pRights(LsaFreeMemory, nullptr);
 				ULONG iRightCount = 0;
 				iResult = LsaEnumerateAccountRights(hPolicy, pSid, &pRights, &iRightCount);
-				if (iResult == STATUS_OBJECT_NAME_NOT_FOUND || iResult != STATUS_SUCCESS) continue;
+				if (iResult == STATUS_OBJECT_NAME_NOT_FOUND) continue;
+				if (iResult != STATUS_SUCCESS)
+				{
+					bSuccessful = FALSE;
+					PrintMessage(L"ERROR: Could not enumerate rights for '%s': %lu\n",
+						sDisplayName.c_str(), LsaNtStatusToWinError(iResult));
+					continue;
+				}
 
 				// collect whichever deny rights are present on this account
 				std::vector<std::wstring> vToRemove;
@@ -410,18 +447,25 @@ BOOL ClearDenyRights(const std::wstring& sAccountName)
 
 			pAccounts.Cleanup();
 		}
+		if (iEnumerationStatus != STATUS_NO_MORE_ENTRIES)
+		{
+			bSuccessful = FALSE;
+			PrintMessage(L"ERROR: Could not enumerate security-policy accounts: %lu\n",
+				LsaNtStatusToWinError(iEnumerationStatus));
+		}
 
 		return bSuccessful;
 	}
 
 	// enumerate rights actually assigned so we only act on ones that are present
-	const std::vector<std::wstring> vAssigned = QueryAccountRights(sAccountName);
+	const std::optional<std::vector<std::wstring>> vAssigned = QueryAccountRights(sAccountName);
+	if (!vAssigned.has_value()) return FALSE;
 
 	// intersect the deny list with what is actually assigned so output is meaningful
 	std::vector<std::wstring> vToRemove;
 	for (const auto& sRight : g_vDenyRights)
 	{
-		if (std::ranges::find(vAssigned, sRight) != vAssigned.end())
+		if (std::ranges::find(*vAssigned, sRight) != vAssigned->end())
 		{
 			vToRemove.push_back(sRight);
 		}
@@ -499,7 +543,19 @@ void KillProcess(const std::wstring& sProcessName, DWORD iSessionId)
 			|| iSessionId != iCurrentSessionId) continue;
 
 		// kill process
-		SmartPointer<HANDLE> hProcess(CloseHandle, OpenProcess(PROCESS_TERMINATE, 0, tEntry.th32ProcessID));
-		TerminateProcess(hProcess, 1);
+		SmartPointer<HANDLE> hProcess(CloseHandle,
+			OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, tEntry.th32ProcessID));
+		if (!hProcess || TerminateProcess(hProcess, 1) == 0)
+		{
+			const DWORD iError = GetLastError();
+			PrintMessage(L"ERROR: Could not terminate process '%s' (%lu): %lu\n",
+				sProcessName.c_str(), tEntry.th32ProcessID, iError);
+			continue;
+		}
+		if (WaitForSingleObject(hProcess, INFINITE) != WAIT_OBJECT_0)
+		{
+			PrintMessage(L"ERROR: Could not wait for process '%s' (%lu) to terminate.\n",
+				sProcessName.c_str(), tEntry.th32ProcessID);
+		}
 	}
 }

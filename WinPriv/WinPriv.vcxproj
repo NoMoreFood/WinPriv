@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Release|Win32">
       <Configuration>Release</Configuration>
       <Platform>Win32</Platform>
@@ -17,12 +33,16 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="WinPriv.h" />
-    <ClInclude Include="WinPrivResource.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="WinPrivResource.rc" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\WinPrivLibrary\WinPrivLibrary.vcxproj">
+      <Project>{eedfce80-ea9c-4ac1-b97b-d72370fad96f}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
     <ProjectReference Include="..\WinPrivShared\WinPrivShared.vcxproj">
       <Project>{582d212a-66b9-4e99-a7d3-36b1c249d637}</Project>
     </ProjectReference>
@@ -31,10 +51,13 @@
     <Image Include="WinPriv.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\Build\ARM64\WinPrivLibrary.dll" />
     <None Include="..\Build\x64\WinPrivLibrary.dll" />
     <None Include="..\Build\x86\WinPrivLibrary.dll" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
+    <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
+    <Platform Condition="'$(Platform)'==''">Win32</Platform>
     <ProjectGuid>{C9CBD938-2A0F-4D91-81F4-94414751BFBE}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>WinPriv</RootNamespace>
@@ -42,6 +65,12 @@
     <ProjectName>WinPriv</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
@@ -49,7 +78,7 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64' Or '$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
@@ -57,29 +86,69 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <WinPrivSolutionDir>$(SolutionDir)</WinPrivSolutionDir>
+    <WinPrivSolutionDir Condition="'$(SolutionPath)'=='' Or '$(SolutionPath)'=='*Undefined*' Or '$(WinPrivSolutionDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</WinPrivSolutionDir>
+  </PropertyGroup>
   <ImportGroup Label="ExtensionSettings">
   </ImportGroup>
   <ImportGroup Label="Shared">
   </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)'=='Debug'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64' Or '$(Configuration)|$(Platform)'=='Release|ARM64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <LinkIncremental>true</LinkIncremental>
+    <OutDir>$(WinPrivSolutionDir)Build\Debug\$(PlatformTarget)\</OutDir>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+    <IntDir>$(WinPrivSolutionDir)Build\Debug\$(PlatformTarget)\Temp\$(ProjectName)\</IntDir>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <OutDir>$(SolutionDir)Build\$(PlatformTarget)\</OutDir>
-    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(SolutionDir)DetoursLibrary\$(PlatformTarget)</IncludePath>
-    <IntDir>$(SolutionDir)Build\$(PlatformTarget)\Temp\$(ProjectName)\</IntDir>
+    <OutDir>$(WinPrivSolutionDir)Build\$(PlatformTarget)\</OutDir>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+    <IntDir>$(WinPrivSolutionDir)Build\$(PlatformTarget)\Temp\$(ProjectName)\</IntDir>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64' Or '$(Configuration)|$(Platform)'=='Release|ARM64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(SolutionDir)DetoursLibrary\$(PlatformTarget)</IncludePath>
-    <OutDir>$(SolutionDir)Build\$(PlatformTarget)\</OutDir>
-    <IntDir>$(SolutionDir)Build\$(PlatformTarget)\Temp\$(ProjectName)\</IntDir>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+    <OutDir>$(WinPrivSolutionDir)Build\$(PlatformTarget)\</OutDir>
+    <IntDir>$(WinPrivSolutionDir)Build\$(PlatformTarget)\Temp\$(ProjectName)\</IntDir>
   </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions Condition="'$(Platform)'=='Win32'">WIN32;_DEBUG;STRICT;_CRT_SECURE_NO_WARNINGS;WINVER=_WIN32_WINNT_WIN10;_WIN32_WINNT=_WIN32_WINNT_WIN10;PROJECT_NAME=L&quot;$(ProjectName)&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Platform)'!='Win32'">_DEBUG;STRICT;_CRT_SECURE_NO_WARNINGS;WINVER=_WIN32_WINNT_WIN10;_WIN32_WINNT=_WIN32_WINNT_WIN10;PROJECT_NAME=L&quot;$(ProjectName)&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\WinPrivShared</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
+      <AdditionalDependencies>kernel32.lib;user32.lib;advapi32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>true</UseLibraryDependencyInputs>
+    </ProjectReference>
+    <ResourceCompile>
+      <PreprocessorDefinitions>_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -88,7 +157,7 @@
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;STRICT;_CRT_SECURE_NO_WARNINGS;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;WINVER=_WIN32_WINNT_WIN7;_WIN32_WINNT=_WIN32_WINNT_WIN7;PROJECT_NAME=L"$(ProjectName)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;STRICT;_CRT_SECURE_NO_WARNINGS;WINVER=_WIN32_WINNT_WIN10;_WIN32_WINNT=_WIN32_WINNT_WIN10;PROJECT_NAME=L"$(ProjectName)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\WinPrivShared</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <StringPooling>true</StringPooling>
@@ -102,7 +171,6 @@
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalLibraryDirectories>$(SolutionDir)DetoursLibrary\$(PlatformTarget)\</AdditionalLibraryDirectories>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <SetChecksum>true</SetChecksum>
@@ -117,19 +185,19 @@
       <PreprocessorDefinitions>_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64' Or '$(Configuration)|$(Platform)'=='Release|ARM64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;STRICT;_CRT_SECURE_NO_WARNINGS;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;WINVER=_WIN32_WINNT_WIN7;_WIN32_WINNT=_WIN32_WINNT_WIN7;PROJECT_NAME=L"$(ProjectName)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;STRICT;_CRT_SECURE_NO_WARNINGS;WINVER=_WIN32_WINNT_WIN10;_WIN32_WINNT=_WIN32_WINNT_WIN10;PROJECT_NAME=L"$(ProjectName)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\WinPrivShared</AdditionalIncludeDirectories>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
-      <OmitFramePointers>false</OmitFramePointers>
+      <OmitFramePointers Condition="'$(Platform)'=='x64'">false</OmitFramePointers>
       <BrowseInformation>false</BrowseInformation>
       <DebugInformationFormat>None</DebugInformationFormat>
       <LanguageStandard>stdcpp20</LanguageStandard>
@@ -140,7 +208,6 @@
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalLibraryDirectories>$(SolutionDir)DetoursLibrary\$(PlatformTarget)\</AdditionalLibraryDirectories>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <SetChecksum>true</SetChecksum>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>

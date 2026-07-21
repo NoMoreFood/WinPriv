@@ -12,7 +12,6 @@
 
 #include <map>
 #include <string>
-#include <regex>
 
 #include <ntlsa.h>
 
@@ -44,17 +43,19 @@ std::map<std::wstring, std::wstring> GetPrivilegeList()
 	{
 		for (ULONG iPrivIndex = 0; iPrivIndex < countReturned; iPrivIndex++)
 		{
+			const std::wstring sPrivilegeName(buffer[iPrivIndex].Name.Buffer, buffer[iPrivIndex].Name.Length / sizeof(WCHAR));
+			tPrivilegeList[sPrivilegeName] = sPrivilegeName;
 			DWORD iSize = 0;
 			DWORD iIden = 0;
 
 			// return privilege display name -- call lookup once to get string size
 			// and then alloc the string on the next call to get the string
-			if (LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer, nullptr, &iSize, &iIden) == 0)
+			if (LookupPrivilegeDisplayName(nullptr, sPrivilegeName.c_str(), nullptr, &iSize, &iIden) == 0)
 			{
 				SmartPointer<LPWSTR> sDisplayName(free, static_cast<LPWSTR>(malloc(sizeof(WCHAR) * (++iSize))));
-				if (LookupPrivilegeDisplayName(nullptr, buffer[iPrivIndex].Name.Buffer, sDisplayName, &iSize, &iIden) != 0)
+				if (LookupPrivilegeDisplayName(nullptr, sPrivilegeName.c_str(), sDisplayName, &iSize, &iIden) != 0)
 				{
-					tPrivilegeList[buffer[iPrivIndex].Name.Buffer] = static_cast<LPWSTR>(sDisplayName);
+					tPrivilegeList[sPrivilegeName] = static_cast<LPWSTR>(sDisplayName);
 				}
 			}
 		}
@@ -67,7 +68,7 @@ std::wstring GetWinPrivHelp()
 {
 	// a messagebox will garble this help information so simply the help
 	// for the non-commandline version and defer to commandline for help
-	if (GetConsoleWindow() == nullptr)
+	if (!WinPrivUsesConsoleSubsystem())
 	{
 		return std::wstring(PROJECT_NAME) +
 			L".exe [optional switches] <Command To Execute> \n" +
@@ -101,6 +102,11 @@ WinPriv.
 Optional Switches
 =================
 
+/Help, /?
+
+   Displays this help information and exits. The same help is displayed when
+   no target command is supplied.
+
 /LoadCommands <Path>
 
    Specifies an additional config file to load command line paramters
@@ -112,6 +118,20 @@ Optional Switches
    Examples:
 
 	  /LoadCommands C:\Config\MySettings.cfg
+
+/WithPrivs <Privilege>[,<Privilege>,...]
+
+   Enables one or more named Windows privileges for the target process. Use a
+   comma-delimited list when enabling multiple privileges.
+
+   Examples:
+
+	  /WithPrivs SeDebugPrivilege,SeBackupPrivilege
+
+/WithAllPrivs
+
+   Attempts to enable every privilege available to the current account for
+   the target process.
 
 /RegOverride <Registry Key Path> <Value Name> <Data Type> <Data Value>
 
@@ -219,6 +239,11 @@ Optional Switches
    This option causes the most common operating system version information
    functions to indicate that the system is running a server edition of the
    operating system.
+
+/DisableAmsi
+
+   This option disables Antimalware Scan Interface (AMSI) scanning for the
+   target process and its child processes.
 
 /RecordCrypto <Directory>
 

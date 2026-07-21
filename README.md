@@ -20,7 +20,7 @@ Typical uses include testing security configurations on a per-process basis, wor
 
 ## Downloads
 
-Pre-built binaries for both x86 and x64 are in the [`Build/`](Build/) directory. Two executables are provided:
+Pre-built binaries for x86, x64, and ARM64 are in the [`Build/`](Build/) directory. Two executables are provided:
 
 | Executable | Use when… |
 |---|---|
@@ -31,9 +31,9 @@ The behavior of the subprocess is identical regardless of which launcher is used
 
 ## Requirements
 
-- Windows (Vista or later)
+- Windows 10 or later
 - Administrator rights are required for most operations
-- No installation needed — the Detours library is embedded as a resource and extracted to the user's temp directory at runtime
+- No installation needed — the injection libraries are embedded as resources and extracted to the user's temp directory at runtime
 
 ## Usage
 
@@ -222,7 +222,7 @@ Display a message box with the given text before launching the target process.
 Display a Yes/No prompt before launching. If the user clicks No, execution is cancelled.
 
 **`/ExtractLibrary`**  
-Extract the embedded 32-bit and 64-bit Detours libraries to the directory containing WinPriv. On subsequent runs, WinPriv will use those files instead of extracting to the user's temp directory. Useful in environments where temp-directory writes are restricted.
+Extract the embedded x86, x64, and ARM64 WinPriv injection libraries to the directory containing WinPriv. On subsequent runs, WinPriv will use those files instead of extracting to the user's temp directory. Useful in environments where temp-directory writes are restricted.
 
 **`/Help`** or **`/?`**  
 Display the full help text.
@@ -276,20 +276,22 @@ WinPrivCmd.exe /RunAsConsoleUser deploy.cmd
 
 ## Building from Source
 
-Requirements: Visual Studio 2022 with the C++ Desktop workload and Windows SDK.
+Requirements: Visual Studio with the v145 C++ toolset, Desktop development with C++, ARM64 build tools, and a Windows SDK.
 
-Open `WinPriv.sln` and build the `Release` configuration for the desired platform (`Win32` or `x64`). Output binaries are written to `Build\x86\` and `Build\x64\`. Both platforms can be built simultaneously using Batch Build.
+Open `WinPriv.sln` and build either the `Release` or `Debug` configuration for the desired platform (`Win32`, `x64`, or `ARM64`). Release binaries are written to `Build\x86\`, `Build\x64\`, and `Build\ARM64\`; Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations automatically produce all three injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
 
 The solution contains four projects:
 
 | Project | Output | Description |
 |---|---|---|
-| `WinPriv` | `WinPriv.exe` / `WinPrivCmd.exe` | Main executable (GUI and console variants) |
-| `WinPrivLibrary` | `WinPrivLibrary.dll` | Detours library injected into target processes |
+| `WinPriv` | `WinPriv.exe` | Main GUI executable |
+| `WinPrivCmd` | `WinPrivCmd.exe` | Main console executable |
+| `WinPrivLibrary` | `WinPrivLibrary.dll` | Injected hooking library containing the consolidated Detours fork |
 | `WinPrivShared` | static lib | Shared privilege and LSA utilities |
-| `DetoursLibrary` | pre-built | Microsoft Detours (included) |
 
-`WinPrivLibrary.dll` is embedded as a resource inside the main executable for both x86 and x64 and extracted to the user's temp directory at runtime.
+The x86, x64, and ARM64 `WinPrivLibrary.dll` builds are embedded as resources inside each launcher and extracted to the user's temp directory at runtime. The native ARM64 launcher injects native ARM64 targets; use the x64 launcher under Windows emulation for x64 targets.
+
+Code signing is best-effort by default: certificate or timestamp failures emit a build warning and preserve the generated executable. Use `/p:SkipCodeSigning=true` to skip signing or `/p:RequireCodeSigning=true` to make signing failures fatal.
 
 ---
 
