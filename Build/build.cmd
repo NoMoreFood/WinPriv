@@ -2,6 +2,8 @@
 TITLE Building WinPriv...
 CLS
 SET PATH=%WINDIR%\system32;%WINDIR%\system32\WindowsPowerShell\v1.0
+IF EXIST "%ProgramFiles%\7-Zip" SET PATH=%ProgramFiles%\7-Zip;%PATH%
+IF EXIST "%ProgramFiles(x86)%\7-Zip" SET PATH=%ProgramFiles(x86)%\7-Zip;%PATH%
 SET PSModulePath=%WINDIR%\system32\WindowsPowerShell\v1.0\Modules;%PSModulePath%
 
 :: do cleanup
@@ -27,7 +29,9 @@ MD "%LICENSEDIR%"
 COPY /Y "%BINDIR%..\LICENSE" "%LICENSEDIR%\WinPriv-LICENSE" >NUL
 PUSHD "%BINDIR%"
 SET POWERSHELL=POWERSHELL.EXE -NoProfile -NonInteractive -NoLogo
-%POWERSHELL% -Command "Compress-Archive -LiteralPath @('x86','x64','ARM64','licenses') -DestinationPath '%BINDIR%\WinPriv.zip'"
+7z.EXE >NUL 2>&1
+IF %ERRORLEVEL% NEQ 0 ECHO 7-Zip not found; skipping archive
+IF %ERRORLEVEL% EQU 0 7z.EXE a -tzip -mm=Deflate -mx=9 "%BINDIR%\WinPriv.zip" x86 x64 ARM64 licenses
 POPD
 RD /S /Q "%LICENSEDIR%" >NUL 2>&1
 
