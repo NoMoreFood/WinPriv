@@ -387,11 +387,11 @@ static NTSTATUS(WINAPI* TrueNtQueryValueKey)(_In_ HANDLE KeyHandle, _In_ PUNICOD
 											 _Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength) = (decltype(TrueNtQueryValueKey))
 	GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryValueKey");
 
-EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
-	_In_ PUNICODE_STRING ValueName, _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-	_Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength)
+static std::vector<RegInterceptInfo*> vRegInterceptList;
+
+static void InitializeRegistryOverrides()
 {
-	static const std::vector<RegInterceptInfo*> vRegInterceptList = []
+	vRegInterceptList = []
 	{
 		std::vector<RegInterceptInfo*> vResult;
 
@@ -590,7 +590,12 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 		}
 		return vResult;
 	}();
+}
 
+EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
+	_In_ PUNICODE_STRING ValueName, _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+	_Out_opt_ PVOID KeyValueInformation, _In_ ULONG Length, _Out_ PULONG ResultLength)
+{
 	// sanity check
 	if (ResultLength == nullptr)
 	{
@@ -1691,6 +1696,50 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	return iResult;
 }
 
+#if defined(_M_X64)
+class AdoVtableWriteScope final
+{
+public:
+	explicit AdoVtableWriteScope(PVOID* pSlot) noexcept : pSlot_(pSlot)
+	{
+		bWritable_ = VirtualProtect(pSlot_, sizeof(*pSlot_), PAGE_READWRITE, &iProtection_) != FALSE;
+	}
+
+	~AdoVtableWriteScope() noexcept
+	{
+		DWORD iIgnored = 0;
+		if (bWritable_) VirtualProtect(pSlot_, sizeof(*pSlot_), iProtection_, &iIgnored);
+	}
+
+	explicit operator bool() const noexcept { return bWritable_; }
+	AdoVtableWriteScope(const AdoVtableWriteScope&) = delete;
+	AdoVtableWriteScope& operator=(const AdoVtableWriteScope&) = delete;
+
+private:
+	PVOID* pSlot_;
+	DWORD iProtection_ = 0;
+	bool bWritable_ = false;
+};
+
+static bool AttachAdoVtableDetours(PVOID* pInvokeSlot, PVOID* pOpenSlot) noexcept
+{
+	const AdoVtableWriteScope tInvokeWrite(pInvokeSlot);
+	if (!tInvokeWrite) return false;
+	const AdoVtableWriteScope tOpenWrite(pOpenSlot);
+	if (!tOpenWrite) return false;
+
+	const PVOID pInvokeDetour = reinterpret_cast<PVOID>(DetourAdoDispatchInvoke);
+	const PVOID pOpenDetour = reinterpret_cast<PVOID>(DetourAdoConnectionOpen);
+	if (InterlockedCompareExchangePointer(pInvokeSlot, pInvokeDetour,
+		pAdoDispatchInvokeTarget) != pAdoDispatchInvokeTarget) return false;
+	if (InterlockedCompareExchangePointer(pOpenSlot, pOpenDetour,
+		pAdoConnectionOpenTarget) == pAdoConnectionOpenTarget) return true;
+
+	InterlockedCompareExchangePointer(pInvokeSlot, pAdoDispatchInvokeTarget, pInvokeDetour);
+	return false;
+}
+#endif
+
 static void AttachAdoDispatchDetour()
 {
 	if (bAdoDispatchAttached) return;
@@ -1745,16 +1794,32 @@ static void AttachAdoDispatchDetour()
 				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
 				reinterpret_cast<LPCWSTR>(reinterpret_cast<ULONG_PTR>(
 					DetourAdoDispatchInvoke)), &hWinPrivDispatchModule) != FALSE;
-			winpriv::detours::transaction tTransaction;
-			if (bTargetPinned && bOpenTargetPinned && bWinPrivPinned &&
-				pAdoConnectionOpenTarget != pAdoDispatchInvokeTarget && tTransaction &&
-				tTransaction.apply(winpriv::detours::action::attach,
-					TrueAdoDispatchInvoke, DetourAdoDispatchInvoke) == NO_ERROR &&
-				tTransaction.apply(winpriv::detours::action::attach,
-					TrueAdoConnectionOpen, DetourAdoConnectionOpen) == NO_ERROR &&
-				tTransaction.commit() == NO_ERROR)
+			const bool bTargetsReady = bTargetPinned && bOpenTargetPinned && bWinPrivPinned &&
+				pAdoConnectionOpenTarget != pAdoDispatchInvokeTarget;
+#if defined(_M_X64)
+			USHORT iProcessMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+			USHORT iNativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+			if (IsWow64Process2(GetCurrentProcess(), &iProcessMachine, &iNativeMachine) &&
+				iNativeMachine == IMAGE_FILE_MACHINE_ARM64)
 			{
-				bAdoDispatchAttached = true;
+				// Emulated x64 COM vtables can point directly to ARM64EC instructions.
+				// Slot replacement preserves the platform's cross-architecture call thunks.
+				bAdoDispatchAttached = bTargetsReady && AttachAdoVtableDetours(
+					&pVtable[6], &pConnectionVtable[iConnectionOpenVtableIndex]);
+			}
+			else
+#endif
+			{
+				winpriv::detours::transaction tTransaction;
+				if (bTargetsReady && tTransaction &&
+					tTransaction.apply(winpriv::detours::action::attach,
+						TrueAdoDispatchInvoke, DetourAdoDispatchInvoke) == NO_ERROR &&
+					tTransaction.apply(winpriv::detours::action::attach,
+						TrueAdoConnectionOpen, DetourAdoConnectionOpen) == NO_ERROR &&
+					tTransaction.commit() == NO_ERROR)
+				{
+					bAdoDispatchAttached = true;
+				}
 			}
 		}
 	}
@@ -1770,8 +1835,8 @@ static void InitializeComDetoursForCurrentThread()
 		&tComDetourInitializationLock);
 	try
 	{
-#if defined(_M_X64)
-		// x64 needs both late-bound Invoke and direct Connection15::Open coverage;
+#if defined(_M_X64) || defined(_M_ARM64)
+		// x64 and ARM64 need both late-bound Invoke and direct Connection15::Open coverage;
 		// the two C++ hooks share a thread-local rewrite guard.
 		AttachAdoDispatchDetour();
 #else
@@ -1880,6 +1945,8 @@ void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
+		// Emulated x86 threads can query the registry before their static TLS is initialized.
+		if (attaching) InitializeRegistryOverrides();
 		ApplyDetour(requestedAction, TrueNtQueryValueKey, DetourNtQueryValueKey);
 		ApplyDetour(requestedAction, TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
@@ -1969,7 +2036,7 @@ void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 		ApplyDetour(requestedAction, TrueCoCreateInstanceEx, DetourCoCreateInstanceEx);
 		if (!attaching)
 		{
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !defined(_M_ARM64)
 			DllExtraDetachCom();
 #endif
 		}

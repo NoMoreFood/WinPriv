@@ -47,6 +47,13 @@ function Write-AtomicBytes {
     )
 
     $fullPath = [IO.Path]::GetFullPath($Path)
+    # Windows PowerShell also needs extended paths for the managed staging writes.
+    if (-not $fullPath.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        $fullPath = if ($fullPath.StartsWith('\\', [StringComparison]::Ordinal)) {
+            '\\?\UNC\' + $fullPath.Substring(2)
+        }
+        else { '\\?\' + $fullPath }
+    }
     $directory = [IO.Path]::GetDirectoryName($fullPath)
     if (-not [string]::IsNullOrEmpty($directory) -and -not [IO.Directory]::Exists($directory)) {
         [void][IO.Directory]::CreateDirectory($directory)

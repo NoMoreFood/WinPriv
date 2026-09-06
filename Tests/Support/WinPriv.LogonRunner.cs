@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 
@@ -34,6 +36,9 @@ namespace WinPrivTests
         private const short SW_HIDE = 0;
         private const uint WAIT_OBJECT_0 = 0;
         private const uint WAIT_TIMEOUT = 0x00000102;
+        private const uint DACL_SECURITY_INFORMATION = 4;
+        private const int WINSTA_ALL_ACCESS = 0x000F037F;
+        private const int DESKTOP_ALL_ACCESS = 0x000F01FF;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct STARTUPINFO
@@ -138,6 +143,22 @@ namespace WinPrivTests
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint ResumeThread(IntPtr thread);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetProcessWindowStation();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetThreadDesktop(uint threadId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetUserObjectSecurity(IntPtr handle, ref uint information,
+            byte[] descriptor, uint length, out uint needed);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetUserObjectSecurity(IntPtr handle, ref uint information, byte[] descriptor);
+
         [DllImport("kernel32.dll")]
         private static extern bool CloseHandle(IntPtr handle);
 
@@ -154,14 +175,21 @@ namespace WinPrivTests
             result.CommandLine = commandLine;
             STARTUPINFO startup = new STARTUPINFO();
             startup.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
-            startup.lpDesktop = "winsta0\\default";
             startup.dwFlags = STARTF_USESHOWWINDOW;
             startup.wShowWindow = SW_HIDE;
             PROCESS_INFORMATION process = new PROCESS_INFORMATION();
             IntPtr job = IntPtr.Zero;
             IntPtr environmentBlock = IntPtr.Zero;
+            UserObjectAccess stationAccess = null;
+            UserObjectAccess desktopAccess = null;
             try
             {
+                string account = String.IsNullOrEmpty(domain) ? userName : domain + "\\" + userName;
+                SecurityIdentifier sid = (SecurityIdentifier)new NTAccount(account)
+                    .Translate(typeof(SecurityIdentifier));
+                stationAccess = new UserObjectAccess(GetProcessWindowStation(), sid, WINSTA_ALL_ACCESS);
+                desktopAccess = new UserObjectAccess(GetThreadDesktop(GetCurrentThreadId()), sid, DESKTOP_ALL_ACCESS);
+
                 // These probes inspect token state only. Loading HKCU would
                 // create a persistent profile for the temporary local user and
                 // provides no test coverage benefit.
@@ -245,6 +273,65 @@ namespace WinPrivTests
                 if (job != IntPtr.Zero) CloseHandle(job);
                 if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
                 if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+                try
+                {
+                    if (desktopAccess != null) desktopAccess.Dispose();
+                }
+                finally
+                {
+                    if (stationAccess != null) stationAccess.Dispose();
+                }
+            }
+        }
+
+        private sealed class UserObjectAccess : IDisposable
+        {
+            private readonly IntPtr handle;
+            private readonly byte[] original;
+            private bool changed;
+
+            public UserObjectAccess(IntPtr handle, SecurityIdentifier sid, int accessMask)
+            {
+                this.handle = handle;
+                original = ReadSecurity(handle);
+                RawSecurityDescriptor security = new RawSecurityDescriptor(original, 0);
+                if (security.DiscretionaryAcl == null) return;
+                int index = 0;
+                while (index < security.DiscretionaryAcl.Count &&
+                    (security.DiscretionaryAcl[index].AceFlags & AceFlags.Inherited) == 0) index++;
+                security.DiscretionaryAcl.InsertAce(index,
+                    new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, accessMask, sid, false, null));
+                byte[] descriptor = new byte[security.BinaryLength];
+                security.GetBinaryForm(descriptor, 0);
+                uint information = DACL_SECURITY_INFORMATION;
+                if (!SetUserObjectSecurity(handle, ref information, descriptor))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not grant fixture desktop access.");
+                changed = true;
+            }
+
+            public void Dispose()
+            {
+                if (!changed) return;
+                uint information = DACL_SECURITY_INFORMATION;
+                if (!SetUserObjectSecurity(handle, ref information, original))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not restore fixture desktop access.");
+                changed = false;
+                string expected = new RawSecurityDescriptor(original, 0).GetSddlForm(AccessControlSections.Access);
+                string actual = new RawSecurityDescriptor(ReadSecurity(handle), 0)
+                    .GetSddlForm(AccessControlSections.Access);
+                if (!String.Equals(expected, actual, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Fixture desktop ACL did not match its original descriptor.");
+            }
+
+            private static byte[] ReadSecurity(IntPtr handle)
+            {
+                uint information = DACL_SECURITY_INFORMATION;
+                uint needed;
+                GetUserObjectSecurity(handle, ref information, null, 0, out needed);
+                byte[] descriptor = new byte[needed];
+                if (needed == 0 || !GetUserObjectSecurity(handle, ref information, descriptor, needed, out needed))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read fixture desktop access.");
+                return descriptor;
             }
         }
 

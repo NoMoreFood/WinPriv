@@ -669,6 +669,12 @@ namespace WinPrivProbe
                     result["openError"] = actual.Message;
                     result["openHresult"] = Marshal.GetHRForException(actual);
                     result["openHresultHex"] = Hex32(Marshal.GetHRForException(actual));
+                    if (!(actual is COMException))
+                    {
+                        result["reason"] = "Unexpected ADO Open failure: " +
+                            actual.GetType().FullName + ": " + actual.Message;
+                        return result;
+                    }
                 }
                 result["success"] = true;
                 return result;

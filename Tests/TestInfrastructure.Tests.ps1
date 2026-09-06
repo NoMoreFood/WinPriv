@@ -131,7 +131,7 @@ Describe 'WinPriv local-principal fixture contract' -Tag 'Safe', 'Admin' {
 Describe 'WinPriv partial security-fixture teardown' -Tag 'Safe', 'Admin' {
     BeforeEach {
         Mock Revoke-WinPrivFixtureRights { }
-        Mock Set-Acl { }
+        Mock Set-WinPrivFixtureAcl { }
         Mock Remove-WinPrivLocalPrincipal { }
         Mock Remove-WinPrivSandbox { }
     }
@@ -147,7 +147,7 @@ Describe 'WinPriv partial security-fixture teardown' -Tag 'Safe', 'Admin' {
 
     It 'attempts every later cleanup stage after rights and ACL restoration fail' {
         Mock Revoke-WinPrivFixtureRights { throw 'injected rights cleanup failure' }
-        Mock Set-Acl { throw 'injected ACL cleanup failure' }
+        Mock Set-WinPrivFixtureAcl { throw 'injected ACL cleanup failure' }
         $sandbox = [pscustomobject]@{ Root = $TestDrive }
         $principal = [pscustomobject]@{
             Account = 'MACHINE\WPTU000000000000'; Name = 'WPTU000000000000'
@@ -157,7 +157,7 @@ Describe 'WinPriv partial security-fixture teardown' -Tag 'Safe', 'Admin' {
         { Remove-WinPrivSecurityFixture -Architecture x64 -Sandbox $sandbox -Principal $principal `
                 -OriginalAcl ([pscustomobject]@{}) } | Should -Throw '*Security fixture cleanup failed*'
         Should -Invoke Revoke-WinPrivFixtureRights -Times 1
-        Should -Invoke Set-Acl -Times 1
+        Should -Invoke Set-WinPrivFixtureAcl -Times 1
         Should -Invoke Remove-WinPrivLocalPrincipal -Times 1
         Should -Invoke Remove-WinPrivSandbox -Times 1
     }

@@ -178,6 +178,27 @@ int LaunchMitigatedProcess(const int argumentCount, wchar_t* arguments[])
 }
 
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
+int QueryDynamicCodeCapability(const bool allowOptOut)
+{
+    PROCESS_MITIGATION_DYNAMIC_CODE_POLICY policy{};
+    policy.ProhibitDynamicCode = 1;
+    policy.AllowThreadOptOut = allowOptOut;
+    if (!SetProcessMitigationPolicy(ProcessDynamicCodePolicy, &policy, sizeof(policy)))
+        return Fail(L"SetProcessMitigationPolicy", GetLastError());
+    if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessDynamicCodePolicy, &policy, sizeof(policy)))
+        return Fail(L"GetProcessMitigationPolicy", GetLastError());
+
+    SetLastError(NO_ERROR);
+    void* allocation = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    const DWORD allocationError = allocation == nullptr ? GetLastError() : NO_ERROR;
+    if (allocation != nullptr) VirtualFree(allocation, 0, MEM_RELEASE);
+    std::wprintf(L"{\"schemaVersion\":1,\"capability\":\"dynamic-code\",\"processDynamicCode\":%lu,"
+        L"\"allowThreadOptOut\":%lu,\"allocationSucceeded\":%ls,\"allocationError\":%lu}\n",
+        static_cast<DWORD>(policy.ProhibitDynamicCode), static_cast<DWORD>(policy.AllowThreadOptOut),
+        allocation != nullptr ? L"true" : L"false", allocationError);
+    return 0;
+}
+
 __declspec(noinline) DWORD WINAPI MitigationOriginal(const DWORD value)
 {
     return value * 3 + 7;
@@ -337,6 +358,12 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
 int wmain(const int argumentCount, wchar_t* arguments[])
 {
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
+    if (argumentCount == 3 && wcscmp(arguments[1], L"--dynamic-code-capability") == 0)
+    {
+        if (wcscmp(arguments[2], L"strict") != 0 && wcscmp(arguments[2], L"optout") != 0)
+            return Fail(L"capability-mode", ERROR_INVALID_PARAMETER);
+        return QueryDynamicCodeCapability(wcscmp(arguments[2], L"optout") == 0);
+    }
     if (argumentCount == 2 && wcscmp(arguments[1], L"--dynamic-code-allocation") == 0)
         return TestDynamicCodeAllocation();
     if (argumentCount == 3 && wcscmp(arguments[1], L"--dynamic-code-optout") == 0)

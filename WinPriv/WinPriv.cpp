@@ -34,6 +34,20 @@ extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& use
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
+static void DeleteTemporaryLibrary(const std::wstring& sPath)
+{
+	// Emulated DLLs can remain locked briefly after FreeLibrary returns.
+	const ULONGLONG iDeadline = GetTickCount64() + 1000;
+	for (;;)
+	{
+		if (DeleteFile(sPath.c_str())) return;
+		const DWORD iError = GetLastError();
+		if ((iError != ERROR_ACCESS_DENIED && iError != ERROR_SHARING_VIOLATION) ||
+			GetTickCount64() >= iDeadline) return;
+		Sleep(20);
+	}
+}
+
 bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iResourceId)
 {
 	// locate the resource that has the embedded library
@@ -960,9 +974,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			WriteResourceToFile(sTempLibraryX64, IDR_RT_RCDATA_X64) == false ||
 			WriteResourceToFile(sTempLibraryArm64, IDR_RT_RCDATA_ARM64) == false)
 		{
-			DeleteFile(sTempLibraryX86.c_str());
-			DeleteFile(sTempLibraryX64.c_str());
-			DeleteFile(sTempLibraryArm64.c_str());
+			DeleteTemporaryLibrary(sTempLibraryX86);
+			DeleteTemporaryLibrary(sTempLibraryX64);
+			DeleteTemporaryLibrary(sTempLibraryArm64);
 			PrintMessage(L"ERROR: Problem creating temporary library file.\n");
 			return __LINE__;
 		}
@@ -1017,9 +1031,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			sCurrentLibrary.c_str(), iLoadError);
 		if (bCleanupLibrary)
 		{
-			DeleteFile(sTempLibraryX86.c_str());
-			DeleteFile(sTempLibraryX64.c_str());
-			DeleteFile(sTempLibraryArm64.c_str());
+			DeleteTemporaryLibrary(sTempLibraryX86);
+			DeleteTemporaryLibrary(sTempLibraryX64);
+			DeleteTemporaryLibrary(sTempLibraryArm64);
 		}
 		return __LINE__;
 	}
@@ -1036,9 +1050,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		if (bCleanupLibrary)
 		{
 			hLibrary.Cleanup();
-			DeleteFile(sTempLibraryX86.c_str());
-			DeleteFile(sTempLibraryX64.c_str());
-			DeleteFile(sTempLibraryArm64.c_str());
+			DeleteTemporaryLibrary(sTempLibraryX86);
+			DeleteTemporaryLibrary(sTempLibraryX64);
+			DeleteTemporaryLibrary(sTempLibraryArm64);
 		}
 		return __LINE__;
 	}
@@ -1048,9 +1062,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		if (bCleanupLibrary)
 		{
 			hLibrary.Cleanup();
-			DeleteFile(sTempLibraryX86.c_str());
-			DeleteFile(sTempLibraryX64.c_str());
-			DeleteFile(sTempLibraryArm64.c_str());
+			DeleteTemporaryLibrary(sTempLibraryX86);
+			DeleteTemporaryLibrary(sTempLibraryX64);
+			DeleteTemporaryLibrary(sTempLibraryArm64);
 		}
 		return __LINE__;
 	}
@@ -1069,9 +1083,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		if (bCleanupLibrary)
 		{
 			hLibrary.Cleanup();
-			DeleteFile(sTempLibraryX86.c_str());
-			DeleteFile(sTempLibraryX64.c_str());
-			DeleteFile(sTempLibraryArm64.c_str());
+			DeleteTemporaryLibrary(sTempLibraryX86);
+			DeleteTemporaryLibrary(sTempLibraryX64);
+			DeleteTemporaryLibrary(sTempLibraryArm64);
 		}
 		return __LINE__;
 	}
@@ -1091,9 +1105,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	if (bCleanupLibrary)
 	{
 		hLibrary.Cleanup();
-		DeleteFile(sTempLibraryX86.c_str());
-		DeleteFile(sTempLibraryX64.c_str());
-		DeleteFile(sTempLibraryArm64.c_str());
+		DeleteTemporaryLibrary(sTempLibraryX86);
+		DeleteTemporaryLibrary(sTempLibraryX64);
+		DeleteTemporaryLibrary(sTempLibraryArm64);
 	}
 	return iExitCode;
 }

@@ -2,6 +2,32 @@
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
+
+    function Test-WinPrivDynamicCodeSupport {
+        param($Sandbox, [string] $Fixture, [string] $Architecture, [string] $Capability, [switch] $AllowOptOut)
+
+        $mode = if ($AllowOptOut) { 'optout' } else { 'strict' }
+        $result = Invoke-WinPrivContainedProcess -FilePath $Fixture -Sandbox $Sandbox `
+            -WorkingDirectory $Sandbox.Working -TimeoutSeconds 25 `
+            -ArgumentList @('--dynamic-code-capability', $mode)
+        Assert-WinPrivInvocationSucceeded $result
+        $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+        $payload.capability | Should -Be 'dynamic-code'
+        if ($payload.processDynamicCode -eq 0) {
+            $payload.allowThreadOptOut | Should -Be 0
+            $payload.allocationSucceeded | Should -BeTrue
+            $payload.allocationError | Should -Be 0
+            $reason = "Windows did not enable ACG in the unhooked $Architecture fixture ($mode): " +
+                'the process policy remained disabled and executable allocation succeeded before any Detours call.'
+            Skip-WinPrivCapability -Id $Capability -Architecture $Architecture -Reason $reason
+            return $false
+        }
+        $payload.processDynamicCode | Should -Be 1
+        $payload.allowThreadOptOut | Should -Be ([int][bool]$AllowOptOut)
+        $payload.allocationSucceeded | Should -BeFalse
+        $payload.allocationError | Should -Be 1655
+        return $true
+    }
 }
 
 $loadingCases = foreach ($architectureCase in Get-WinPrivArchitectureCases) {
@@ -139,6 +165,8 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
             return
         }
+        if (-not (Test-WinPrivDynamicCodeSupport -Sandbox $sandbox -Fixture $fixture -Architecture $Architecture `
+            -Capability 'mitigation.dynamic-code-optout-propagation' -AllowOptOut)) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-optout-propagation' -Architecture $Architecture -Body {
             $subKey = "Software\WinPrivTests\Case$([Guid]::NewGuid().ToString('N'))"
@@ -198,6 +226,8 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
             return
         }
+        if (-not (Test-WinPrivDynamicCodeSupport -Sandbox $sandbox -Fixture $fixture -Architecture $Architecture `
+            -Capability 'mitigation.dynamic-code-optout-transactions' -AllowOptOut)) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-optout-transactions' -Architecture $Architecture -Body {
             foreach ($scenario in @('attach-detach', 'abort', 'failed-commit', 'nested', 'preexisting', 'c-bridge')) {
@@ -256,6 +286,8 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
             return
         }
+        if (-not (Test-WinPrivDynamicCodeSupport -Sandbox $sandbox -Fixture $fixture -Architecture $Architecture `
+            -Capability 'mitigation.dynamic-code-diagnostic')) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-diagnostic' -Architecture $Architecture -Body {
             $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
@@ -279,6 +311,8 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
             return
         }
+        if (-not (Test-WinPrivDynamicCodeSupport -Sandbox $sandbox -Fixture $fixture -Architecture $Architecture `
+            -Capability 'mitigation.dynamic-code-allocation')) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-allocation' -Architecture $Architecture -Body {
             $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `

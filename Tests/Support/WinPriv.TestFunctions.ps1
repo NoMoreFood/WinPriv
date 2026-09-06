@@ -254,6 +254,23 @@ function Revoke-WinPrivFixtureRights {
     catch { }
 }
 
+function Set-WinPrivFixtureAcl {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Path, $Acl)
+
+    $restoring = $null -ne $Acl
+    if (-not $restoring) { $Acl = Get-Acl -LiteralPath $Path -ErrorAction Stop }
+    $expectedSddl = $Acl.Sddl
+    # Round-trip new fixtures before journaling so Windows has normalized inherited ACL flags.
+    $Acl.SetSecurityDescriptorSddlForm($expectedSddl)
+    Set-Acl -LiteralPath $Path -AclObject $Acl -ErrorAction Stop
+    $appliedAcl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if ($restoring -and $appliedAcl.Sddl -cne $expectedSddl) {
+        throw "ACL restoration did not reproduce the original descriptor for '$Path'."
+    }
+    return $appliedAcl
+}
+
 function Remove-WinPrivSecurityFixture {
     [CmdletBinding()]
     param(
@@ -276,7 +293,7 @@ function Remove-WinPrivSecurityFixture {
         catch { [void]$errors.Add($_) }
     }
     if ($null -ne $Sandbox -and $null -ne $OriginalAcl) {
-        try { Set-Acl -LiteralPath $Sandbox.Root -AclObject $OriginalAcl -ErrorAction Stop }
+        try { Set-WinPrivFixtureAcl -Path $Sandbox.Root -Acl $OriginalAcl | Out-Null }
         catch { [void]$errors.Add($_) }
     }
     if ($null -ne $Principal) {

@@ -2,6 +2,8 @@
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
+    # Six sequential registry workers allow two 10-second attempts each, plus host startup.
+    $script:RegistryProbeTimeoutSeconds = 150
 }
 
 $architectureCases = Get-WinPrivArchitectureCases
@@ -29,7 +31,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
         $result = Invoke-WinPrivProbe -Architecture $Architecture `
             -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', '305419896') `
             -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName; view = 'default' } `
-            -Sandbox $sandbox -TimeoutSeconds 25
+            -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
         Assert-WinPrivInvocationSucceeded $result
 
         $failures = New-Object 'Collections.Generic.List[string]'
@@ -99,7 +101,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
             $result = Invoke-WinPrivProbe -Architecture $Architecture `
                 -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_QWORD', $expected.ToString()) `
                 -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 $query.Value.success | Should -BeTrue
@@ -123,7 +125,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
             $result = Invoke-WinPrivProbe -Architecture $Architecture `
                 -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_SZ', $expected) `
                 -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 $query.Value.success | Should -BeTrue
@@ -148,7 +150,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
             $result = Invoke-WinPrivProbe -Architecture $Architecture `
                 -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_BINARY', '00A17FFF') `
                 -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 $query.Value.success | Should -BeTrue
@@ -173,7 +175,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
                 $result = Invoke-WinPrivProbe -Architecture $Architecture `
                     -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', '99') `
                     -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName; view = $view } `
-                    -Sandbox $sandbox -TimeoutSeconds 25
+                    -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
                 Assert-WinPrivInvocationSucceeded $result
                 foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                     $query.Value.success | Should -BeTrue
@@ -193,7 +195,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
             $result = Invoke-WinPrivProbe -Architecture $Architecture `
                 -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_NOT_REAL', 'not-data') `
                 -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 $query.Value.success | Should -BeTrue
@@ -213,7 +215,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
                     '/RegOverride', 'HKCU\Software\WinPrivTests\DoesNotExist', 'Bad', 'REG_DWORD', '2',
                     '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', '42'
                 ) -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 $query.Value.success | Should -BeTrue
@@ -233,7 +235,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
             $result = Invoke-WinPrivProbe -Architecture $Architecture `
                 -WinPrivArguments @('/RegBlock', "HKCU\$subKey") -Operation registry `
                 -Arguments @{ root = 'HKCU'; key = $child; valueName = 'Blocked' } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             $result.TimedOut | Should -BeFalse
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 $query.Value.success | Should -BeFalse
@@ -255,7 +257,7 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
                 $result = Invoke-WinPrivProbe -Architecture $Architecture `
                     -WinPrivArguments @('/RegBlock', "HKCU\$subKey") -Operation registry `
                     -Arguments @{ root = 'HKCU'; key = $sibling; valueName = 'Value' } `
-                    -Sandbox $sandbox -TimeoutSeconds 25
+                    -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
                 Assert-WinPrivInvocationSucceeded $result
                 foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                     $query.Value.success | Should -BeTrue
@@ -280,7 +282,7 @@ Describe 'WinPriv registry convenience switches (<Architecture>)' -Tag 'Safe' -F
         Invoke-WinPrivCapability -Id 'registry.fips-on' -Architecture $Architecture -Body {
             $result = Invoke-WinPrivProbe -Architecture $Architecture -WinPrivArguments @('/FipsOn') `
                 -Operation registry -Arguments @{ root = 'HKLM'; key = 'SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy'; valueName = 'Enabled' } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 [BitConverter]::ToUInt32([Convert]::FromBase64String($query.Value.dataBase64), 0) | Should -Be 1
@@ -293,7 +295,7 @@ Describe 'WinPriv registry convenience switches (<Architecture>)' -Tag 'Safe' -F
         Invoke-WinPrivCapability -Id 'registry.fips-off' -Architecture $Architecture -Body {
             $result = Invoke-WinPrivProbe -Architecture $Architecture -WinPrivArguments @('/FipsOff') `
                 -Operation registry -Arguments @{ root = 'HKLM'; key = 'SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy'; valueName = 'Enabled' } `
-                -Sandbox $sandbox -TimeoutSeconds 25
+                -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
             Assert-WinPrivInvocationSucceeded $result
             foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                 [BitConverter]::ToUInt32([Convert]::FromBase64String($query.Value.dataBase64), 0) | Should -Be 0
@@ -313,7 +315,7 @@ Describe 'WinPriv registry convenience switches (<Architecture>)' -Tag 'Safe' -F
             try {
                 $result = Invoke-WinPrivProbe -Architecture $Architecture -WinPrivArguments @('/PolicyBlock') `
                     -Operation registry -Arguments @{ root = 'HKCU'; key = $key; valueName = 'Enabled' } `
-                    -Sandbox $sandbox -TimeoutSeconds 25
+                    -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
                 $result.TimedOut | Should -BeFalse
                 foreach ($query in Get-WinPrivRegistryQueryResults $result) {
                     $query.Value.success | Should -BeFalse
@@ -700,6 +702,8 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
             -Sandbox $sandbox -TimeoutSeconds 30
         Assert-WinPrivInvocationSucceeded $emptyReplacement
         $emptyReplacement.ProbeResult.success | Should -BeTrue
+        $emptyReplacement.ProbeResult.result.openErrorType | Should -Be 'System.Runtime.InteropServices.COMException'
+        $emptyReplacement.ProbeResult.result.openHresultHex | Should -Be '0x800A0E7A'
         $emptyReplacement.StdOut | Should -Match ([regex]::Escape($emptyExpected))
         $emptyReplacement.StdOut | Should -Not -Match ([regex]::Escape($emptyConnection))
 
@@ -722,6 +726,9 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
                 Invoke-WinPrivCapability -Id $record.Case.Capability -Architecture $Architecture -Body {
                     Assert-WinPrivInvocationSucceeded $record.Invocation
                     $record.Invocation.ProbeResult.success | Should -BeTrue
+                    $record.Invocation.ProbeResult.result.openErrorType |
+                        Should -Be 'System.Runtime.InteropServices.COMException'
+                    $record.Invocation.ProbeResult.result.openHresultHex | Should -Be '0x800A0E7A'
                     $record.Invocation.ProbeResult.result.initializer | Should -Be $record.Case.ApiName
                     $record.Invocation.ProbeResult.result.($record.Case.HresultProperty) | Should -BeIn @(0, 1)
                     $record.Invocation.ProbeResult.result.PSObject.Properties[$record.Case.AbsentHresultProperty] |

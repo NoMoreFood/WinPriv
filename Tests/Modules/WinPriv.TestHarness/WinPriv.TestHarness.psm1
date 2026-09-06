@@ -691,9 +691,9 @@ catch {
     try {
         $invocation = Invoke-WinPrivContainedProcess -FilePath $resolvedPath -ArgumentList @(
             '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $probeScript
-        ) -WorkingDirectory ([IO.Path]::GetTempPath()) -TimeoutSeconds 5
+        ) -WorkingDirectory ([IO.Path]::GetTempPath()) -TimeoutSeconds 30
         if ($invocation.TimedOut) {
-            $reason = "Host '$resolvedPath' did not complete the PowerShell identity probe within 5 seconds."
+            $reason = "Host '$resolvedPath' did not complete the PowerShell identity probe within 30 seconds."
         }
         elseif (-not [string]::IsNullOrWhiteSpace([string]$invocation.StartError)) {
             $reason = "Host '$resolvedPath' could not execute the PowerShell identity probe: $($invocation.StartError)"

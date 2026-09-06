@@ -166,12 +166,13 @@ Describe 'WinPriv privilege and identity behavior (<Architecture>)' -Tag 'Admin'
             throw "New-WinPrivLocalPrincipal returned $($principalOutput.Count) objects; exactly one is required."
         }
         $principal = $principalOutput[0]
-        $originalAcl = Get-Acl -LiteralPath $sandbox.Root
+        $originalAcl = Set-WinPrivFixtureAcl -Path $sandbox.Root
         Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Acl -Identifier $sandbox.Root `
             -OriginalState @{ Sddl = $originalAcl.Sddl } -Metadata @{ Sid = $principal.Sid } | Out-Null
         $acl = Get-Acl -LiteralPath $sandbox.Root
         $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-            $principal.Sid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            [Security.Principal.SecurityIdentifier]::new($principal.Sid),
+            'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule) | Out-Null
         Set-Acl -LiteralPath $sandbox.Root -AclObject $acl
     }
@@ -282,7 +283,7 @@ Describe 'WinPriv ACL bypass (<Architecture>)' -Tag 'Admin' -ForEach $architectu
         $path = Join-Path $sandbox.Root 'acl-fixture.bin'
         $original = [Text.Encoding]::UTF8.GetBytes('denied-original')
         [IO.File]::WriteAllBytes($path, $original)
-        $originalAcl = Get-Acl -LiteralPath $path
+        $originalAcl = Set-WinPrivFixtureAcl -Path $path
         Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Acl -Identifier $path `
             -OriginalState @{ Sddl = $originalAcl.Sddl } -Metadata @{
                 ContentSha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
@@ -340,7 +341,7 @@ Describe 'WinPriv ACL bypass (<Architecture>)' -Tag 'Admin' -ForEach $architectu
             }
         }
         finally {
-            Set-Acl -LiteralPath $path -AclObject $originalAcl
+            Set-WinPrivFixtureAcl -Path $path -Acl $originalAcl | Out-Null
             [IO.File]::WriteAllBytes($path, $original)
         }
     }

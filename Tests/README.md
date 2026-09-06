@@ -16,6 +16,10 @@ plus successful attach/detach, destructor abort, failed commit, nested transacti
 failure, preservation of an already opted-out thread, and the C attachment bridge.
 Assertions check that process ACG remains enabled and the original thread policy
 is restored.
+An unhooked native fixture first verifies ACG policy enforcement with executable
+allocation. Windows ARM64 emulation can leave ACG disabled for x86/x64 processes;
+those ACG cases are reported as unavailable with baseline evidence, while strict
+CFG and ordinary hooking tests still run.
 
 ## Requirements
 

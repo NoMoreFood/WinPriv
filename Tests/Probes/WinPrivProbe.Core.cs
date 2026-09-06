@@ -74,6 +74,14 @@ namespace WinPrivProbe
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_MACHINE_INFORMATION
+        {
+            public ushort ProcessMachine;
+            public ushort Reserved;
+            public uint MachineAttributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct WINDOWPLACEMENT
         {
             public uint length;
@@ -146,6 +154,10 @@ namespace WinPrivProbe
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetProcessInformation(IntPtr process, int informationClass,
+            out PROCESS_MACHINE_INFORMATION information, uint informationSize);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
@@ -229,7 +241,7 @@ namespace WinPrivProbe
         private static string MachineName(ushort machine)
         {
             if (machine == 0x014c) return "x86";
-            if (machine == 0x8664) return "x64";
+            if (machine == 0x8664 || machine == 0xA641) return "x64";
             if (machine == 0xAA64) return "ARM64";
             if (machine == 0) return IntPtr.Size == 4 ? "x86" : "x64";
             return "0x" + machine.ToString("X4", CultureInfo.InvariantCulture);
@@ -243,6 +255,15 @@ namespace WinPrivProbe
                 ushort nativeMachine;
                 if (IsWow64Process2(GetCurrentProcess(), out processMachine, out nativeMachine))
                 {
+                    if (processMachine == 0 && nativeMachine == 0xAA64)
+                    {
+                        PROCESS_MACHINE_INFORMATION information;
+                        if (GetProcessInformation(GetCurrentProcess(), 9, out information,
+                            (uint)Marshal.SizeOf(typeof(PROCESS_MACHINE_INFORMATION))) && information.ProcessMachine != 0)
+                        {
+                            return MachineName(information.ProcessMachine);
+                        }
+                    }
                     return MachineName(processMachine == 0 ? nativeMachine : processMachine);
                 }
             }
