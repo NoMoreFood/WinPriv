@@ -14,6 +14,25 @@ Describe 'WinPriv build artifacts' -Tag 'Safe' {
         }
     }
 
+    It 'contains CFG instrumentation and call-target metadata in every architecture' {
+        Invoke-WinPrivCapability -Id 'artifact.cfg-metadata' -Architecture All -Body {
+            foreach ($architecture in @('x86', 'x64', 'ARM64')) {
+                foreach ($fileName in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll')) {
+                    $path = Join-Path $binaryRoot "$architecture\$fileName"
+                    $path | Should -Exist
+                    $metadata = Get-PeControlFlowGuard -Path $path
+                    $metadata.GuardCf | Should -BeTrue -Because $path
+                    $metadata.Instrumented | Should -BeTrue -Because $path
+                    $metadata.FunctionTablePresent | Should -BeTrue -Because $path
+                    $metadata.CheckPointer | Should -BeGreaterThan 0 -Because $path
+                    $metadata.FunctionTable | Should -BeGreaterThan 0 -Because $path
+                    $metadata.FunctionCount | Should -BeGreaterThan 0 -Because $path
+                    $metadata
+                }
+            }
+        }
+    }
+
     It 'contains matching configured launchers for x86' {
         Invoke-WinPrivCapability -Id 'artifact.build-x86' -Architecture x86 -Body {
             $directory = Join-Path $binaryRoot $expected.x86.Directory

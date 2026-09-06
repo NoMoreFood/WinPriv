@@ -75,6 +75,7 @@ LONG WINAPI DetourTransactionAbort(void);
 LONG WINAPI DetourTransactionCommit(void);
 LONG WINAPI DetourAttach(PVOID* target, PVOID replacement);
 LONG WINAPI DetourDetach(PVOID* target, PVOID replacement);
+LONG WINAPI DetourAttachTransaction(PVOID* target, PVOID replacement);
 
 BOOL WINAPI DetourCreateProcessWithDllExA(
     LPCSTR applicationName, LPSTR commandLine,
@@ -104,6 +105,7 @@ BOOL WINAPI DetourIsHelperProcess(void);
 
 #include <type_traits>
 #include <utility>
+#include <intrin.h>
 
 namespace winpriv::detours
 {
@@ -132,8 +134,40 @@ namespace winpriv::detours
     {
     public:
         transaction() noexcept
-            : result_(DetourTransactionBegin()), active_(result_ == NO_ERROR)
         {
+            PROCESS_MITIGATION_DYNAMIC_CODE_POLICY policy{};
+            if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessDynamicCodePolicy, &policy, sizeof(policy)))
+            {
+                result_ = GetLastError();
+                return;
+            }
+
+            if (policy.ProhibitDynamicCode && policy.AllowThreadOptOut)
+            {
+                if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
+                    &threadPolicy_, sizeof(threadPolicy_)))
+                {
+                    result_ = GetLastError();
+                    return;
+                }
+                if ((threadPolicy_ & THREAD_DYNAMIC_CODE_ALLOW) == 0)
+                {
+                    DWORD allowed = threadPolicy_ | THREAD_DYNAMIC_CODE_ALLOW;
+                    if (!SetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy, &allowed, sizeof(allowed)))
+                    {
+                        result_ = GetLastError();
+                        return;
+                    }
+                    restoreThreadPolicy_ = true;
+                }
+            }
+
+            result_ = DetourTransactionBegin();
+            active_ = result_ == NO_ERROR;
+            if (!active_)
+            {
+                RestoreThreadPolicy();
+            }
         }
 
         transaction(const transaction&) = delete;
@@ -147,6 +181,7 @@ namespace winpriv::detours
             {
                 (void)DetourTransactionAbort();
             }
+            RestoreThreadPolicy();
         }
 
         [[nodiscard]] explicit operator bool() const noexcept
@@ -171,12 +206,39 @@ namespace winpriv::detours
             }
 
             result_ = DetourTransactionCommit();
+            RestoreThreadPolicy();
             return result_;
         }
 
     private:
-        LONG result_;
-        bool active_;
+        void RestoreThreadPolicy() noexcept
+        {
+            if (!restoreThreadPolicy_)
+            {
+                return;
+            }
+            if (!SetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
+                &threadPolicy_, sizeof(threadPolicy_)))
+            {
+                const DWORD error = GetLastError();
+                EXCEPTION_RECORD exception{};
+                exception.ExceptionCode = HRESULT_FROM_WIN32(error);
+                exception.ExceptionAddress = _ReturnAddress();
+                exception.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+                exception.NumberParameters = 1;
+                exception.ExceptionInformation[0] = error;
+                OutputDebugStringW(L"WinPriv: Failed to restore thread dynamic-code policy; terminating the process.\n");
+                // Committed hooks can still target the DLL, so returning a load failure could unload live code.
+                RaiseFailFastException(&exception, nullptr, 0);
+                TerminateProcess(GetCurrentProcess(), error);
+            }
+            restoreThreadPolicy_ = false;
+        }
+
+        LONG result_ = NO_ERROR;
+        DWORD threadPolicy_ = 0;
+        bool active_ = false;
+        bool restoreThreadPolicy_ = false;
     };
 }
 #endif

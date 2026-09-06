@@ -35,6 +35,8 @@ The behavior of the subprocess is identical regardless of which launcher is used
 - Administrator rights are required for most operations
 - No installation needed — the injection libraries are embedded as resources and extracted to the user's temp directory at runtime
 
+Source builds enable Control Flow Guard (CFG) in the launchers and injection libraries, including for strict-CFG processes. Process protections must still permit DLL loading and API hooking. When dynamic-code policy (ACG) already permits thread opt-out, WinPriv uses that permission during hook transactions and restores the previous thread policy afterward. It leaves the process policy unchanged and reports error 1655 when strict ACG prevents hook installation.
+
 ## Usage
 
 ```

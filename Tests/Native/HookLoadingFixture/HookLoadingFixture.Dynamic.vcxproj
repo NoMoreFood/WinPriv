@@ -30,6 +30,9 @@
     <WinPrivHookAdditionalDependencies>kernel32.lib</WinPrivHookAdditionalDependencies>
   </PropertyGroup>
   <Import Project="HookLoadingFixture.Common.props" />
-  <ItemGroup><ClCompile Include="HookLoadingFixture.cpp" /></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="HookLoadingFixture.cpp" />
+    <ClCompile Include="..\..\..\WinPrivLibrary\WinPrivDetoursFork.cpp" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

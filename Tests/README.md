@@ -6,7 +6,16 @@ runner and assertions use PowerShell; most native calls are made through C#
 definitions compiled at runtime with `Add-Type`. Source builds also compile three
 small native fixtures that call the same detoured registry API through a normal PE
 import, an MSVC delay-load import, and `LoadLibraryW`/`GetProcAddress`. No test
-executable is checked in.
+executable is checked in. The dynamic fixture also launches WinPriv with strict
+Control Flow Guard (CFG) on the launcher and injected target, or Arbitrary Code
+Guard (ACG). It checks allocation errors against the production Detours source.
+Mitigation settings apply only to the fixture processes and disappear when those
+processes exit. Strict ACG cases verify rejection and accurate errors. Cases with
+thread opt-out permission verify registry hooks in protected targets and descendants,
+plus successful attach/detach, destructor abort, failed commit, nested transaction
+failure, preservation of an already opted-out thread, and the C attachment bridge.
+Assertions check that process ACG remains enabled and the original thread policy
+is restored.
 
 ## Requirements
 
@@ -16,8 +25,8 @@ executable is checked in.
   required because every launcher embeds all three injection payloads. Use
   `-BinaryRoot` to test an existing complete build without installing build
   tools on the test workstation. A release-only binary tree without the native
-  hook-loading fixtures can still be tested; those three explicitly gated
-  loading-path capabilities are reported as unavailable.
+  hook-loading fixtures can still be tested; the explicitly gated loading-path
+  and mitigation capabilities are reported as unavailable.
 - Network access on the first run so Pester 5.7.1 can be downloaded into
   `Tests/.tools`; later runs can use `-Offline`.
 - The Admin profile must run from an elevated administrator token.

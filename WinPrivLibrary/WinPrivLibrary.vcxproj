@@ -58,6 +58,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
+    <LinkControlFlowGuard>true</LinkControlFlowGuard>
     <WinPrivSolutionDir>$(SolutionDir)</WinPrivSolutionDir>
     <WinPrivSolutionDir Condition="'$(SolutionPath)'=='' Or '$(SolutionPath)'=='*Undefined*' Or '$(WinPrivSolutionDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</WinPrivSolutionDir>
   </PropertyGroup>
@@ -98,6 +99,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
       <WarningLevel>Level3</WarningLevel>
       <PrecompiledHeader>
       </PrecompiledHeader>
@@ -120,6 +122,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
       <WarningLevel>Level3</WarningLevel>
       <PrecompiledHeader>
       </PrecompiledHeader>
@@ -148,6 +151,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64' Or '$(Configuration)|$(Platform)'=='Release|ARM64'">
     <ClCompile>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
       <WarningLevel>Level3</WarningLevel>
       <PrecompiledHeader>
       </PrecompiledHeader>

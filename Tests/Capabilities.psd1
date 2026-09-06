@@ -47,6 +47,13 @@
         @{ Id = 'detour.delay-load-import'; Surface = 'RegQueryValueExW through an MSVC delay-load import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.loadlibrary-getprocaddress'; Surface = 'RegQueryValueExW through LoadLibraryW/GetProcAddress'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
+        @{ Id = 'mitigation.strict-cfg'; Surface = 'strict CFG hook loading and child registry interception'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'mitigation.dynamic-code-diagnostic'; Surface = 'ACG launcher error and policy diagnosis'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'mitigation.dynamic-code-allocation'; Surface = 'ACG trampoline allocation error and rollback'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+
+        @{ Id = 'mitigation.dynamic-code-optout-propagation'; Surface = 'ACG opt-out launchers, injected targets, descendants, and restored thread policy'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'mitigation.dynamic-code-optout-transactions'; Surface = 'ACG scoped opt-out attach, detach, abort, failed commit, nesting, existing permission, and C bridge'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+
         # Network, identity, OS, AMSI, crypto, and SQL hooks.
         @{ Id = 'network.mac-adapters-info'; Surface = '/MacOverride GetAdaptersInfo'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'NetworkAdapter'; Required = $true }
         @{ Id = 'network.mac-adapters-addresses'; Surface = '/MacOverride GetAdaptersAddresses'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'NetworkAdapter'; Required = $true }
@@ -115,6 +122,7 @@
         @{ Id = 'runas.medium-plus'; Surface = '/MediumPlus'; Profile = 'System'; Test = 'Scope'; Gate = 'LocalSystemWithInteractiveSession'; DefaultStatus = 'Unavailable'; Reason = 'Medium Plus is consumed only by the SYSTEM/WTS run-as path.'; Required = $true }
 
         # Build and release artifacts.
+        @{ Id = 'artifact.cfg-metadata'; Surface = 'CFG headers and call-target tables for all launchers and libraries'; Profile = 'Safe'; Test = 'Artifacts'; Architecture = 'All'; Required = $true }
         @{ Id = 'artifact.build-x86'; Surface = 'Release x86 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.build-x64'; Surface = 'Release x64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.build-arm64'; Surface = 'Release ARM64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }

@@ -3016,7 +3016,7 @@ static PBYTE detour_alloc_round_up_to_region(PBYTE pbTry)
 
 // Starting at pbLo, try to allocate a memory region, continue until pbHi.
 
-static PVOID detour_alloc_region_from_lo(PBYTE pbLo, PBYTE pbHi)
+static PVOID detour_alloc_region_from_lo(PBYTE pbLo, PBYTE pbHi, LONG& error)
 {
     PBYTE pbTry = detour_alloc_round_up_to_region(pbLo);
 
@@ -3046,6 +3046,7 @@ static PVOID detour_alloc_region_from_lo(PBYTE pbLo, PBYTE pbHi)
                 return pv;
             }
             else if (GetLastError() == ERROR_DYNAMIC_CODE_BLOCKED) {
+                error = ERROR_DYNAMIC_CODE_BLOCKED;
                 return NULL;
             }
             pbTry += DETOUR_REGION_SIZE;
@@ -3059,7 +3060,7 @@ static PVOID detour_alloc_region_from_lo(PBYTE pbLo, PBYTE pbHi)
 
 // Starting at pbHi, try to allocate a memory region, continue until pbLo.
 
-static PVOID detour_alloc_region_from_hi(PBYTE pbLo, PBYTE pbHi)
+static PVOID detour_alloc_region_from_hi(PBYTE pbLo, PBYTE pbHi, LONG& error)
 {
     PBYTE pbTry = detour_alloc_round_down_to_region(pbHi - DETOUR_REGION_SIZE);
 
@@ -3089,6 +3090,7 @@ static PVOID detour_alloc_region_from_hi(PBYTE pbLo, PBYTE pbHi)
                 return pv;
             }
             else if (GetLastError() == ERROR_DYNAMIC_CODE_BLOCKED) {
+                error = ERROR_DYNAMIC_CODE_BLOCKED;
                 return NULL;
             }
             pbTry -= DETOUR_REGION_SIZE;
@@ -3103,7 +3105,8 @@ static PVOID detour_alloc_region_from_hi(PBYTE pbLo, PBYTE pbHi)
 
 static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
                                                   PDETOUR_TRAMPOLINE pLo,
-                                                  PDETOUR_TRAMPOLINE pHi)
+                                                  PDETOUR_TRAMPOLINE pHi,
+                                                  LONG& error)
 {
     PVOID pbTry = NULL;
 
@@ -3112,37 +3115,39 @@ static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
 
 #if defined(_WIN64)
     // Try looking 1GB below or lower.
-    if (pbTry == NULL && pbTarget > (PBYTE)0x40000000) {
-        pbTry = detour_alloc_region_from_hi((PBYTE)pLo, pbTarget - 0x40000000);
+    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
+        pbTry = detour_alloc_region_from_hi((PBYTE)pLo, pbTarget - 0x40000000, error);
     }
     // Try looking 1GB above or higher.
-    if (pbTry == NULL && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = detour_alloc_region_from_lo(pbTarget + 0x40000000, (PBYTE)pHi);
+    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
+        pbTry = detour_alloc_region_from_lo(pbTarget + 0x40000000, (PBYTE)pHi, error);
     }
     // Try looking 1GB below or higher.
-    if (pbTry == NULL && pbTarget > (PBYTE)0x40000000) {
-        pbTry = detour_alloc_region_from_lo(pbTarget - 0x40000000, pbTarget);
+    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
+        pbTry = detour_alloc_region_from_lo(pbTarget - 0x40000000, pbTarget, error);
     }
     // Try looking 1GB above or lower.
-    if (pbTry == NULL && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = detour_alloc_region_from_hi(pbTarget, pbTarget + 0x40000000);
+    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
+        pbTry = detour_alloc_region_from_hi(pbTarget, pbTarget + 0x40000000, error);
     }
 #endif
 
     // Try anything below.
-    if (pbTry == NULL) {
-        pbTry = detour_alloc_region_from_hi((PBYTE)pLo, pbTarget);
+    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
+        pbTry = detour_alloc_region_from_hi((PBYTE)pLo, pbTarget, error);
     }
     // try anything above.
-    if (pbTry == NULL) {
-        pbTry = detour_alloc_region_from_lo(pbTarget, (PBYTE)pHi);
+    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
+        pbTry = detour_alloc_region_from_lo(pbTarget, (PBYTE)pHi, error);
     }
 
     return pbTry;
 }
 
-static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget)
+static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget, LONG& error)
 {
+    error = ERROR_NOT_ENOUGH_MEMORY;
+
     // We have to place trampolines within +/- 2GB of target.
 
     PDETOUR_TRAMPOLINE pLo;
@@ -3186,7 +3191,7 @@ static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget)
     pbTarget = pbTarget - (ULONG)((ULONG_PTR)pbTarget & 0xffff);
 
     PVOID pbNewlyAllocated =
-        detour_alloc_trampoline_allocate_new(pbTarget, pLo, pHi);
+        detour_alloc_trampoline_allocate_new(pbTarget, pLo, pHi, error);
     if (pbNewlyAllocated != NULL) {
         s_pRegion = (DETOUR_REGION*)pbNewlyAllocated;
         s_pRegion->dwSignature = DETOUR_REGION_SIGNATURE;
@@ -3650,6 +3655,17 @@ static LONG detour_relocate_suspended_threads(
 //////////////////////////////////////////////////////////// Transaction APIs.
 //
 
+extern "C" LONG WINAPI DetourAttachTransaction(PVOID* target, PVOID replacement)
+{
+    winpriv::detours::transaction transaction;
+    if (!transaction)
+    {
+        return transaction.commit();
+    }
+    const LONG error = DetourAttach(target, replacement);
+    return error != NO_ERROR ? error : transaction.commit();
+}
+
 extern "C" LONG WINAPI DetourTransactionBegin()
 {
     if (InterlockedCompareExchange(&s_nPendingThreadId,
@@ -3804,9 +3820,10 @@ extern "C" LONG WINAPI DetourAttach(_Inout_ PVOID *ppPointer,
         return s_nPendingError = ERROR_NOT_ENOUGH_MEMORY;
     }
 
-    PDETOUR_TRAMPOLINE pTrampoline = detour_alloc_trampoline(pbTarget);
+    LONG allocationError = NO_ERROR;
+    PDETOUR_TRAMPOLINE pTrampoline = detour_alloc_trampoline(pbTarget, allocationError);
     if (pTrampoline == NULL) {
-        return s_nPendingError = ERROR_NOT_ENOUGH_MEMORY;
+        return s_nPendingError = allocationError;
     }
 
     const auto fail = [&](LONG error) {

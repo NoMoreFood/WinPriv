@@ -65,11 +65,9 @@ VOID WINAPI DllExtraAttachCom(VOID)
 		ComOpenTarget = tConnection->lpVtbl->Open;
 		TrueComOpen = tConnection->lpVtbl->Open;
 		if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-			(LPCWSTR)ComOpenTarget, &hTargetModule) && DetourTransactionBegin() == NO_ERROR)
+			(LPCWSTR)ComOpenTarget, &hTargetModule))
 		{
-			const LONG attachResult = DetourAttach((PVOID*)(&TrueComOpen), (PVOID)DetourComOpen);
-			const LONG commitResult = DetourTransactionCommit();
-			ComOpenAttached = attachResult == NO_ERROR && commitResult == NO_ERROR;
+			ComOpenAttached = DetourAttachTransaction((PVOID*)(&TrueComOpen), (PVOID)DetourComOpen) == NO_ERROR;
 		}
 
 		tConnection->lpVtbl->Release(tConnection);

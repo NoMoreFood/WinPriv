@@ -8,9 +8,11 @@
     <OutDir>$(WinPrivSolutionDir)Tests\Native\Build\$(Configuration)\$(WinPrivOutputArchitecture)\</OutDir>
     <IntDir>$(OutDir)Temp\$(ProjectName)\</IntDir>
     <LinkIncremental>false</LinkIncremental>
+    <LinkControlFlowGuard>true</LinkControlFlowGuard>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>

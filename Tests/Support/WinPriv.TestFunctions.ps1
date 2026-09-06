@@ -18,6 +18,68 @@ function Get-PeMachine {
     }
 }
 
+function Get-PeControlFlowGuard {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ([BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) { throw "$Path is not a PE image." }
+    $peOffset = [BitConverter]::ToUInt32($bytes, 0x3C)
+    if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) { throw "$Path has no PE signature." }
+    $sectionCount = [BitConverter]::ToUInt16($bytes, $peOffset + 6)
+    $optionalSize = [BitConverter]::ToUInt16($bytes, $peOffset + 20)
+    $optionalOffset = $peOffset + 24
+    $magic = [BitConverter]::ToUInt16($bytes, $optionalOffset)
+    if ($magic -notin @(0x10B, 0x20B)) { throw "$Path has an unsupported PE optional header." }
+    $is64Bit = $magic -eq 0x20B
+    $directoriesOffset = $optionalOffset + $(if ($is64Bit) { 112 } else { 96 })
+    $configRva = [BitConverter]::ToUInt32($bytes, $directoriesOffset + 80)
+    $configSize = [BitConverter]::ToUInt32($bytes, $directoriesOffset + 84)
+    $characteristics = [BitConverter]::ToUInt16($bytes, $optionalOffset + 70)
+    $flagsOffset = if ($is64Bit) { 144 } else { 88 }
+    $configOffset = $null
+    $configAvailable = 0
+    for ($index = 0; $index -lt $sectionCount; ++$index) {
+        $sectionOffset = $optionalOffset + $optionalSize + $index * 40
+        $sectionRva = [BitConverter]::ToUInt32($bytes, $sectionOffset + 12)
+        $rawSize = [BitConverter]::ToUInt32($bytes, $sectionOffset + 16)
+        $rawOffset = [BitConverter]::ToUInt32($bytes, $sectionOffset + 20)
+        if ($configRva -ge $sectionRva -and $configRva -lt $sectionRva + $rawSize) {
+            $configOffset = $rawOffset + $configRva - $sectionRva
+            $configAvailable = [Math]::Min(
+                [long]$rawSize - ($configRva - $sectionRva), [long]$bytes.LongLength - $configOffset)
+            break
+        }
+    }
+    if ($null -eq $configOffset -or $configSize -lt 4 -or $configAvailable -lt 4) {
+        throw "$Path has no load configuration."
+    }
+    $structureSize = [BitConverter]::ToUInt32($bytes, $configOffset)
+    if ($structureSize -lt $flagsOffset + 4 -or $structureSize -gt $configAvailable) {
+        throw "$Path has no complete CFG load configuration."
+    }
+
+    $guardFlags = [BitConverter]::ToUInt32($bytes, $configOffset + $flagsOffset)
+    if ($is64Bit) {
+        $checkPointer = [BitConverter]::ToUInt64($bytes, $configOffset + 112)
+        $functionTable = [BitConverter]::ToUInt64($bytes, $configOffset + 128)
+        $functionCount = [BitConverter]::ToUInt64($bytes, $configOffset + 136)
+    }
+    else {
+        $checkPointer = [BitConverter]::ToUInt32($bytes, $configOffset + 72)
+        $functionTable = [BitConverter]::ToUInt32($bytes, $configOffset + 80)
+        $functionCount = [BitConverter]::ToUInt32($bytes, $configOffset + 84)
+    }
+    return [pscustomobject]@{
+        Path = $Path
+        GuardCf = ($characteristics -band 0x4000) -ne 0
+        Instrumented = ($guardFlags -band 0x100) -ne 0
+        FunctionTablePresent = ($guardFlags -band 0x400) -ne 0
+        CheckPointer = $checkPointer
+        FunctionTable = $functionTable
+        FunctionCount = $functionCount
+    }
+}
+
 function Convert-PhysicalAddressText {
     param([AllowNull()] [string] $Value)
 

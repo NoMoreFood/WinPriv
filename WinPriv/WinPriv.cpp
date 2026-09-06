@@ -898,6 +898,16 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		return iRet;
 	}
 
+	PROCESS_MITIGATION_DYNAMIC_CODE_POLICY tDynamicCodePolicy{};
+	if (GetProcessMitigationPolicy(GetCurrentProcess(), ProcessDynamicCodePolicy,
+		&tDynamicCodePolicy, sizeof(tDynamicCodePolicy)) &&
+		tDynamicCodePolicy.ProhibitDynamicCode && !tDynamicCodePolicy.AllowThreadOptOut)
+	{
+		PrintMessage(L"ERROR: Process dynamic-code policy (ACG) prohibits WinPriv API hooks (error %lu).\n",
+			static_cast<DWORD>(ERROR_DYNAMIC_CODE_BLOCKED));
+		return ERROR_DYNAMIC_CODE_BLOCKED;
+	}
+
 	// user the standard temp directory
 	std::wstring sTempDirectory;
 	sTempDirectory.resize(MAX_PATH + 1);
@@ -1020,7 +1030,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		(!bUseShellExecute && CreateProcess(nullptr, sProcessParams.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
 			&o_StartInfo, &o_ProcessInfo) == 0))
 	{
-		PrintMessage(L"ERROR: Problem starting target executable: %s\n", sProcessParams.c_str());
+		const DWORD iLaunchError = GetLastError();
+		PrintMessage(L"ERROR: Problem starting target executable: %s (error %lu)\n",
+			sProcessParams.c_str(), iLaunchError);
 		if (bCleanupLibrary)
 		{
 			hLibrary.Cleanup();
