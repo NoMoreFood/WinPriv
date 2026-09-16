@@ -1,6 +1,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cwchar>
 #include <iterator>
 #include <string>
@@ -74,6 +75,429 @@ namespace
         std::fwprintf(stderr, L"WinPriv hook-loading fixture failed at %ls (status=%lu).\n",
             stage, static_cast<unsigned long>(status));
         return 1;
+    }
+
+    using RegOpenKeyExAFunction = LSTATUS(WINAPI*)(HKEY, LPCSTR, DWORD, REGSAM, PHKEY);
+    using RegQueryValueExAFunction = LSTATUS(WINAPI*)(HKEY, LPCSTR, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
+
+#if defined(_M_AMD64)
+    constexpr auto CurrentArchitecture = L"x64";
+#elif defined(_M_IX86)
+    constexpr auto CurrentArchitecture = L"x86";
+#elif defined(_M_ARM64)
+    constexpr auto CurrentArchitecture = L"ARM64";
+#else
+    constexpr auto CurrentArchitecture = L"unknown";
+#endif
+
+    std::string WideToAnsi(const std::wstring& wide)
+    {
+        if (wide.empty()) return {};
+        const int len = WideCharToMultiByte(CP_ACP, 0, wide.c_str(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+        if (len <= 0) return {};
+        std::string ansi(static_cast<size_t>(len), '\0');
+        WideCharToMultiByte(CP_ACP, 0, wide.c_str(), static_cast<int>(wide.size()), ansi.data(), len, nullptr, nullptr);
+        return ansi;
+    }
+
+    std::wstring QuoteArgumentW(const std::wstring& arg)
+    {
+        if (arg.find_first_of(L" \t\n\v\"") == std::wstring::npos && !arg.empty())
+        {
+            return arg;
+        }
+        std::wstring quoted;
+        quoted.push_back(L'"');
+        size_t backslashes = 0;
+        for (const wchar_t c : arg)
+        {
+            if (c == L'\\')
+            {
+                ++backslashes;
+            }
+            else if (c == L'"')
+            {
+                quoted.append(backslashes * 2 + 1, L'\\');
+                quoted.push_back(L'"');
+                backslashes = 0;
+            }
+            else
+            {
+                quoted.append(backslashes, L'\\');
+                quoted.push_back(c);
+                backslashes = 0;
+            }
+        }
+        quoted.append(backslashes * 2, L'\\');
+        quoted.push_back(L'"');
+        return quoted;
+    }
+
+    std::string QuoteArgumentA(const std::string& arg)
+    {
+        if (arg.find_first_of(" \t\n\v\"") == std::string::npos && !arg.empty())
+        {
+            return arg;
+        }
+        std::string quoted;
+        quoted.push_back('"');
+        size_t backslashes = 0;
+        for (const char c : arg)
+        {
+            if (c == '\\')
+            {
+                ++backslashes;
+            }
+            else if (c == '"')
+            {
+                quoted.append(backslashes * 2 + 1, '\\');
+                quoted.push_back('"');
+                backslashes = 0;
+            }
+            else
+            {
+                quoted.append(backslashes, '\\');
+                quoted.push_back(c);
+                backslashes = 0;
+            }
+        }
+        quoted.append(backslashes * 2, '\\');
+        quoted.push_back('"');
+        return quoted;
+    }
+
+    LSTATUS QueryDwordW(
+        RegOpenKeyExWFunction openKey,
+        RegQueryValueExWFunction queryVal,
+        RegCloseKeyFunction closeKey,
+        const wchar_t* subKey,
+        const wchar_t* valueName,
+        DWORD& resultValue)
+    {
+        HKEY key = nullptr;
+        LSTATUS status = openKey(HKEY_CURRENT_USER, subKey, 0, KEY_QUERY_VALUE, &key);
+        if (status != ERROR_SUCCESS) return status;
+        DWORD type = REG_NONE;
+        DWORD val = 0;
+        DWORD size = sizeof(val);
+        status = queryVal(key, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(&val), &size);
+        closeKey(key);
+        if (status != ERROR_SUCCESS) return status;
+        if (type != REG_DWORD || size != sizeof(val)) return ERROR_INVALID_DATA;
+        resultValue = val;
+        return ERROR_SUCCESS;
+    }
+
+    LSTATUS QueryDwordA(
+        RegOpenKeyExAFunction openKeyA,
+        RegQueryValueExAFunction queryValA,
+        RegCloseKeyFunction closeKey,
+        const char* subKeyA,
+        const char* valueNameA,
+        DWORD& resultValue)
+    {
+        HKEY key = nullptr;
+        LSTATUS status = openKeyA(HKEY_CURRENT_USER, subKeyA, 0, KEY_QUERY_VALUE, &key);
+        if (status != ERROR_SUCCESS) return status;
+        DWORD type = REG_NONE;
+        DWORD val = 0;
+        DWORD size = sizeof(val);
+        status = queryValA(key, valueNameA, nullptr, &type, reinterpret_cast<LPBYTE>(&val), &size);
+        closeKey(key);
+        if (status != ERROR_SUCCESS) return status;
+        if (type != REG_DWORD || size != sizeof(val)) return ERROR_INVALID_DATA;
+        resultValue = val;
+        return ERROR_SUCCESS;
+    }
+
+    LSTATUS ExecuteQuery(
+        const std::wstring& mode,
+        const std::wstring& subKey,
+        const std::wstring& valueName,
+        DWORD& queriedValue)
+    {
+        queriedValue = 0;
+        if (mode == L"static-import" || mode == L"delay-load")
+        {
+#if defined(WINPRIV_LOADING_MODE_DYNAMIC)
+            return ERROR_NOT_SUPPORTED;
+#else
+            return QueryDwordW(RegOpenKeyExW, RegQueryValueExW, RegCloseKey, subKey.c_str(), valueName.c_str(), queriedValue);
+#endif
+        }
+        else if (mode == L"static-import-ansi" || mode == L"delay-load-ansi")
+        {
+#if defined(WINPRIV_LOADING_MODE_DYNAMIC)
+            return ERROR_NOT_SUPPORTED;
+#else
+            const std::string subKeyA = WideToAnsi(subKey);
+            const std::string valueNameA = WideToAnsi(valueName);
+            return QueryDwordA(RegOpenKeyExA, RegQueryValueExA, RegCloseKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
+#endif
+        }
+        else if (mode == L"load-library")
+        {
+            HMODULE mod = LoadLibraryW(L"advapi32.dll");
+            if (mod == nullptr) return static_cast<LSTATUS>(GetLastError());
+            auto openKey = reinterpret_cast<RegOpenKeyExWFunction>(GetProcAddress(mod, "RegOpenKeyExW"));
+            auto queryVal = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod, "RegQueryValueExW"));
+            auto closeKey = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod, "RegCloseKey"));
+            if (!openKey || !queryVal || !closeKey)
+            {
+                FreeLibrary(mod);
+                return ERROR_PROC_NOT_FOUND;
+            }
+            const LSTATUS status = QueryDwordW(openKey, queryVal, closeKey, subKey.c_str(), valueName.c_str(), queriedValue);
+            FreeLibrary(mod);
+            return status;
+        }
+        else if (mode == L"load-library-ansi")
+        {
+            HMODULE mod = LoadLibraryW(L"advapi32.dll");
+            if (mod == nullptr) return static_cast<LSTATUS>(GetLastError());
+            auto openKeyA = reinterpret_cast<RegOpenKeyExAFunction>(GetProcAddress(mod, "RegOpenKeyExA"));
+            auto queryValA = reinterpret_cast<RegQueryValueExAFunction>(GetProcAddress(mod, "RegQueryValueExA"));
+            auto closeKey = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod, "RegCloseKey"));
+            if (!openKeyA || !queryValA || !closeKey)
+            {
+                FreeLibrary(mod);
+                return ERROR_PROC_NOT_FOUND;
+            }
+            const std::string subKeyA = WideToAnsi(subKey);
+            const std::string valueNameA = WideToAnsi(valueName);
+            const LSTATUS status = QueryDwordA(openKeyA, queryValA, closeKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
+            FreeLibrary(mod);
+            return status;
+        }
+        else if (mode == L"get-module-handle")
+        {
+            HMODULE mod = GetModuleHandleW(L"advapi32.dll");
+            if (mod == nullptr)
+            {
+                HMODULE loaded = LoadLibraryW(L"advapi32.dll");
+                mod = GetModuleHandleW(L"advapi32.dll");
+                if (loaded != nullptr) FreeLibrary(loaded);
+            }
+            if (mod == nullptr) return static_cast<LSTATUS>(GetLastError());
+            auto openKey = reinterpret_cast<RegOpenKeyExWFunction>(GetProcAddress(mod, "RegOpenKeyExW"));
+            auto queryVal = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod, "RegQueryValueExW"));
+            auto closeKey = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod, "RegCloseKey"));
+            if (!openKey || !queryVal || !closeKey) return ERROR_PROC_NOT_FOUND;
+            return QueryDwordW(openKey, queryVal, closeKey, subKey.c_str(), valueName.c_str(), queriedValue);
+        }
+        else if (mode == L"get-module-handle-ansi")
+        {
+            HMODULE mod = GetModuleHandleW(L"advapi32.dll");
+            if (mod == nullptr)
+            {
+                HMODULE loaded = LoadLibraryW(L"advapi32.dll");
+                mod = GetModuleHandleW(L"advapi32.dll");
+                if (loaded != nullptr) FreeLibrary(loaded);
+            }
+            if (mod == nullptr) return static_cast<LSTATUS>(GetLastError());
+            auto openKeyA = reinterpret_cast<RegOpenKeyExAFunction>(GetProcAddress(mod, "RegOpenKeyExA"));
+            auto queryValA = reinterpret_cast<RegQueryValueExAFunction>(GetProcAddress(mod, "RegQueryValueExA"));
+            auto closeKey = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod, "RegCloseKey"));
+            if (!openKeyA || !queryValA || !closeKey) return ERROR_PROC_NOT_FOUND;
+            const std::string subKeyA = WideToAnsi(subKey);
+            const std::string valueNameA = WideToAnsi(valueName);
+            return QueryDwordA(openKeyA, queryValA, closeKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
+        }
+        else if (mode == L"reload-library")
+        {
+            DWORD firstValue = 0;
+            HMODULE mod1 = LoadLibraryW(L"advapi32.dll");
+            if (mod1 == nullptr) return static_cast<LSTATUS>(GetLastError());
+            auto open1 = reinterpret_cast<RegOpenKeyExWFunction>(GetProcAddress(mod1, "RegOpenKeyExW"));
+            auto query1 = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod1, "RegQueryValueExW"));
+            auto close1 = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod1, "RegCloseKey"));
+            if (!open1 || !query1 || !close1)
+            {
+                FreeLibrary(mod1);
+                return ERROR_PROC_NOT_FOUND;
+            }
+            const LSTATUS st1 = QueryDwordW(open1, query1, close1, subKey.c_str(), valueName.c_str(), firstValue);
+            FreeLibrary(mod1);
+            if (st1 != ERROR_SUCCESS) return st1;
+
+            DWORD secondValue = 0;
+            HMODULE mod2 = LoadLibraryW(L"advapi32.dll");
+            if (mod2 == nullptr) return static_cast<LSTATUS>(GetLastError());
+            auto open2 = reinterpret_cast<RegOpenKeyExWFunction>(GetProcAddress(mod2, "RegOpenKeyExW"));
+            auto query2 = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod2, "RegQueryValueExW"));
+            auto close2 = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod2, "RegCloseKey"));
+            if (!open2 || !query2 || !close2)
+            {
+                FreeLibrary(mod2);
+                return ERROR_PROC_NOT_FOUND;
+            }
+            const LSTATUS st2 = QueryDwordW(open2, query2, close2, subKey.c_str(), valueName.c_str(), secondValue);
+            FreeLibrary(mod2);
+            if (st2 != ERROR_SUCCESS) return st2;
+
+            if (firstValue != secondValue) return ERROR_INVALID_DATA;
+            queriedValue = secondValue;
+            return ERROR_SUCCESS;
+        }
+
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    int RunChainTest(const int argumentCount, wchar_t* arguments[])
+    {
+        std::wstring mode = ModeName;
+        std::wstring subKey;
+        std::wstring valueName;
+        DWORD expectedValue = 0;
+        bool expectedSpecified = false;
+        bool useCreateProcessA = false;
+        std::wstring nextExe;
+        std::vector<std::wstring> nextArgs;
+
+        for (int i = 2; i < argumentCount; ++i)
+        {
+            if (wcscmp(arguments[i], L"--mode") == 0 && i + 1 < argumentCount)
+            {
+                mode = arguments[++i];
+            }
+            else if (wcscmp(arguments[i], L"--key") == 0 && i + 1 < argumentCount)
+            {
+                subKey = arguments[++i];
+            }
+            else if (wcscmp(arguments[i], L"--value-name") == 0 && i + 1 < argumentCount)
+            {
+                valueName = arguments[++i];
+            }
+            else if (wcscmp(arguments[i], L"--expected") == 0 && i + 1 < argumentCount)
+            {
+                expectedValue = static_cast<DWORD>(std::wcstoul(arguments[++i], nullptr, 0));
+                expectedSpecified = true;
+            }
+            else if (wcscmp(arguments[i], L"--use-createprocess-a") == 0)
+            {
+                useCreateProcessA = true;
+            }
+            else if (wcscmp(arguments[i], L"--next") == 0 && i + 1 < argumentCount)
+            {
+                nextExe = arguments[++i];
+                for (int j = i + 1; j < argumentCount; ++j)
+                {
+                    nextArgs.push_back(arguments[j]);
+                }
+                break;
+            }
+        }
+
+        if (subKey.empty() || valueName.empty() || !expectedSpecified)
+        {
+            return Fail(L"missing-parameters", ERROR_INVALID_PARAMETER);
+        }
+
+        DWORD queriedValue = 0;
+        const LSTATUS status = ExecuteQuery(mode, subKey, valueName, queriedValue);
+        if (status != ERROR_SUCCESS)
+        {
+            return Fail(L"ExecuteQuery", status);
+        }
+
+        const bool matched = (queriedValue == expectedValue);
+        std::wprintf(
+            L"{\"schemaVersion\":1,\"event\":\"chain-verification\",\"pid\":%lu,\"arch\":\"%ls\",\"binaryMode\":\"%ls\",\"requestedMode\":\"%ls\",\"queriedValue\":%lu,\"expectedValue\":%lu,\"matched\":%ls}\n",
+            GetCurrentProcessId(),
+            CurrentArchitecture,
+            ModeName,
+            mode.c_str(),
+            static_cast<unsigned long>(queriedValue),
+            static_cast<unsigned long>(expectedValue),
+            matched ? L"true" : L"false"
+        );
+        std::fflush(stdout);
+
+        if (!matched)
+        {
+            return Fail(L"value-mismatch", ERROR_INVALID_DATA);
+        }
+
+        if (!nextExe.empty())
+        {
+            std::vector<std::wstring> fullChildArgs;
+            fullChildArgs.push_back(nextExe);
+            for (const auto& a : nextArgs)
+            {
+                fullChildArgs.push_back(a);
+            }
+
+            PROCESS_INFORMATION processInfo{};
+            DWORD childExitCode = MAXDWORD;
+
+            if (useCreateProcessA)
+            {
+                const std::string nextExeA = WideToAnsi(nextExe);
+                std::string commandLineA;
+                for (size_t k = 0; k < fullChildArgs.size(); ++k)
+                {
+                    if (k > 0) commandLineA.push_back(' ');
+                    commandLineA += QuoteArgumentA(WideToAnsi(fullChildArgs[k]));
+                }
+
+                STARTUPINFOA startupInfoA{};
+                startupInfoA.cb = sizeof(startupInfoA);
+                startupInfoA.dwFlags = STARTF_USESTDHANDLES;
+                startupInfoA.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+                startupInfoA.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+                startupInfoA.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+                std::vector<char> cmdBuffer(commandLineA.begin(), commandLineA.end());
+                cmdBuffer.push_back('\0');
+
+                if (!CreateProcessA(nextExeA.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startupInfoA, &processInfo))
+                {
+                    return Fail(L"CreateProcessA", GetLastError());
+                }
+            }
+            else
+            {
+                std::wstring commandLineW;
+                for (size_t k = 0; k < fullChildArgs.size(); ++k)
+                {
+                    if (k > 0) commandLineW.push_back(L' ');
+                    commandLineW += QuoteArgumentW(fullChildArgs[k]);
+                }
+
+                STARTUPINFOW startupInfoW{};
+                startupInfoW.cb = sizeof(startupInfoW);
+                startupInfoW.dwFlags = STARTF_USESTDHANDLES;
+                startupInfoW.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+                startupInfoW.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+                startupInfoW.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+                std::vector<wchar_t> cmdBuffer(commandLineW.begin(), commandLineW.end());
+                cmdBuffer.push_back(L'\0');
+
+                if (!CreateProcessW(nextExe.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startupInfoW, &processInfo))
+                {
+                    return Fail(L"CreateProcessW", GetLastError());
+                }
+            }
+
+            WaitForSingleObject(processInfo.hProcess, INFINITE);
+            if (!GetExitCodeProcess(processInfo.hProcess, &childExitCode))
+            {
+                const DWORD err = GetLastError();
+                CloseHandle(processInfo.hThread);
+                CloseHandle(processInfo.hProcess);
+                return Fail(L"GetExitCodeProcess", err);
+            }
+            CloseHandle(processInfo.hThread);
+            CloseHandle(processInfo.hProcess);
+
+            if (childExitCode != 0)
+            {
+                return static_cast<int>(childExitCode);
+            }
+        }
+
+        return 0;
     }
 }
 
@@ -372,6 +796,9 @@ int wmain(const int argumentCount, wchar_t* arguments[])
 
     if (argumentCount >= 4 && wcscmp(arguments[1], L"--launch-mitigation") == 0)
         return LaunchMitigatedProcess(argumentCount, arguments);
+
+    if (argumentCount >= 2 && wcscmp(arguments[1], L"--chain-test") == 0)
+        return RunChainTest(argumentCount, arguments);
 
     const bool descendant = argumentCount == 4 && wcscmp(arguments[1], L"--query-descendant") == 0;
     if (argumentCount != 3 && !descendant)
