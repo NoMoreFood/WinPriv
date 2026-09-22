@@ -11,26 +11,25 @@ BeforeAll {
     }
 }
 
-Describe 'WinPriv Direct Descendant API Import Modes (<Architecture>, <Mode>)' -Tag 'Safe', 'ImportModes' -ForEach @(
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookImport.exe'; Mode = 'static-import' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookImport.exe'; Mode = 'static-import-ansi' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDelayLoad.exe'; Mode = 'delay-load' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDelayLoad.exe'; Mode = 'delay-load-ansi' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'load-library' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'load-library-ansi' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'get-module-handle' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'get-module-handle-ansi' },
-    @{ Architecture = 'x64'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'reload-library' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookImport.exe'; Mode = 'static-import' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookImport.exe'; Mode = 'static-import-ansi' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDelayLoad.exe'; Mode = 'delay-load' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDelayLoad.exe'; Mode = 'delay-load-ansi' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'load-library' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'load-library-ansi' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'get-module-handle' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'get-module-handle-ansi' },
-    @{ Architecture = 'x86'; Executable = 'WinPrivHookDynamic.exe'; Mode = 'reload-library' }
-) {
+$descendantArchitectures = @(Get-WinPrivArchitectureCases | ForEach-Object { $_.Architecture })
+$directDescendantCases = foreach ($architecture in $descendantArchitectures) {
+    foreach ($mode in @(
+        @{ Executable = 'WinPrivHookImport.exe'; Mode = 'static-import' },
+        @{ Executable = 'WinPrivHookImport.exe'; Mode = 'static-import-ansi' },
+        @{ Executable = 'WinPrivHookDelayLoad.exe'; Mode = 'delay-load' },
+        @{ Executable = 'WinPrivHookDelayLoad.exe'; Mode = 'delay-load-ansi' },
+        @{ Executable = 'WinPrivHookDynamic.exe'; Mode = 'load-library' },
+        @{ Executable = 'WinPrivHookDynamic.exe'; Mode = 'load-library-ansi' },
+        @{ Executable = 'WinPrivHookDynamic.exe'; Mode = 'get-module-handle' },
+        @{ Executable = 'WinPrivHookDynamic.exe'; Mode = 'get-module-handle-ansi' },
+        @{ Executable = 'WinPrivHookDynamic.exe'; Mode = 'reload-library' }
+    )) {
+        @{ Architecture = $architecture; Executable = $mode.Executable; Mode = $mode.Mode }
+    }
+}
+
+Describe 'WinPriv Direct Descendant API Import Modes (<Architecture>, <Mode>)' `
+    -Tag 'Safe', 'ImportModes' -ForEach $directDescendantCases {
     BeforeEach {
         $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose "direct-$Architecture-$Mode"
         $registryName = "Case$([Guid]::NewGuid().ToString('N'))"
@@ -81,7 +80,7 @@ Describe 'WinPriv Direct Descendant API Import Modes (<Architecture>, <Mode>)' -
     }
 }
 
-Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <ChildArch>, <ParentMode> -> <ChildMode>)' -Tag 'Safe', 'CrossArchitecture' -ForEach @(
+Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <ChildArch>, <ParentMode> -> <ChildMode>)' -Tag 'Safe', 'CrossArchitecture' -ForEach (@(
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false },
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDelayLoad.exe'; ChildMode = 'delay-load'; UseCreateProcessA = $false },
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x64'; ParentExe = 'WinPrivHookDynamic.exe'; ParentMode = 'load-library'; ChildArch = 'x86'; ChildExe = 'WinPrivHookImport.exe'; ChildMode = 'static-import'; UseCreateProcessA = $false },
@@ -97,9 +96,11 @@ Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <C
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x64'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false },
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x86'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false },
     @{ Launcher = 'WinPriv';    ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false }
-) {
+) | Where-Object {
+        $_.ParentArch -in $descendantArchitectures -and $_.ChildArch -in $descendantArchitectures
+    }) {
     BeforeEach {
-        $sandbox = New-WinPrivSandbox -Architecture @('x86', 'x64') -Purpose "chain-2gen-$ParentArch-$ChildArch"
+        $sandbox = New-WinPrivSandbox -Architecture @($ParentArch, $ChildArch) -Purpose "chain-2gen-$ParentArch-$ChildArch"
         $registryName = "Case$([Guid]::NewGuid().ToString('N'))"
         $subKey = "Software\WinPrivTests\$registryName"
         $providerPath = "Registry::HKEY_CURRENT_USER\$subKey"
@@ -168,7 +169,7 @@ Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <C
     }
 }
 
-Describe 'WinPriv 3-Generation Descendant Cross-Architecture (<ParentArch> -> <ChildArch> -> <GrandchildArch>)' -Tag 'Safe', 'CrossArchitecture', 'MultiGeneration' -ForEach @(
+Describe 'WinPriv 3-Generation Descendant Cross-Architecture (<ParentArch> -> <ChildArch> -> <GrandchildArch>)' -Tag 'Safe', 'CrossArchitecture', 'MultiGeneration' -ForEach (@(
     @{
         Description     = 'x64 -> x86 -> x64 round-trip with varied import modes (static -> dynamic -> delay)';
         Launcher        = 'WinPrivCmd';
@@ -241,9 +242,13 @@ Describe 'WinPriv 3-Generation Descendant Cross-Architecture (<ParentArch> -> <C
         GrandchildArch  = 'x64'; GrandchildExe = 'WinPrivHookDelayLoad.exe'; GrandchildMode = 'delay-load';
         UseCreateProcessA = $true
     }
-) {
+) | Where-Object {
+        $_.ParentArch -in $descendantArchitectures -and $_.ChildArch -in $descendantArchitectures -and
+        $_.GrandchildArch -in $descendantArchitectures
+    }) {
     BeforeEach {
-        $sandbox = New-WinPrivSandbox -Architecture @('x86', 'x64') -Purpose "chain-3gen-$ParentArch-$ChildArch-$GrandchildArch"
+        $sandbox = New-WinPrivSandbox -Architecture @($ParentArch, $ChildArch, $GrandchildArch) `
+            -Purpose "chain-3gen-$ParentArch-$ChildArch-$GrandchildArch"
         $registryName = "Case$([Guid]::NewGuid().ToString('N'))"
         $subKey = "Software\WinPrivTests\$registryName"
         $providerPath = "Registry::HKEY_CURRENT_USER\$subKey"
