@@ -238,7 +238,10 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// read command line from cfg file if it exists
 	const std::wstring sExecutable = GetRunningExecutable();
 	const std::wstring sCfgPath = std::filesystem::path(sExecutable).replace_extension(L".cfg").wstring();
-	if (GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	// Internal relaunches already carry expanded arguments and must retain their phase marker.
+	const bool bRelaunched = iArgc > 1 && (_wcsicmp(aArgv[1], L"/RelaunchElevated") == 0 ||
+		_wcsicmp(aArgv[1], L"/RelaunchComplete") == 0);
+	if (!bRelaunched && GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
 		const std::wstring sCfgArgs = LoadCfgFile(sCfgPath);
 		if (bCfgLoadFailed) return __LINE__;

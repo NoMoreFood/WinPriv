@@ -251,6 +251,21 @@ Describe 'WinPriv configuration files (<Architecture>)' -Tag 'Safe' -ForEach $ar
         }
     }
 
+    It 'preserves the replayed command instead of reloading a sibling configuration' {
+        $launcherSet = $sandbox.Launchers.PSObject.Properties[$Architecture].Value
+        $launcher = Join-Path $launcherSet.Root 'WINPRIVCMD-RELAUNCH.EXE'
+        Copy-Item -LiteralPath $launcherSet.WinPrivCmd -Destination $launcher
+        $launcherSet.WinPrivCmd = $launcher
+        $config = [IO.Path]::ChangeExtension($launcher, '.cfg')
+        [IO.File]::WriteAllText($config, '/DefinitelyNotAWinPrivSwitch', [Text.UTF8Encoding]::new($false))
+
+        $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+            -Arguments @('/RelaunchComplete', $env:ComSpec, '/d', '/c', 'exit', '/b', '27') -TimeoutSeconds 20
+        $result.TimedOut | Should -BeFalse
+        $result.StartError | Should -BeNullOrEmpty
+        $result.ExitCode | Should -Be 27
+    }
+
     It 'preserves order across repeated explicit command-file loads' {
         Invoke-WinPrivCapability -Id 'config.merge-order' -Architecture $Architecture -Body {
             $first = Join-Path $sandbox.Root 'first.cfg'
