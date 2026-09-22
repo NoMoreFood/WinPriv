@@ -365,6 +365,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				return __LINE__;
 			}
 
+			const int iFirstCfgArg = iArg;
+			const std::wstring sProcessedArgs = ArgvToCommandLine(1, iArg - 1,
+				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 			const std::wstring sExtraCfgPath(aArgv[++iArg]);
 			if (GetFileAttributes(sExtraCfgPath.c_str()) == INVALID_FILE_ATTRIBUTES)
 			{
@@ -372,12 +375,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				return __LINE__;
 			}
 
-			// build a new command line from the executable, cfg file args, and remaining original args
+			// preserve processed arguments for relaunch while replacing this command-file switch
 			const std::wstring sCfgArgs = LoadCfgFile(sExtraCfgPath);
 			if (bCfgLoadFailed) return __LINE__;
 			const std::wstring sRemainingArgs = ArgvToCommandLine(iArg + 1, iArgc - 1,
 				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
 			std::wstring sExpandedCommandLine = L"\"" + sExecutable + L"\"";
+			if (!sProcessedArgs.empty()) sExpandedCommandLine += L" " + sProcessedArgs;
 			if (!sCfgArgs.empty()) sExpandedCommandLine += L" " + sCfgArgs;
 			if (!sRemainingArgs.empty()) sExpandedCommandLine += L" " + sRemainingArgs;
 
@@ -396,7 +400,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			}
 			pOwnedArgv.reset(pParsedArgv);
 			aArgv = pParsedArgv;
-			iArg = 0;
+			iArg = iFirstCfgArg - 1;
 		}
 
 		// this instructs winpriv to attempt to enable a user-provided list of privs
