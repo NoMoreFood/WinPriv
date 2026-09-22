@@ -449,6 +449,22 @@ Describe 'WinPriv network and AMSI hooks (<Architecture>)' -Tag 'Safe' -ForEach 
         }
     }
 
+    It 'redirects an unresolved hostname through ANSI and Unicode Winsock lookups' {
+        $name = 'winpriv-' + [Guid]::NewGuid().ToString('N') + '.invalid'
+        $result = Invoke-WinPrivProbe -Architecture $Architecture `
+            -WinPrivArguments @('/HostOverride', $name, '127.0.0.2') -Operation wsa `
+            -Arguments @{ name = $name } -Sandbox $sandbox -TimeoutSeconds 30
+        Assert-WinPrivInvocationSucceeded $result
+        foreach ($api in @('unicode', 'ansi')) {
+            $result.ProbeResult.result.$api.success | Should -BeTrue
+            $result.ProbeResult.result.$api.address | Should -Be '127.0.0.2'
+            @($result.ProbeResult.result.$api.addresses).Count | Should -BeGreaterThan 0
+            foreach ($address in @($result.ProbeResult.result.$api.addresses)) {
+                $address.address | Should -BeIn @('127.0.0.2', '::ffff:127.0.0.2')
+            }
+        }
+    }
+
     It 'passes an unrelated Winsock lookup through unchanged' {
         Invoke-WinPrivCapability -Id 'network.host-pass-through' -Architecture $Architecture -Body {
             $arguments = @{ name = '127.0.0.1' }

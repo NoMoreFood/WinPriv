@@ -1057,7 +1057,19 @@ static decltype(&WSALookupServiceBeginW) TrueWSALookupServiceBeginW = WSALookupS
 static INT WSAAPI DetourWSALookupServiceBeginW(_In_ LPWSAQUERYSETW lpqsRestrictions,
 	_In_ DWORD dwControlFlags, _Out_ LPHANDLE lphLookup)
 {
-	const INT iRet = TrueWSALookupServiceBeginW(lpqsRestrictions,
+	WSAQUERYSETW tRestrictions{};
+	WCHAR sReplacement[INET_ADDRSTRLEN]{};
+	LPWSAQUERYSETW pPassedRestrictions = lpqsRestrictions;
+	IN_ADDR tReplacement{};
+	if (lpqsRestrictions != nullptr && lpqsRestrictions->dwSize == sizeof(*lpqsRestrictions) &&
+		GetHostOverrideAddress(lpqsRestrictions->lpszServiceInstanceName, tReplacement) &&
+		InetNtopW(AF_INET, &tReplacement, sReplacement, ARRAYSIZE(sReplacement)) != nullptr)
+	{
+		tRestrictions = *lpqsRestrictions;
+		tRestrictions.lpszServiceInstanceName = sReplacement;
+		pPassedRestrictions = &tRestrictions;
+	}
+	const INT iRet = TrueWSALookupServiceBeginW(pPassedRestrictions,
 		dwControlFlags, lphLookup);
 	if (iRet != SOCKET_ERROR && lphLookup != nullptr &&
 		lpqsRestrictions != nullptr)
@@ -1073,18 +1085,24 @@ static decltype(&WSALookupServiceBeginA) TrueWSALookupServiceBeginA = WSALookupS
 static INT WSAAPI DetourWSALookupServiceBeginA(_In_ LPWSAQUERYSETA lpqsRestrictions,
 	_In_ DWORD dwControlFlags, _Out_ LPHANDLE lphLookup)
 {
-	const INT iRet = TrueWSALookupServiceBeginA(lpqsRestrictions,
-		dwControlFlags, lphLookup);
-	if (iRet != SOCKET_ERROR && lphLookup != nullptr &&
-		lpqsRestrictions != nullptr)
+	WSAQUERYSETA tRestrictions{};
+	CHAR sReplacement[INET_ADDRSTRLEN]{};
+	LPWSAQUERYSETA pPassedRestrictions = lpqsRestrictions;
+	std::wstring sWideName;
+	const bool bHasName = lpqsRestrictions != nullptr && lpqsRestrictions->dwSize == sizeof(*lpqsRestrictions) &&
+		ConvertHostLookupName(lpqsRestrictions->lpszServiceInstanceName, sWideName);
+	IN_ADDR tReplacement{};
+	if (bHasName && GetHostOverrideAddress(sWideName.c_str(), tReplacement) &&
+		InetNtopA(AF_INET, &tReplacement, sReplacement, ARRAYSIZE(sReplacement)) != nullptr)
 	{
-		std::wstring sWideName;
-		if (ConvertHostLookupName(lpqsRestrictions->lpszServiceInstanceName,
-			sWideName))
-		{
-			RememberHostLookupName(*lphLookup, sWideName.c_str());
-		}
+		tRestrictions = *lpqsRestrictions;
+		tRestrictions.lpszServiceInstanceName = sReplacement;
+		pPassedRestrictions = &tRestrictions;
 	}
+	const INT iRet = TrueWSALookupServiceBeginA(pPassedRestrictions,
+		dwControlFlags, lphLookup);
+	if (iRet != SOCKET_ERROR && lphLookup != nullptr && bHasName)
+		RememberHostLookupName(*lphLookup, sWideName.c_str());
 	return iRet;
 }
 
