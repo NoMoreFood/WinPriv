@@ -1768,6 +1768,10 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	const HRESULT iResult = TrueAdoDispatchInvoke(pDispatch, iMember,
 		iInterface, iLocale, iFlags, pPassedParameters, pResult, pException,
 		pArgumentError);
+	if ((iResult == DISP_E_TYPEMISMATCH || iResult == DISP_E_PARAMNOTFOUND) &&
+		pPassedParameters == &tParameters && pConnectionString == nullptr &&
+		pArgumentError != nullptr && *pArgumentError != 0)
+		--*pArgumentError;
 	SysFreeString(sReplacement);
 	return iResult;
 }
