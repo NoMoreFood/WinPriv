@@ -245,6 +245,39 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
         }
     }
 
+    It 'applies registry rules to every enumeration class and short buffer' {
+        $enumerationKey = "$subKey\Enumeration"
+        $enumerationPath = "Registry::HKEY_CURRENT_USER\$enumerationKey"
+        New-Item -Path $enumerationPath -Force | Out-Null
+        New-ItemProperty -Path $enumerationPath -Name Value -PropertyType String -Value ('original' * 32) -Force |
+            Out-Null
+        foreach ($method in @('ntEnumerateBasic', 'ntEnumerate', 'ntEnumeratePartial',
+            'ntEnumerateFullAlign64', 'ntEnumeratePartialAlign64')) {
+            $arguments = @{ root = 'HKCU'; key = $enumerationKey; method = $method }
+            $overridden = Invoke-WinPrivProbe -Architecture $Architecture `
+                -WinPrivArguments @('/RegOverride', "HKCU\$enumerationKey", 'Value', 'REG_DWORD', '42') `
+                -Operation registry-worker -Arguments $arguments -Sandbox $sandbox -TimeoutSeconds 30
+            Assert-WinPrivInvocationSucceeded $overridden
+            $entry = @($overridden.ProbeResult.result.values)
+            $entry | Should -HaveCount 1
+            $entry[0].type | Should -Be 4
+            $entry[0].sizeRequiredLength | Should -Be $entry[0].requiredLength
+            $entry[0].shortStatusHex | Should -Be '0x80000005'
+            $entry[0].shortRequiredLength | Should -Be $entry[0].requiredLength
+            $entry[0].shortType | Should -Be 4
+            if ($method -ne 'ntEnumerateBasic') {
+                $entry[0].dataLength | Should -Be 4
+                [BitConverter]::ToUInt32([Convert]::FromBase64String($entry[0].dataBase64), 0) |
+                    Should -Be 42
+            }
+            $blocked = Invoke-WinPrivProbe -Architecture $Architecture `
+                -WinPrivArguments @('/RegBlock', "HKCU\$enumerationKey") -Operation registry-worker `
+                -Arguments $arguments -Sandbox $sandbox -TimeoutSeconds 30
+            $blocked.TimedOut | Should -BeFalse
+            $blocked.ProbeResult.result.finalStatusHex | Should -Be '0xC0000034'
+        }
+    }
+
     It 'does not block a sibling whose name merely shares the same prefix' {
         Invoke-WinPrivCapability -Id 'registry.block-boundary' -Architecture $Architecture -Body {
             $sibling = "${subKey}Sibling"

@@ -280,7 +280,7 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 		iInformationClass == KeyValueFullInformationAlign64;
 	const bool bPartial = iInformationClass == KeyValuePartialInformation ||
 		iInformationClass == KeyValuePartialInformationAlign64;
-	if (!bFull && !bPartial) return STATUS_NOT_SUPPORTED;
+	if (!bFull && !bPartial && iInformationClass != KeyValueBasicInformation) return STATUS_NOT_SUPPORTED;
 	if (pInformation != nullptr)
 	{
 		const UINT_PTR iRequiredAlignment =
@@ -289,6 +289,28 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 		if ((reinterpret_cast<UINT_PTR>(pInformation) &
 			(iRequiredAlignment - 1)) != 0)
 			return STATUS_DATATYPE_MISALIGNMENT;
+	}
+
+	if (iInformationClass == KeyValueBasicInformation)
+	{
+		const ULONG iNameOffset = static_cast<ULONG>(offsetof(KEY_VALUE_BASIC_INFORMATION, Name));
+		const ULONG iRequired = iNameOffset + tOverride.RegValueName.Length;
+		*iResultLength = iRequired;
+		const NTSTATUS iStatus = RegistryBufferStatus(pInformation, iLength, iNameOffset, iRequired);
+		if (iStatus == STATUS_BUFFER_TOO_SMALL) return iStatus;
+
+		const PKEY_VALUE_BASIC_INFORMATION tKeyInfo = static_cast<PKEY_VALUE_BASIC_INFORMATION>(pInformation);
+		tKeyInfo->TitleIndex = 0;
+		tKeyInfo->Type = tOverride.RegValueType;
+		tKeyInfo->NameLength = tOverride.RegValueName.Length;
+		if (iLength > iNameOffset && tOverride.RegValueName.Length != 0)
+		{
+			const ULONG iAvailable = iLength - iNameOffset;
+			const ULONG iCopyLength = iAvailable < tOverride.RegValueName.Length
+				? iAvailable : tOverride.RegValueName.Length;
+			memcpy(tKeyInfo->Name, tOverride.RegValueName.Buffer, iCopyLength);
+		}
+		return iStatus;
 	}
 
 	if (iInformationClass == KeyValueFullInformation ||
@@ -664,21 +686,28 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 	_In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass, _Out_opt_ PVOID KeyValueInformation,
 	_In_ ULONG Length, _Out_ PULONG ResultLength)
 {
-	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
-		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
-
-	if (iStatus == STATUS_SUCCESS && KeyValueInformation != nullptr &&
-		(KeyValueInformationClass == KeyValueFullInformation ||
-			KeyValueInformationClass == KeyValueFullInformationAlign64))
+	if (ResultLength == nullptr || KeyValueInformationClass < KeyValueBasicInformation ||
+		KeyValueInformationClass >= MaxKeyValueInfoClass)
 	{
-		const PKEY_VALUE_FULL_INFORMATION tKeyInfo = static_cast<PKEY_VALUE_FULL_INFORMATION>(KeyValueInformation);
-		UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength), static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
-		iStatus = DetourNtQueryValueKey(KeyHandle, &sValue,
+		return TrueNtEnumerateValueKey(KeyHandle, Index,
 			KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
-		return iStatus;
 	}
 
-	return iStatus;
+	ULONG iRequired = 0;
+	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
+		KeyValueBasicInformation, nullptr, 0, &iRequired);
+	if (iStatus != STATUS_BUFFER_TOO_SMALL && iStatus != STATUS_BUFFER_OVERFLOW) return iStatus;
+	SmartPointer<PKEY_VALUE_BASIC_INFORMATION> tKeyInfo(free,
+		static_cast<PKEY_VALUE_BASIC_INFORMATION>(malloc(iRequired)));
+	if (tKeyInfo == nullptr) return STATUS_NO_MEMORY;
+	iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
+		KeyValueBasicInformation, tKeyInfo, iRequired, &iRequired);
+	if (iStatus != STATUS_SUCCESS) return iStatus;
+
+	UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
+		static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
+	return DetourNtQueryValueKey(KeyHandle, &sValue,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 }
 
 //   __   __   __   __   ___  __   __      ___       ___

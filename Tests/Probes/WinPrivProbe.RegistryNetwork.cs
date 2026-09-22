@@ -327,6 +327,14 @@ namespace WinPrivProbe
                     return ReadRegistryNt(key, valueName, KeyValueFullInformationAlign64);
                 if (String.Equals(method, "ntEnumerate", StringComparison.OrdinalIgnoreCase))
                     return EnumerateRegistryNt(key);
+                if (String.Equals(method, "ntEnumerateBasic", StringComparison.OrdinalIgnoreCase))
+                    return EnumerateRegistryNt(key, KeyValueBasicInformation);
+                if (String.Equals(method, "ntEnumeratePartial", StringComparison.OrdinalIgnoreCase))
+                    return EnumerateRegistryNt(key, KeyValuePartialInformation);
+                if (String.Equals(method, "ntEnumeratePartialAlign64", StringComparison.OrdinalIgnoreCase))
+                    return EnumerateRegistryNt(key, KeyValuePartialInformationAlign64);
+                if (String.Equals(method, "ntEnumerateFullAlign64", StringComparison.OrdinalIgnoreCase))
+                    return EnumerateRegistryNt(key, KeyValueFullInformationAlign64);
                 result["reason"] = "Unsupported registry method: " + method;
                 return result;
             }
@@ -513,7 +521,8 @@ namespace WinPrivProbe
             return result;
         }
 
-        private static Dictionary<string, object> EnumerateRegistryNt(IntPtr key)
+        private static Dictionary<string, object> EnumerateRegistryNt(IntPtr key,
+            int informationClass = KeyValueFullInformation)
         {
             Dictionary<string, object> result = MethodResult(true, false, null);
             List<Dictionary<string, object>> values = new List<Dictionary<string, object>>();
@@ -521,7 +530,7 @@ namespace WinPrivProbe
             for (uint index = 0; index < 1024; index++)
             {
                 uint required;
-                int sizeStatus = NtEnumerateValueKey(key, index, KeyValueFullInformation,
+                int sizeStatus = NtEnumerateValueKey(key, index, informationClass,
                     IntPtr.Zero, 0, out required);
                 if (sizeStatus == STATUS_NO_MORE_ENTRIES)
                 {
@@ -551,7 +560,7 @@ namespace WinPrivProbe
                         capacity = checked(required + 64);
                         buffer = Marshal.AllocHGlobal((int)capacity);
                         ZeroMemory(buffer, (int)capacity);
-                        status = NtEnumerateValueKey(key, index, KeyValueFullInformation,
+                        status = NtEnumerateValueKey(key, index, informationClass,
                             buffer, capacity, out returned);
                         if ((status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW) &&
                             returned > capacity && returned <= 16 * 1024 * 1024)
@@ -561,11 +570,22 @@ namespace WinPrivProbe
                         }
                         break;
                     }
-                    Dictionary<string, object> item = ParseNtRegistry(KeyValueFullInformation,
+                    Dictionary<string, object> item = ParseNtRegistry(informationClass,
                         status, buffer, returned, capacity);
                     item["index"] = index;
                     item["sizeStatus"] = sizeStatus;
+                    item["sizeRequiredLength"] = required;
                     item["requiredLength"] = returned;
+                    uint shortCapacity = informationClass == KeyValueFullInformation ||
+                        informationClass == KeyValueFullInformationAlign64 ? 22u :
+                        informationClass == KeyValuePartialInformationAlign64 ? 10u : 14u;
+                    uint shortRequired;
+                    int shortStatus = NtEnumerateValueKey(key, index, informationClass,
+                        buffer, Math.Min(shortCapacity, capacity), out shortRequired);
+                    item["shortStatusHex"] = Hex32(shortStatus);
+                    item["shortRequiredLength"] = shortRequired;
+                    item["shortType"] = unchecked((uint)Marshal.ReadInt32(buffer,
+                        informationClass == KeyValuePartialInformationAlign64 ? 0 : 4));
                     values.Add(item);
                     finalStatus = status;
                     if (status != STATUS_SUCCESS) break;
