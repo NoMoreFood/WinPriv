@@ -259,8 +259,10 @@ Describe 'WinPriv configuration files (<Architecture>)' -Tag 'Safe' -ForEach $ar
         $config = [IO.Path]::ChangeExtension($launcher, '.cfg')
         [IO.File]::WriteAllText($config, '/DefinitelyNotAWinPrivSwitch', [Text.UTF8Encoding]::new($false))
 
+        # The relaunch marker pauses console exits; clear it in the child before returning its exit code.
         $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
-            -Arguments @('/RelaunchComplete', $env:ComSpec, '/d', '/c', 'exit', '/b', '27') -TimeoutSeconds 20
+            -Arguments @('/RelaunchComplete', $env:ComSpec, '/d', '/c',
+                'set _WINPRIV_RELAUNCH_PHASE_=0&exit /b 27') -TimeoutSeconds 20
         $result.TimedOut | Should -BeFalse
         $result.StartError | Should -BeNullOrEmpty
         $result.ExitCode | Should -Be 27
