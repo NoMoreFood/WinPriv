@@ -584,13 +584,20 @@ namespace
 			BuildCacheFilePaths(directory.data(), paths);
 	}
 
-	bool LockExistingCache(LPCWSTR modulePath)
+	bool LockDetourBundle(LPCWSTR modulePath)
 	{
 		WidePath directory{};
 		BundlePaths paths{};
 		size_t currentIndex = 0;
 		if (!ParseCachePath(modulePath, directory, paths, currentIndex))
 		{
+			std::array<HANDLE, 3> handles{};
+			if (!BuildBundlePaths(modulePath, paths, currentIndex) ||
+				!OpenBundle(paths, FILE_SHARE_READ, handles)) return false;
+			for (size_t index = 0; index < handles.size(); ++index)
+			{
+				detourBundleLocks[index + 1] = handles[index];
+			}
 			return true;
 		}
 		if (!SameFile(modulePath, paths[currentIndex].data()) ||
@@ -614,7 +621,7 @@ namespace
 
 		if (CopyAsciiPath(path.data()))
 		{
-			return LockExistingCache(path.data());
+			return LockDetourBundle(path.data());
 		}
 
 		WCHAR* separator = wcsrchr(path.data(), L'\\');
@@ -646,7 +653,7 @@ namespace
 				if (CopyAsciiPath(shortDirectory.data()) &&
 					SameFile(path.data(), shortDirectory.data()))
 				{
-					return true;
+					return LockDetourBundle(path.data());
 				}
 				*separator = L'\0';
 			}
@@ -654,6 +661,34 @@ namespace
 
 		*separator = L'\\';
 		return CacheDetourBundle(path.data());
+	}
+
+	BOOL CompleteChildInjection(BOOL created, DWORD creationFlags, LPPROCESS_INFORMATION process)
+	{
+		if (!created) return FALSE;
+		DWORD error = NO_ERROR;
+		for (HANDLE handle : detourBundleLocks)
+		{
+			if (handle == nullptr || handle == INVALID_HANDLE_VALUE) continue;
+			HANDLE childHandle = nullptr;
+			// Hold the bundle in the child even before its DLL initialization runs.
+			if (!DuplicateHandle(GetCurrentProcess(), handle, process->hProcess,
+				&childHandle, 0, FALSE, DUPLICATE_SAME_ACCESS))
+			{
+				error = GetLastError();
+				break;
+			}
+		}
+		if (error == NO_ERROR && !(creationFlags & CREATE_SUSPENDED) && ResumeThread(process->hThread) == MAXDWORD)
+			error = GetLastError();
+		if (error == NO_ERROR) return TRUE;
+
+		TerminateProcess(process->hProcess, error);
+		CloseHandle(process->hThread);
+		CloseHandle(process->hProcess);
+		*process = {};
+		SetLastError(error);
+		return FALSE;
 	}
 
 	BOOL WINAPI HookCreateProcessA(_In_opt_ LPCSTR lpApplicationName, _Inout_opt_ LPSTR lpCommandLine,
@@ -667,10 +702,11 @@ namespace
 		{
 			return FALSE;
 		}
-		return DetourCreateProcessWithDllExA(lpApplicationName, lpCommandLine, lpProcessAttributes,
-			lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory,
+		return CompleteChildInjection(DetourCreateProcessWithDllExA(lpApplicationName, lpCommandLine, lpProcessAttributes,
+			lpThreadAttributes, bInheritHandles, dwCreationFlags | CREATE_SUSPENDED, lpEnvironment, lpCurrentDirectory,
 			lpStartupInfo, lpProcessInformation, detourLibrary.data(), &winPrivPayloadGuid,
-			payload.data(), static_cast<DWORD>(payload.size() * sizeof(WCHAR)), trueCreateProcessA);
+			payload.data(), static_cast<DWORD>(payload.size() * sizeof(WCHAR)), trueCreateProcessA),
+			dwCreationFlags, lpProcessInformation);
 	}
 
 	BOOL WINAPI HookCreateProcessW(_In_opt_ LPCWSTR lpApplicationName, _Inout_opt_ LPWSTR lpCommandLine,
@@ -684,10 +720,11 @@ namespace
 		{
 			return FALSE;
 		}
-		return DetourCreateProcessWithDllExW(lpApplicationName, lpCommandLine, lpProcessAttributes,
-			lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory,
+		return CompleteChildInjection(DetourCreateProcessWithDllExW(lpApplicationName, lpCommandLine, lpProcessAttributes,
+			lpThreadAttributes, bInheritHandles, dwCreationFlags | CREATE_SUSPENDED, lpEnvironment, lpCurrentDirectory,
 			lpStartupInfo, lpProcessInformation, detourLibrary.data(), &winPrivPayloadGuid,
-			payload.data(), static_cast<DWORD>(payload.size() * sizeof(WCHAR)), trueCreateProcessW);
+			payload.data(), static_cast<DWORD>(payload.size() * sizeof(WCHAR)), trueCreateProcessW),
+			dwCreationFlags, lpProcessInformation);
 	}
 }
 

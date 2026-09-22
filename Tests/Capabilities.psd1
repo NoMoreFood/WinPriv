@@ -94,6 +94,7 @@
         @{ Id = 'propagation.cross-x86-x64-x86-ansi'; Surface = 'x86 launcher to x64 parent to x86 CreateProcessA child'; Profile = 'Safe'; Test = 'Hooks'; Architecture = 'All'; Gate = 'X86X64CrossArchitecture'; Required = $true }
         @{ Id = 'propagation.cross-x64-x86-x64-wide'; Surface = 'x64 launcher to x86 parent to x64 CreateProcessW child'; Profile = 'Safe'; Test = 'Hooks'; Architecture = 'All'; Gate = 'X86X64CrossArchitecture'; Required = $true }
         @{ Id = 'propagation.cross-x64-x86-x64-ansi'; Surface = 'x64 launcher to x86 parent to x64 CreateProcessA child'; Profile = 'Safe'; Test = 'Hooks'; Architecture = 'All'; Gate = 'X86X64CrossArchitecture'; Required = $true }
+        @{ Id = 'propagation.orphan-cross-architecture'; Surface = 'surviving descendants launch another architecture after the root exits'; Profile = 'Safe'; Test = 'ProcessAndUi'; Architecture = 'All'; Gate = 'X86X64CrossArchitecture'; Required = $true }
         @{ Id = 'propagation.shell-execute'; Surface = '/UseShellExecute'; Profile = 'Safe'; Test = 'ProcessAndUi'; Required = $true }
         @{ Id = 'filesystem.bypass-read'; Surface = '/BypassFileSecurity read'; Profile = 'Admin'; Test = 'SecurityAndRights'; Gate = 'NtfsAndTokenPrivileges'; Required = $true }
         @{ Id = 'filesystem.bypass-write'; Surface = '/BypassFileSecurity write'; Profile = 'Admin'; Test = 'SecurityAndRights'; Gate = 'NtfsAndTokenPrivileges'; Required = $true }
