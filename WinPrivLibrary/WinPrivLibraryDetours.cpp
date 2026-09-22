@@ -113,6 +113,7 @@ static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 			}
 		}
 		tFileInfo.Cleanup();
+		if (iStatus != ERROR_MORE_DATA) break;
 	}
 
 	// close the open files
