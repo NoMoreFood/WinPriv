@@ -697,17 +697,21 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
 		KeyValueBasicInformation, nullptr, 0, &iRequired);
 	if (iStatus != STATUS_BUFFER_TOO_SMALL && iStatus != STATUS_BUFFER_OVERFLOW) return iStatus;
-	SmartPointer<PKEY_VALUE_BASIC_INFORMATION> tKeyInfo(free,
-		static_cast<PKEY_VALUE_BASIC_INFORMATION>(malloc(iRequired)));
-	if (tKeyInfo == nullptr) return STATUS_NO_MEMORY;
-	iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
-		KeyValueBasicInformation, tKeyInfo, iRequired, &iRequired);
-	if (iStatus != STATUS_SUCCESS) return iStatus;
+	for (;;)
+	{
+		SmartPointer<PKEY_VALUE_BASIC_INFORMATION> tKeyInfo(free,
+			static_cast<PKEY_VALUE_BASIC_INFORMATION>(malloc(iRequired)));
+		if (tKeyInfo == nullptr) return STATUS_NO_MEMORY;
+		iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
+			KeyValueBasicInformation, tKeyInfo, iRequired, &iRequired);
+		if (iStatus == STATUS_BUFFER_TOO_SMALL || iStatus == STATUS_BUFFER_OVERFLOW) continue;
+		if (iStatus != STATUS_SUCCESS) return iStatus;
 
-	UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
-		static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
-	return DetourNtQueryValueKey(KeyHandle, &sValue,
-		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+		UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
+			static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
+		return DetourNtQueryValueKey(KeyHandle, &sValue,
+			KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+	}
 }
 
 //   __   __   __   __   ___  __   __      ___       ___
