@@ -590,7 +590,7 @@ try {
             }
             $result = [WinPrivProbe.Native]::RunAdo(
                 [string](Get-ArgumentValue -Name 'connectionString' -DefaultValue 'Provider=WinPrivProbe.Missing.Provider;Data Source=WINPRIV_ADO_LOCAL_ONLY;'),
-                $initializer)
+                $initializer, [bool](Get-ArgumentValue -Name 'storedString' -DefaultValue $false))
         }
         'file' {
             $path = [string](Get-ArgumentValue -Name 'path')

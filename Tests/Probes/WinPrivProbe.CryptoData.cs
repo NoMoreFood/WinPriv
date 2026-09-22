@@ -606,7 +606,8 @@ namespace WinPrivProbe
             return result;
         }
 
-        public static Dictionary<string, object> RunAdo(string connectionString, string initializer)
+        public static Dictionary<string, object> RunAdo(string connectionString, string initializer,
+            bool storedString = false)
         {
             Dictionary<string, object> result = MethodResult(true, false, null);
             object connection = null;
@@ -655,9 +656,13 @@ namespace WinPrivProbe
                 }
                 connection = Activator.CreateInstance(type);
                 result["connectionString"] = connectionString;
+                if (storedString)
+                    type.InvokeMember("ConnectionString", BindingFlags.SetProperty, null, connection,
+                        new object[] { connectionString });
                 try
                 {
                     type.InvokeMember("Open", BindingFlags.InvokeMethod, null, connection,
+                        storedString ? new object[0] :
                         new object[] { connectionString, String.Empty, String.Empty, -1 });
                     result["openSucceeded"] = true;
                 }
@@ -676,6 +681,8 @@ namespace WinPrivProbe
                         return result;
                     }
                 }
+                result["effectiveConnectionString"] = type.InvokeMember("ConnectionString",
+                    BindingFlags.GetProperty, null, connection, null);
                 result["success"] = true;
                 return result;
             }

@@ -799,6 +799,22 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
         }
     }
 
+    It 'rewrites a stored ADO connection string when Open has no arguments' {
+        $original = 'STORED_' + [Guid]::NewGuid().ToString('N')
+        $replacement = 'REPLACED_' + [Guid]::NewGuid().ToString('N')
+        $connection = 'Provider=WinPrivMissing.{0};Data Source=none;' -f $original
+        $result = Invoke-WinPrivProbe -Architecture $Architecture `
+            -WinPrivArguments @('/SqlConnectShow', '/SqlConnectSearchReplace', $original, $replacement) `
+            -Operation ado -Arguments @{ connectionString = $connection; storedString = $true } `
+            -Sandbox $sandbox -TimeoutSeconds 30
+        Assert-WinPrivInvocationSucceeded $result
+        $result.ProbeResult.result.openSucceeded | Should -BeFalse
+        $result.ProbeResult.result.openHresultHex | Should -Be '0x800A0E7A'
+        $result.ProbeResult.result.effectiveConnectionString | Should -Match ([regex]::Escape($replacement))
+        $result.StdOut | Should -Match ([regex]::Escape($replacement))
+        $result.StdOut | Should -Not -Match ([regex]::Escape($original))
+    }
+
     It 'bounds a malformed SQL regex without hanging the suite' {
         Invoke-WinPrivCapability -Id 'sql.malformed-regex' -Architecture $Architecture -Body {
             $result = Invoke-WinPrivProbe -Architecture $Architecture `

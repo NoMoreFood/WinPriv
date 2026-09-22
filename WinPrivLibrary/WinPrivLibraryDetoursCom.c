@@ -24,6 +24,11 @@ static PVOID ComOpenTarget = NULL;
 static HRESULT STDMETHODCALLTYPE DetourComOpen(__RPC__in Connection15* This,
 	__RPC__in BSTR ConnectionString, __RPC__in BSTR UserID, __RPC__in BSTR Password, long Options)
 {
+	BSTR sStoredString = NULL;
+	if (SysStringLen(ConnectionString) == 0 &&
+		SUCCEEDED(This->lpVtbl->get_ConnectionString(This, &sStoredString)))
+		ConnectionString = sStoredString;
+
 	// handle search and replace
 	BSTR sRevisedString = NULL;
 	if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
@@ -46,6 +51,7 @@ static HRESULT STDMETHODCALLTYPE DetourComOpen(__RPC__in Connection15* This,
 
 	const HRESULT iResult = TrueComOpen(This, ConnectionString, UserID, Password, Options);
 	if (sRevisedString != NULL) SysFreeString(sRevisedString);
+	if (sStoredString != NULL) SysFreeString(sStoredString);
 	return iResult;
 }
 

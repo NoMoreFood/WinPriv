@@ -1569,6 +1569,17 @@ static BSTR GetVariantString(VARIANTARG* pArgument)
 	return nullptr;
 }
 
+static BSTR GetStoredAdoConnectionString(IUnknown* pConnection)
+{
+	using AdoGetConnectionString = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, BSTR*);
+	PVOID* pVtable = *reinterpret_cast<PVOID**>(pConnection);
+	const auto pGetConnectionString = reinterpret_cast<AdoGetConnectionString>(pVtable[8]);
+	BSTR sStoredString = nullptr;
+	if (SUCCEEDED(pGetConnectionString(pConnection, &sStoredString))) return sStoredString;
+	SysFreeString(sStoredString);
+	return nullptr;
+}
+
 static BSTR PrepareAdoConnectionString(BSTR sPassedString) noexcept
 {
 	if (sPassedString == nullptr) return nullptr;
@@ -1612,7 +1623,10 @@ static HRESULT STDMETHODCALLTYPE DetourAdoConnectionOpen(IUnknown* pConnection,
 	}
 
 	AdoRewriteScope tScope;
-	BSTR sReplacement = PrepareAdoConnectionString(sConnectionString);
+	BSTR sStoredString = SysStringLen(sConnectionString) == 0
+		? GetStoredAdoConnectionString(pConnection) : nullptr;
+	BSTR sReplacement = PrepareAdoConnectionString(sStoredString == nullptr ? sConnectionString : sStoredString);
+	SysFreeString(sStoredString);
 	const HRESULT iResult = TrueAdoConnectionOpen(pConnection,
 		sReplacement == nullptr ? sConnectionString : sReplacement,
 		sUserId, sPassword, iOptions);
@@ -1628,7 +1642,9 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	if (TrueAdoDispatchInvoke == nullptr) return E_UNEXPECTED;
 	if (iMember != iAdoOpenDispatchId ||
 		(iFlags & DISPATCH_METHOD) == 0 || pParameters == nullptr ||
-		pParameters->rgvarg == nullptr || pParameters->cArgs == 0)
+		(pParameters->cArgs != 0 && pParameters->rgvarg == nullptr) ||
+		pParameters->cNamedArgs > pParameters->cArgs ||
+		(pParameters->cNamedArgs != 0 && pParameters->rgdispidNamedArgs == nullptr))
 	{
 		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
 			iFlags, pParameters, pResult, pException, pArgumentError);
@@ -1649,8 +1665,6 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
 			iFlags, pParameters, pResult, pException, pArgumentError);
 	}
-	pConnection->Release();
-
 	// Named arguments occupy the leading VARIANTARG slots. Prefer the parameter
 	// DISPID returned by GetIDsOfNames; otherwise use Automation's reverse-order
 	// positional layout, where Open's first argument is the final slot.
@@ -1672,43 +1686,57 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	if (pConnectionString == nullptr && pParameters->cArgs > pParameters->cNamedArgs)
 		pConnectionString = &pParameters->rgvarg[pParameters->cArgs - 1];
 	const BSTR sPassedString = GetVariantString(pConnectionString);
-	if (sPassedString == nullptr)
+	const bool bOmitted = pConnectionString == nullptr ||
+		(V_VT(pConnectionString) == VT_ERROR && V_ERROR(pConnectionString) == DISP_E_PARAMNOTFOUND);
+	if ((sPassedString == nullptr && !bOmitted && V_VT(pConnectionString) != VT_BSTR) ||
+		(pConnectionString == nullptr && pParameters->cNamedArgs != 0 &&
+			iAdoConnectionStringDispatchId == DISPID_UNKNOWN))
+	{
+		pConnection->Release();
+		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
+			iFlags, pParameters, pResult, pException, pArgumentError);
+	}
+
+	BSTR sStoredString = SysStringLen(sPassedString) == 0 ? GetStoredAdoConnectionString(pConnection) : nullptr;
+	pConnection->Release();
+	BSTR sReplacement = PrepareAdoConnectionString(sStoredString == nullptr ? sPassedString : sStoredString);
+	SysFreeString(sStoredString);
+	if (sReplacement == nullptr)
 	{
 		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
 			iFlags, pParameters, pResult, pException, pArgumentError);
 	}
 
-	BSTR sReplacement = nullptr;
-	VARIANTARG tOriginalArgument{};
-	bool bArgumentReplaced = false;
+	DISPPARAMS tParameters = *pParameters;
+	DISPPARAMS* pPassedParameters = pParameters;
+	std::vector<VARIANTARG> vArguments;
+	std::vector<DISPID> vNamedArguments;
 	try
 	{
-		const std::wstring sPassed(sPassedString, SysStringLen(sPassedString));
-		std::wstring sRevised = sPassed;
-		if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
+		if (pParameters->cArgs != 0)
+			vArguments.assign(pParameters->rgvarg, pParameters->rgvarg + pParameters->cArgs);
+		VARIANTARG tArgument{};
+		V_VT(&tArgument) = VT_BSTR;
+		V_BSTR(&tArgument) = sReplacement;
+		if (pConnectionString != nullptr)
 		{
-			std::wstring sCandidate;
-			if (TryRegexReplace(sPassed, _wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH),
-				GetSqlConnectReplacement(), sCandidate))
+			vArguments[pConnectionString - pParameters->rgvarg] = tArgument;
+		}
+		else
+		{
+			vArguments.insert(vArguments.begin(), tArgument);
+			tParameters.cArgs++;
+			if (pParameters->cNamedArgs != 0)
 			{
-				sReplacement = SysAllocStringLen(sCandidate.data(),
-					static_cast<UINT>(sCandidate.length()));
-				if (sReplacement != nullptr)
-				{
-					sRevised = std::move(sCandidate);
-					tOriginalArgument = *pConnectionString;
-					VariantInit(pConnectionString);
-					V_VT(pConnectionString) = VT_BSTR;
-					V_BSTR(pConnectionString) = sReplacement;
-					bArgumentReplaced = true;
-				}
+				vNamedArguments.push_back(iAdoConnectionStringDispatchId);
+				vNamedArguments.insert(vNamedArguments.end(), pParameters->rgdispidNamedArgs,
+					pParameters->rgdispidNamedArgs + pParameters->cNamedArgs);
+				tParameters.rgdispidNamedArgs = vNamedArguments.data();
+				tParameters.cNamedArgs++;
 			}
 		}
-
-		if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1))
-		{
-			PrintMessage(L"SQL Connection String: %s", sRevised.c_str());
-		}
+		tParameters.rgvarg = vArguments.data();
+		pPassedParameters = &tParameters;
 	}
 	catch (...)
 	{
@@ -1716,13 +1744,9 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	}
 
 	const HRESULT iResult = TrueAdoDispatchInvoke(pDispatch, iMember,
-		iInterface, iLocale, iFlags, pParameters, pResult, pException,
+		iInterface, iLocale, iFlags, pPassedParameters, pResult, pException,
 		pArgumentError);
-	if (bArgumentReplaced)
-	{
-		*pConnectionString = tOriginalArgument;
-		SysFreeString(sReplacement);
-	}
+	SysFreeString(sReplacement);
 	return iResult;
 }
 
