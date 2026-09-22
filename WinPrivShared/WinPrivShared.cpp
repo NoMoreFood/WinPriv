@@ -130,8 +130,12 @@ std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> vRequestedPrivs)
 	return vUnavailablePrivs;
 }
 
-BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const BOOL bAddRights)
+BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const BOOL bAddRights,
+	std::vector<std::wstring>* pAddedPrivs)
 {
+	if (pAddedPrivs != nullptr) pAddedPrivs->clear();
+	if (vPrivsToGrant.empty()) return TRUE;
+
 	// open the current token 
 	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
 	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) == 0)
@@ -167,6 +171,25 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 		return FALSE;
 	}
 
+	// Preserve rights already assigned to the account but absent from its current logon token.
+	std::vector<std::wstring> vAssignedPrivs;
+	if (bAddRights)
+	{
+		SmartPointer<PLSA_UNICODE_STRING> pRights(LsaFreeMemory, nullptr);
+		ULONG iCount = 0;
+		iResult = LsaEnumerateAccountRights(hPolicyHandle, tTokenUser->User.Sid, &pRights, &iCount);
+		if (iResult == STATUS_OBJECT_NAME_NOT_FOUND) iCount = 0;
+		if (iResult != STATUS_SUCCESS && iResult != STATUS_OBJECT_NAME_NOT_FOUND)
+		{
+			PrintMessage(L"ERROR: Could not read current account privileges: %lu\n", LsaNtStatusToWinError(iResult));
+			return FALSE;
+		}
+		for (ULONG i = 0; i < iCount; i++)
+		{
+			vAssignedPrivs.emplace_back(pRights[i].Buffer, pRights[i].Length / sizeof(WCHAR));
+		}
+	}
+
 	// grant policy to all users using ranges algorithm
 	BOOL bSuccessful = TRUE;
 	std::ranges::for_each(vPrivsToGrant, [&](const std::wstring& sPrivilege) {
@@ -180,12 +203,20 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 		// attempt to add the account to policy
 		if (bAddRights)
 		{
+			if (std::ranges::any_of(vAssignedPrivs, [&](const std::wstring& sAssigned) {
+				return _wcsicmp(sAssigned.c_str(), sPrivilege.c_str()) == 0;
+			})) return;
 			if ((iResult = LsaAddAccountRights(hPolicyHandle,
 				tTokenUser->User.Sid, &sUnicodePrivilege, 1)) != STATUS_SUCCESS)
 			{
 				bSuccessful = FALSE;
 				PrintMessage(L"ERROR: Privilege '%s' was not able to be added with error '%u'\n",
 					sPrivilege.c_str(), LsaNtStatusToWinError(iResult));
+			}
+			else
+			{
+				vAssignedPrivs.push_back(sPrivilege);
+				if (pAddedPrivs != nullptr) pAddedPrivs->push_back(sPrivilege);
 			}
 		}
 		else

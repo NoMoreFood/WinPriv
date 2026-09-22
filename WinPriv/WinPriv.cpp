@@ -898,8 +898,10 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		}
 
 		// adjust local security policy to add the necessary privileges
-		if (AlterCurrentUserPrivs(vFailedPrivs, TRUE) == FALSE)
+		std::vector<std::wstring> vAddedPrivs;
+		if (AlterCurrentUserPrivs(vFailedPrivs, TRUE, &vAddedPrivs) == FALSE)
 		{
+			AlterCurrentUserPrivs(vAddedPrivs, FALSE);
 			PrintMessage(L"ERROR: Could not adjust security policy. User may not be an administrator.\n");
 			return __LINE__;
 		}
@@ -908,7 +910,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		int iRet = LaunchNewLogon(iArgc, aArgv);
 
 		// restore original privs and return
-		if (AlterCurrentUserPrivs(vFailedPrivs, FALSE) == FALSE && iRet == 0) return __LINE__;
+		if (AlterCurrentUserPrivs(vAddedPrivs, FALSE) == FALSE && iRet == 0) return __LINE__;
 		return iRet;
 	}
 

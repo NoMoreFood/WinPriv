@@ -14,7 +14,8 @@
 //
 #ifdef __cplusplus
 std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
-BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights);
+BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights,
+	std::vector<std::wstring>* pAddedPrivs = nullptr);
 BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
 BOOL ClearDenyRights(const std::wstring& sAccountName = L"");
 BOOL GrantAllRights(const std::wstring& sAccountName);
