@@ -49,32 +49,35 @@ Describe 'WinPriv Direct Descendant API Import Modes (<Architecture>, <Mode>)' -
     It 'intercepts registry API queried via <Mode> in direct <Architecture> descendant' {
         $fixturePath = Join-Path $sandbox.Launchers.$Architecture.Root $Executable
         if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
-            $fixturePath = Join-Path (Join-Path $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT $Architecture) $Executable
+            Skip-WinPrivCapability -Id 'detour.descendant-import-modes' -Architecture $Architecture `
+                -Reason "The native descendant fixture '$Executable' for $Architecture is absent from the supplied roots."
+            return
         }
-        Test-Path -LiteralPath $fixturePath -PathType Leaf | Should -BeTrue
 
-        $valueName = 'TestValue'
-        $expected = [uint32]0x12345678
-        New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
+        Invoke-WinPrivCapability -Id 'detour.descendant-import-modes' -Architecture $Architecture -Body {
+            $valueName = 'TestValue'
+            $expected = [uint32]0x12345678
+            New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
 
-        $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
-            -Arguments @(
-                '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', $expected.ToString(),
-                $fixturePath, '--chain-test', '--mode', $Mode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
-            )
+            $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
+                -Arguments @(
+                    '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', $expected.ToString(),
+                    $fixturePath, '--chain-test', '--mode', $Mode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
+                )
 
-        Assert-WinPrivInvocationSucceeded $result
+            Assert-WinPrivInvocationSucceeded $result
 
-        $jsonLines = @($result.StdOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object {
-            $_.StartsWith('{"schemaVersion":1,"event":"chain-verification"', [StringComparison]::Ordinal)
-        })
-        $jsonLines | Should -HaveCount 1
-        $payload = $jsonLines[0] | ConvertFrom-Json -ErrorAction Stop
-        $payload.arch | Should -Be $Architecture
-        $payload.requestedMode | Should -Be $Mode
-        $payload.matched | Should -BeTrue
-        [uint32]$payload.queriedValue | Should -Be $expected
-        [uint32]$payload.expectedValue | Should -Be $expected
+            $jsonLines = @($result.StdOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object {
+                $_.StartsWith('{"schemaVersion":1,"event":"chain-verification"', [StringComparison]::Ordinal)
+            })
+            $jsonLines | Should -HaveCount 1
+            $payload = $jsonLines[0] | ConvertFrom-Json -ErrorAction Stop
+            $payload.arch | Should -Be $Architecture
+            $payload.requestedMode | Should -Be $Mode
+            $payload.matched | Should -BeTrue
+            [uint32]$payload.queriedValue | Should -Be $expected
+            [uint32]$payload.expectedValue | Should -Be $expected
+        }
     }
 }
 
@@ -111,48 +114,56 @@ Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <C
     }
 
     It 'injects and intercepts across <ParentArch> (<ParentMode>) and <ChildArch> (<ChildMode>)' {
-        $parentFixture = Join-Path (Join-Path $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT $ParentArch) $ParentExe
-        $childFixture = Join-Path (Join-Path $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT $ChildArch) $ChildExe
-        Test-Path -LiteralPath $parentFixture -PathType Leaf | Should -BeTrue
-        Test-Path -LiteralPath $childFixture -PathType Leaf | Should -BeTrue
-
-        $valueName = 'ChainValue'
-        $expected = [uint32]0x55443322
-        New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
-
-        $chainArgs = @(
-            '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', $expected.ToString(),
-            $parentFixture, '--chain-test', '--mode', $ParentMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
-        )
-        if ($UseCreateProcessA) {
-            $chainArgs += '--use-createprocess-a'
+        $parentFixture = Join-Path $sandbox.Launchers.$ParentArch.Root $ParentExe
+        $childFixture = Join-Path $sandbox.Launchers.$ChildArch.Root $ChildExe
+        $missingFixtures = @($parentFixture, $childFixture | Where-Object {
+            -not (Test-Path -LiteralPath $_ -PathType Leaf)
+        })
+        if ($missingFixtures.Count -gt 0) {
+            Skip-WinPrivCapability -Id 'detour.descendant-import-modes' -Architecture $ParentArch `
+                -Reason "Native descendant fixtures are absent from the supplied roots: $($missingFixtures -join ', ')."
+            return
         }
-        $chainArgs += @(
-            '--next', $childFixture, '--chain-test', '--mode', $ChildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
-        )
 
-        $result = Invoke-WinPriv -Architecture $ParentArch -Launcher $Launcher -Sandbox $sandbox -TimeoutSeconds 35 `
-            -Arguments $chainArgs
+        Invoke-WinPrivCapability -Id 'detour.descendant-import-modes' -Architecture $ParentArch -Body {
+            $valueName = 'ChainValue'
+            $expected = [uint32]0x55443322
+            New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
 
-        Assert-WinPrivInvocationSucceeded $result
+            $chainArgs = @(
+                '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', $expected.ToString(),
+                $parentFixture, '--chain-test', '--mode', $ParentMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
+            )
+            if ($UseCreateProcessA) {
+                $chainArgs += '--use-createprocess-a'
+            }
+            $chainArgs += @(
+                '--next', $childFixture, '--chain-test', '--mode', $ChildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
+            )
 
-        if ($Launcher -eq 'WinPrivCmd') {
-            $jsonLines = @($result.StdOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object {
-                $_.StartsWith('{"schemaVersion":1,"event":"chain-verification"', [StringComparison]::Ordinal)
-            })
-            $jsonLines | Should -HaveCount 2
+            $result = Invoke-WinPriv -Architecture $ParentArch -Launcher $Launcher -Sandbox $sandbox -TimeoutSeconds 35 `
+                -Arguments $chainArgs
 
-            $parentPayload = $jsonLines[0] | ConvertFrom-Json -ErrorAction Stop
-            $parentPayload.arch | Should -Be $ParentArch
-            $parentPayload.requestedMode | Should -Be $ParentMode
-            $parentPayload.matched | Should -BeTrue
-            [uint32]$parentPayload.queriedValue | Should -Be $expected
+            Assert-WinPrivInvocationSucceeded $result
 
-            $childPayload = $jsonLines[1] | ConvertFrom-Json -ErrorAction Stop
-            $childPayload.arch | Should -Be $ChildArch
-            $childPayload.requestedMode | Should -Be $ChildMode
-            $childPayload.matched | Should -BeTrue
-            [uint32]$childPayload.queriedValue | Should -Be $expected
+            if ($Launcher -eq 'WinPrivCmd') {
+                $jsonLines = @($result.StdOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object {
+                    $_.StartsWith('{"schemaVersion":1,"event":"chain-verification"', [StringComparison]::Ordinal)
+                })
+                $jsonLines | Should -HaveCount 2
+
+                $parentPayload = $jsonLines[0] | ConvertFrom-Json -ErrorAction Stop
+                $parentPayload.arch | Should -Be $ParentArch
+                $parentPayload.requestedMode | Should -Be $ParentMode
+                $parentPayload.matched | Should -BeTrue
+                [uint32]$parentPayload.queriedValue | Should -Be $expected
+
+                $childPayload = $jsonLines[1] | ConvertFrom-Json -ErrorAction Stop
+                $childPayload.arch | Should -Be $ChildArch
+                $childPayload.requestedMode | Should -Be $ChildMode
+                $childPayload.matched | Should -BeTrue
+                [uint32]$childPayload.queriedValue | Should -Be $expected
+            }
         }
     }
 }
@@ -247,55 +258,62 @@ Describe 'WinPriv 3-Generation Descendant Cross-Architecture (<ParentArch> -> <C
     }
 
     It "verifies $Description" {
-        $parentFixture = Join-Path (Join-Path $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT $ParentArch) $ParentExe
-        $childFixture = Join-Path (Join-Path $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT $ChildArch) $ChildExe
-        $grandchildFixture = Join-Path (Join-Path $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT $GrandchildArch) $GrandchildExe
-        Test-Path -LiteralPath $parentFixture -PathType Leaf | Should -BeTrue
-        Test-Path -LiteralPath $childFixture -PathType Leaf | Should -BeTrue
-        Test-Path -LiteralPath $grandchildFixture -PathType Leaf | Should -BeTrue
-
-        $valueName = 'ThreeGenVal'
-        $expected = [uint32]0x44556677
-        New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
-
-        $chainArgs = @(
-            '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', $expected.ToString(),
-            $parentFixture, '--chain-test', '--mode', $ParentMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
-        )
-        if ($UseCreateProcessA) {
-            $chainArgs += '--use-createprocess-a'
-        }
-        $chainArgs += @(
-            '--next', $childFixture, '--chain-test', '--mode', $ChildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString(),
-            '--next', $grandchildFixture, '--chain-test', '--mode', $GrandchildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
-        )
-
-        $result = Invoke-WinPriv -Architecture $ParentArch -Launcher $Launcher -Sandbox $sandbox -TimeoutSeconds 45 `
-            -Arguments $chainArgs
-
-        Assert-WinPrivInvocationSucceeded $result
-
-        $jsonLines = @($result.StdOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object {
-            $_.StartsWith('{"schemaVersion":1,"event":"chain-verification"', [StringComparison]::Ordinal)
+        $parentFixture = Join-Path $sandbox.Launchers.$ParentArch.Root $ParentExe
+        $childFixture = Join-Path $sandbox.Launchers.$ChildArch.Root $ChildExe
+        $grandchildFixture = Join-Path $sandbox.Launchers.$GrandchildArch.Root $GrandchildExe
+        $missingFixtures = @($parentFixture, $childFixture, $grandchildFixture | Where-Object {
+            -not (Test-Path -LiteralPath $_ -PathType Leaf)
         })
-        $jsonLines | Should -HaveCount 3
+        if ($missingFixtures.Count -gt 0) {
+            Skip-WinPrivCapability -Id 'detour.descendant-import-modes' -Architecture $ParentArch `
+                -Reason "Native descendant fixtures are absent from the supplied roots: $($missingFixtures -join ', ')."
+            return
+        }
 
-        $parentPayload = $jsonLines[0] | ConvertFrom-Json -ErrorAction Stop
-        $parentPayload.arch | Should -Be $ParentArch
-        $parentPayload.requestedMode | Should -Be $ParentMode
-        $parentPayload.matched | Should -BeTrue
-        [uint32]$parentPayload.queriedValue | Should -Be $expected
+        Invoke-WinPrivCapability -Id 'detour.descendant-import-modes' -Architecture $ParentArch -Body {
+            $valueName = 'ThreeGenVal'
+            $expected = [uint32]0x44556677
+            New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
 
-        $childPayload = $jsonLines[1] | ConvertFrom-Json -ErrorAction Stop
-        $childPayload.arch | Should -Be $ChildArch
-        $childPayload.requestedMode | Should -Be $ChildMode
-        $childPayload.matched | Should -BeTrue
-        [uint32]$childPayload.queriedValue | Should -Be $expected
+            $chainArgs = @(
+                '/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', $expected.ToString(),
+                $parentFixture, '--chain-test', '--mode', $ParentMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
+            )
+            if ($UseCreateProcessA) {
+                $chainArgs += '--use-createprocess-a'
+            }
+            $chainArgs += @(
+                '--next', $childFixture, '--chain-test', '--mode', $ChildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString(),
+                '--next', $grandchildFixture, '--chain-test', '--mode', $GrandchildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
+            )
 
-        $grandchildPayload = $jsonLines[2] | ConvertFrom-Json -ErrorAction Stop
-        $grandchildPayload.arch | Should -Be $GrandchildArch
-        $grandchildPayload.requestedMode | Should -Be $GrandchildMode
-        $grandchildPayload.matched | Should -BeTrue
-        [uint32]$grandchildPayload.queriedValue | Should -Be $expected
+            $result = Invoke-WinPriv -Architecture $ParentArch -Launcher $Launcher -Sandbox $sandbox -TimeoutSeconds 45 `
+                -Arguments $chainArgs
+
+            Assert-WinPrivInvocationSucceeded $result
+
+            $jsonLines = @($result.StdOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object {
+                $_.StartsWith('{"schemaVersion":1,"event":"chain-verification"', [StringComparison]::Ordinal)
+            })
+            $jsonLines | Should -HaveCount 3
+
+            $parentPayload = $jsonLines[0] | ConvertFrom-Json -ErrorAction Stop
+            $parentPayload.arch | Should -Be $ParentArch
+            $parentPayload.requestedMode | Should -Be $ParentMode
+            $parentPayload.matched | Should -BeTrue
+            [uint32]$parentPayload.queriedValue | Should -Be $expected
+
+            $childPayload = $jsonLines[1] | ConvertFrom-Json -ErrorAction Stop
+            $childPayload.arch | Should -Be $ChildArch
+            $childPayload.requestedMode | Should -Be $ChildMode
+            $childPayload.matched | Should -BeTrue
+            [uint32]$childPayload.queriedValue | Should -Be $expected
+
+            $grandchildPayload = $jsonLines[2] | ConvertFrom-Json -ErrorAction Stop
+            $grandchildPayload.arch | Should -Be $GrandchildArch
+            $grandchildPayload.requestedMode | Should -Be $GrandchildMode
+            $grandchildPayload.matched | Should -BeTrue
+            [uint32]$grandchildPayload.queriedValue | Should -Be $expected
+        }
     }
 }

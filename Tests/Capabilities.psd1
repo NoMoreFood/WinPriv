@@ -47,6 +47,8 @@
         @{ Id = 'detour.delay-load-import'; Surface = 'RegQueryValueExW through an MSVC delay-load import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.loadlibrary-getprocaddress'; Surface = 'RegQueryValueExW through LoadLibraryW/GetProcAddress'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
+        @{ Id = 'detour.descendant-import-modes'; Surface = 'native descendant API import modes and multi-generation injection'; Profile = 'Safe'; Test = 'DescendantHookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+
         @{ Id = 'mitigation.strict-cfg'; Surface = 'strict CFG hook loading and child registry interception'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'mitigation.dynamic-code-diagnostic'; Surface = 'ACG launcher error and policy diagnosis'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
         @{ Id = 'mitigation.dynamic-code-allocation'; Surface = 'ACG trampoline allocation error and rollback'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
