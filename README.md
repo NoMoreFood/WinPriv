@@ -1,21 +1,26 @@
-# WinPriv
+# <img src=".github/WinPriv.png" width="48" height="48" alt="WinPriv icon"> WinPriv
 
-WinPriv is a Windows system administration utility that alters the runtime behavior of a target process and its child processes using API hooking via [Microsoft Detours](https://github.com/microsoft/detours). It intercepts and redirects common low-level system calls — registry access, file system operations, network lookups, cryptography, and more — without requiring system-wide policy changes or reboots.
+WinPriv is a Windows system administration utility that launches a process with selected privileges and API hooks.
+Its bundled fork of [Microsoft Detours](https://github.com/microsoft/detours) intercepts registry, file system,
+network, cryptography, and other Windows API calls in the target and supported child processes.
+
+Most overrides change what hooked processes see. Acquiring missing privileges can temporarily change local account
+rights, and the LSA rights-management commands make persistent changes to local security policy.
 
 Typical uses include testing security configurations on a per-process basis, working around application compatibility issues, auditing privileged areas of the file system, and diagnosing how applications interact with the registry and network.
 
 ## Features
 
 - **Privilege management** — enable individual or all Windows privileges on a process token
-- **Registry interception** — override specific registry values or block entire key subtrees
-- **Network spoofing** — substitute MAC addresses and redirect DNS hostname lookups
-- **File system bypass** — use backup/restore privileges to access ACL-protected files
-- **OS and identity spoofing** — report server edition, fake admin membership, adjust integrity level
+- **Registry interception** — override value reads or hide values under selected keys and subkeys
+- **Network spoofing** — substitute reported MAC addresses and host lookup results
+- **File system bypass** — request backup/restore access when opening files
+- **OS and identity spoofing** — report server edition and fake administrator membership checks
 - **FIPS and policy control** — spoof FIPS enforcement state; suppress group policy registry reads
-- **Cryptography recording** — capture plaintext input/output of Windows crypto functions
-- **SQL connection monitoring** — display or rewrite ODBC connection strings before they are used
+- **Cryptography recording** — capture plaintext from selected Windows encryption and decryption APIs
+- **SQL connection monitoring** — display or rewrite ODBC and ADO connection strings
 - **LSA rights management** — grant, revoke, and clear logon rights and privileges directly
-- **Run-as support** — launch programs as the console user or a specific logged-on user
+- **Run-as support** — launch programs in an existing user session from LocalSystem, optionally at Medium Plus integrity
 - **Process lifecycle utilities** — kill a named process before launch, measure execution time
 
 ## Downloads
@@ -28,13 +33,21 @@ Pre-built binaries, ZIP archives, and binary hashes are available from the
 | `WinPrivCmd.exe` | The target is a console application and you need its output |
 | `WinPriv.exe` | The target is a GUI application and you do not want a console window |
 
-The behavior of the subprocess is identical regardless of which launcher is used.
+Both launchers provide the same hook options. `WinPrivCmd.exe` writes launcher messages to the console;
+`WinPriv.exe` displays them in message boxes.
+
+Release archives keep the launchers in architecture folders. Standalone executable assets include an architecture
+suffix, such as `WinPrivCmd-x64.exe`; the examples below use the filenames from the archive. Hash-file paths also
+refer to the filenames inside the archive.
 
 ## Requirements
 
 - Windows 10 or later
-- Administrator rights are required for most operations
-- No installation needed — the injection libraries are embedded as resources and extracted to the user's temp directory at runtime
+- Run elevated for account-rights changes or acquiring missing privileges. Overrides that do not request additional
+  privileges can run as an ordinary user.
+- The `/RunAs...` switches require LocalSystem and an existing user session.
+- No installation is needed. Each launcher embeds all three injection libraries and normally extracts them to the
+  Windows temporary directory. See `/ExtractLibrary` for reusing copies beside the launcher.
 
 Source builds enable Control Flow Guard (CFG) in the launchers and injection libraries, including for strict-CFG processes. Process protections must still permit DLL loading and API hooking. When dynamic-code policy (ACG) already permits thread opt-out, WinPriv uses that permission during hook transactions and restores the previous thread policy afterward. It leaves the process policy unchanged and reports error 1655 when strict ACG prevents hook installation.
 
@@ -44,9 +57,10 @@ Run `Build\build.cmd` to rebuild and package the complete Release configuration.
 build tools with the v145 x86, x64, and ARM64 toolchains, a Windows SDK, and 7-Zip. MSBuild is found on `PATH` or
 through the Visual Studio Installer.
 
-The script builds the shared libraries and all three injection DLLs, signs the DLLs in one SignTool invocation,
-then builds both launchers for every architecture and the native test fixtures. It signs the six release launchers
-in one further invocation before packaging. The launchers embed the already-signed DLLs.
+The script builds the shared libraries and all three injection DLLs, then attempts to sign the DLLs in one batch.
+It next builds both launchers for every architecture and the native test fixtures, and attempts to sign the six
+launchers in one batch before packaging. The launchers embed the DLLs after the DLL signing step. Signing is
+best-effort unless `RequireCodeSigning=true`; the native test fixtures are built, but tests are not run.
 The archive contains the six launchers and the license; `Build\WinPriv-hash.txt` covers the launchers and archive.
 
 Use `Build\build.cmd /SkipCodeSigning` for an unsigned local build, or `/PackageOnly` to package existing Release
@@ -59,27 +73,52 @@ WinPrivCmd.exe [switches] <command to execute>
 WinPriv.exe    [switches] <command to execute>
 ```
 
-Switches may appear in any order before the target command. Multiple switches of the same type (e.g. multiple `/RegOverride` or `/RegBlock`) are fully supported and processed in order.
+Switch names are case-insensitive and are processed from left to right. The first argument that does not start
+with `/` begins the target command; all following arguments belong to that command. Put WinPriv switches before
+the target. Repeated `/WithPrivs`, `/RegOverride`, `/RegBlock`, `/HostOverride`, and `/KillProcess` options accumulate.
+
+Normal launches wait for the immediate target process and return its exit code. Hooks propagate to descendants
+created through the intercepted `CreateProcessA/W` calls; WinPriv does not wait for the entire process tree.
+Use `cmd.exe /c` when the target requires command-interpreter built-ins, batch-file handling, or shell syntax.
+
+`/ListPrivileges`, `/ExtractLibrary`, the LSA rights-management commands, and `/Help` perform their action and exit
+without launching a target. The `/RunAs...` switches also select a separate launch path, described below.
 
 ## Switches
 
 ### Privilege Management
 
 **`/WithPrivs <privilege>[,<privilege>,...]`**  
-Enable one or more named Windows privileges on the process token (e.g. `SeDebugPrivilege,SeBackupPrivilege`).
+Request one or more named privileges for the target (e.g. `SeDebugPrivilege,SeBackupPrivilege`). Use the exact
+privilege names reported by `/ListPrivileges`, separated by commas without spaces.
+
+WinPriv first tries to enable them in its current token. If privileges are missing, it attempts to grant them to
+the current account in local security policy, prompts for that same account's credentials, and relaunches through
+a new logon and UAC elevation. When the relaunched process returns, it removes only the account assignments it
+added. This fallback requires permission to change local policy and interactive credentials; a relaunched console
+target pauses for a key at exit.
 
 **`/WithAllPrivs`**  
-Enable every privilege available on the current token.
+Request every privilege enumerated from the system's local security policy, using the same acquisition and
+relaunch behavior as `/WithPrivs`.
 
-**`/ListPrivileges`**  
-Print all available privilege names and their descriptions, then exit.
+**`/ListPrivileges`** or **`/ListPrivs`**
+
+Print the privilege names and descriptions defined by local security policy, then exit. This lists system
+privileges, rather than the privileges currently enabled in the caller's token.
 
 ---
 
 ### Registry Interception
 
 **`/RegOverride <KeyPath> <ValueName> <Type> <Data>`**  
-Return a fabricated value whenever the target process reads the specified registry entry. Supported types: `REG_DWORD`, `REG_SZ`, `REG_BINARY`, `REG_QWORD`.
+Override queries for the specified registry value, including a value that does not exist under an existing key.
+Enumeration substitutes data for existing values; it does not add missing value names. The key must exist and be
+readable when the injection library initializes. Supported roots are `HKLM`, `HKCU`, `HKCR`, and `HKU`, including
+their full `HKEY_...` names.
+
+Supported types are `REG_DWORD`, `REG_SZ`, `REG_BINARY`, and `REG_QWORD`. Integers accept decimal, `0x` hexadecimal,
+or leading-zero octal notation. Binary data is an even number of hexadecimal digits without separators.
 
 ```
 /RegOverride HKCU\Software\Demo Enabled REG_DWORD 1
@@ -87,31 +126,38 @@ Return a fabricated value whenever the target process reads the specified regist
 ```
 
 **`/RegBlock <KeyPath>`**  
-Report all values under the specified key (and its subkeys) as not found, regardless of their actual contents.
+Make value queries and value enumeration under the specified key and its subkeys report not found. The key must
+exist and be readable when hooks initialize. Key opening and registry writes are not blocked or redirected.
 
 ```
 /RegBlock HKCU\Software\Policies\Demo
 ```
 
 **`/FipsOn`** / **`/FipsOff`**  
-Convenience wrappers around `/RegOverride` that spoof the FIPS enforcement registry setting to enabled or disabled.
+Override the `Enabled` DWORD under `HKLM\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy` to `1` or `0`
+for hooked registry reads. The machine's FIPS policy is unchanged.
 
 **`/PolicyBlock`**  
-Convenience wrapper around `/RegBlock` that suppresses all reads from `HKCU\Software\Policies` and `HKLM\Software\Policies`.
+Apply `/RegBlock` to both `Software\Policies` and `Software\Microsoft\Windows\CurrentVersion\Policies` under
+`HKCU` and `HKLM`. This hides registry values at those locations from hooked queries; it does not disable all
+forms of Group Policy enforcement.
 
 ---
 
 ### Network Interception
 
 **`/MacOverride <MAC>`**  
-Return a spoofed MAC address for all calls to `GetAdaptersAddresses`, `GetAdaptersInfo`, and `NetWkstaTransportEnum`. The address may be delimited by dashes, colons, or nothing.
+Substitute the reported adapter addresses returned by `GetAdaptersAddresses`, `GetAdaptersInfo`, and level-0
+`NetWkstaTransportEnum` queries. The address may be delimited by dashes, colons, or nothing.
 
 ```
 /MacOverride 00-11-22-33-44-66
 ```
 
 **`/HostOverride <TargetHost> <ReplacementHost>`**  
-Redirect DNS lookups for `<TargetHost>` to `<ReplacementHost>` (a hostname or IP address) by intercepting `WSALookupServiceNext`. Note: does not apply to Internet Explorer or applications that use IE libraries.
+Override matching host lookups through the ANSI and Unicode `WSALookupServiceBegin/Next` APIs. The replacement
+must resolve to an IPv4 address before launch; an IPv4 literal is also accepted. Host names are matched exactly,
+ignoring case. Applications using other resolver paths or their own DNS implementation are outside these hooks.
 
 ```
 /HostOverride db.internal 127.0.0.1
@@ -123,30 +169,40 @@ Redirect DNS lookups for `<TargetHost>` to `<ReplacementHost>` (a hostname or IP
 ### File System
 
 **`/BypassFileSecurity`**  
-Enable backup and restore privileges and set the appropriate access flags so that the target process can read and write files regardless of their ACLs. Useful with tools like `icacls.exe`, `robocopy`, `cmd.exe`, or `powershell.exe` for inspecting or modifying secured areas.
+Request `SeBackupPrivilege`, `SeRestorePrivilege`, `SeTakeOwnershipPrivilege`, and `SeChangeNotifyPrivilege`, and
+add backup-intent flags to intercepted file open/create calls. This allows operations that Windows permits with
+those privileges; file sharing rules and other process or file protections still apply. Missing privileges use
+the acquisition and relaunch behavior described under `/WithPrivs`.
 
 ```
 WinPrivCmd.exe /BypassFileSecurity icacls.exe "C:\System Volume Information" /T
 ```
 
 **`/BreakRemoteLocks`**  
-Force-close remote file locks that are preventing access. Has no effect on locks held by processes on the same machine.
+When a hooked file open/create fails with sharing-violation or access-denied status, try to close matching SMB
+server file handles and retry the operation. This requires permission to enumerate and close files on the server.
+It can close remote clients' handles to locally shared files, but does not close ordinary local process handles.
 
 ---
 
 ### OS and Identity Spoofing
 
 **`/AdminImpersonate`**  
-Make `IsUserAnAdmin()` and `CheckTokenMembership()` unconditionally return success, regardless of the user's actual group membership.
+Make `IsUserAnAdmin()` report true and make successful `CheckTokenMembership()` queries for the built-in
+Administrators group report membership. Other group-membership queries retain their normal results. The target
+also receives the `RunAsInvoker` compatibility setting. These changes spoof checks without granting actual
+administrator access or changing the token's group membership.
 
 **`/ServerEdition`**  
-Cause OS version query functions to report a Server edition of Windows instead of the actual edition.
+Make extended `GetVersionExA/W` queries report a server product type and adjust `VerifyVersionInfoW` product-type
+checks accordingly. This changes the results of those APIs, not the installed Windows edition.
 
 **`/MediumPlus`**  
-Launch the target process at the "Plus" variant of the current token's mandatory integrity level (e.g. Medium → Medium Plus) without a full elevation to High.
+Set the duplicated session-user token to Medium Plus integrity. Place this before a `/RunAsConsoleUser`,
+`/RunAsUser`, or corresponding `NoWait` switch. It has no effect on the normal hooked launch path.
 
 **`/DisableAmsi`**  
-Disable AMSI (Antimalware Scan Interface) scanning for the target process.
+Make intercepted `AmsiScanBuffer` and `AmsiScanString` calls report clean content in hooked processes.
 
 **`/ClmOn`** / **`/ClmOff`**  
 Enable or disable PowerShell Constrained Language Mode (CLM) for the target process and its child processes by overriding PowerShell policy queries. The last CLM switch wins. The machine policy is unchanged.
@@ -156,13 +212,18 @@ Enable or disable PowerShell Constrained Language Mode (CLM) for the target proc
 ### Cryptography and SQL
 
 **`/RecordCrypto <Directory|SHOW>`**  
-Intercept common Windows encryption and decryption functions and record their plaintext input and output. Each operation is written to a separate file in `<Directory>`. Specify `SHOW` to print results to the console or a message box instead.
+Capture plaintext from `BCryptEncrypt/Decrypt`, `CryptEncrypt/Decrypt`, and `RtlEncryptMemory/DecryptMemory`:
+input to encryption and output from decryption. Captured nonempty buffers are written to separate `.bin` files
+in `<Directory>`. Specify `SHOW` to display text using the target process's console or message boxes instead.
 
 **`/SqlConnectShow`**  
-Display ODBC connection parameters immediately before each connection attempt.
+Display connection strings intercepted through ODBC `SQLDriverConnect` and ADO `Connection.Open`, after any
+successful `/SqlConnectSearchReplace` rewrite.
 
 **`/SqlConnectSearchReplace <SearchRegex> <Replacement>`**  
-Rewrite ODBC connection strings before they are used. The search pattern is a regular expression.
+Rewrite intercepted ODBC and ADO connection strings before opening the connection, including ADO's stored
+`ConnectionString` when `Open` omits it. The search uses a case-sensitive regular expression; replacement capture
+references use `$1`, `$2`, and so on. An invalid pattern leaves the original connection string in use.
 
 ```
 WinPrivCmd.exe /SqlConnectSearchReplace "Provider=SQLOLEDB" "Provider=SQLNCLI11" App.exe
@@ -172,38 +233,55 @@ WinPrivCmd.exe /SqlConnectSearchReplace "Provider=SQLOLEDB" "Provider=SQLNCLI11"
 
 ### Process Execution Control
 
+The `/RunAs...` commands use an existing Windows session token and require LocalSystem. They launch with that
+user's environment on the interactive desktop, with a new console for console applications. They do not apply
+the normal WinPriv hook options or `/WithPrivs`, `/WindowStyle`, `/UseShellExecute`, and `/MeasureTime` settings.
+To apply hooks in that session, make another WinPriv invocation the run-as command.
+
 **`/RunAsConsoleUser <command>`**  
-Execute `<command>` as the user currently logged into the physical console (or the first active remote session if no console session exists). Waits for the process to exit. Useful when WinPriv itself is running as SYSTEM (e.g. in a scheduled task or management agent).
+Use the active console user's session, falling back to the first active non-SYSTEM user session. Disconnected
+sessions are not selected by this switch. Wait for the process to exit and return its exit code.
 
 **`/RunAsConsoleUserNoWait <command>`**  
-Same as above but returns immediately after starting the process.
+Use the same session selection, returning zero after successful process creation without waiting for it to exit.
 
 **`/RunAsUser <UserName> <command>`**  
-Execute `<command>` as `<UserName>`, who must be logged into the system. Waits for the process to exit.
+Resolve `<UserName>` to an account and select its active session, or a disconnected session if no active one is
+available. Wait for the process to exit and return its exit code. This reuses an existing session without prompting
+for a password or creating a new user logon.
 
 **`/RunAsUserNoWait <UserName> <command>`**  
-Same as above but returns immediately after starting the process.
+Use the same account/session selection, returning zero after successful process creation without waiting.
 
 **`/KillProcess <ProcessName>`**  
-Terminate any running process with the given name before launching the target. Useful for applications that prevent multiple instances.
+Attempt to terminate every matching executable name, such as `notepad.exe`, in the caller's session before launch.
+When placed before a `/RunAs...` command, it instead acts in the selected user's session. Matching ignores case;
+termination failures are reported but do not by themselves stop the target launch.
 
 **`/WindowStyle <Style>`**  
-Launch the target with the specified window state: `NoActive`, `Hidden`, `Maximized`, `Minimized`, `MinimizedNoActive`.
+Request an initial window state for a normal or shell launch: `NoActive`, `Hidden`, `Maximized`, `Minimized`, or
+`MinimizedNoActive`. Applications can choose how to handle the startup window-state request.
 
 **`/UseShellExecute`**  
-Launch the target with `ShellExecute()` instead of `CreateProcess()`. Use when the target is a registered application that is not on the system path.
+Launch through `ShellExecuteEx`, allowing shell application resolution and file associations. WinPriv requires a
+returned process handle to wait for completion and reports an error if none is provided. Shell launches delegated
+to another process may not pass through WinPriv's process-creation hooks.
 
 **`/MeasureTime`**  
-Print the total execution time of the target process after it exits.
+Print elapsed wall-clock time in seconds for a normal target launch and wait, including process creation. This
+does not measure all descendants or apply to the `/RunAs...` commands.
 
 ---
 
 ### LSA Account Rights Management
 
-These operations modify the local security policy directly and require administrator rights. Changes take effect for new logon sessions immediately.
+These commands modify account-right assignments in local security policy and require permission to change that
+policy, normally an elevated administrator token. They make persistent changes, then exit without running a target
+or processing further switches. Existing process tokens are not updated; new logons pick up changed privileges.
 
 **`/GrantRight <Right> <UserName>`**  
-Grant a privilege constant (e.g. `SeDebugPrivilege`) or logon-right constant (e.g. `SeInteractiveLogonRight`) to a user or group.
+Grant a privilege constant (e.g. `SeDebugPrivilege`) or logon-right constant (e.g. `SeInteractiveLogonRight`) to a
+user or group on this machine.
 
 ```
 /GrantRight SeDebugPrivilege DOMAIN\JDoe
@@ -215,7 +293,9 @@ Grant a privilege constant (e.g. `SeDebugPrivilege`) or logon-right constant (e.
 Remove a privilege or logon right from a user or group.
 
 **`/ClearDenyRights [UserName]`**  
-Remove all deny-logon rights from `<UserName>`. If no name is given, clears deny-logon rights from every account on the local machine. The rights cleared are:
+Remove the listed deny-logon rights assigned directly to `<UserName>`. If no name is given, clear them from every
+account with rights assigned in the machine's local security policy. Clearing one user's assignments does not
+clear assignments on its groups. The rights cleared are:
 
 | Constant | Description |
 |---|---|
@@ -226,14 +306,17 @@ Remove all deny-logon rights from `<UserName>`. If no name is given, clears deny
 | `SeDenyRemoteInteractiveLogonRight` | Deny Remote Desktop logon |
 
 **`/GrantAllRights <UserName>`**  
-Grant every available privilege and all allow-logon rights to the specified account. Deny-logon rights are not included.
+Grant every enumerated system privilege and the five allow-logon rights (network, interactive, remote interactive,
+batch, and service) to the account. Existing deny-logon assignments remain in place.
 
 ---
 
 ### Utility
 
 **`/LoadCommands <Path>`**  
-Load additional switches from a configuration file. The file is plain text (UTF-8), one argument per line, with environment variable expansion (`%VAR%`) supported. Arguments from the file are merged with any remaining command-line arguments.
+Insert arguments from a UTF-8 configuration file at this position in the command line, preserving earlier
+arguments and appending the remaining arguments afterward. Newlines act as spaces, quoting follows Windows
+command-line rules, and `%VAR%` environment variables are expanded. See [Configuration Files](#configuration-files).
 
 **`/ShowMessage <Message>`**  
 Display a message box with the given text before launching the target process.
@@ -242,18 +325,32 @@ Display a message box with the given text before launching the target process.
 Display a Yes/No prompt before launching. If the user clicks No, execution is cancelled.
 
 **`/ExtractLibrary`**  
-Extract the embedded x86, x64, and ARM64 WinPriv injection libraries to the directory containing WinPriv. On subsequent runs, WinPriv will use those files instead of extracting to the user's temp directory. Useful in environments where temp-directory writes are restricted.
+Write the embedded libraries beside the running launcher as `WinPrivLibrary-32.dll`, `WinPrivLibrary-64.dll`, and
+`WinPrivLibrary-arm64.dll`, overwriting existing copies, then exit. Subsequent launches reuse them only when all
+three are present; otherwise all three payloads are extracted to the temporary directory. Re-extract the libraries
+after upgrading the launcher to keep the versions together.
 
 **`/Help`** or **`/?`**  
-Display the full help text.
+Display help and exit. Use `WinPrivCmd.exe /Help` for the full switch reference; the GUI launcher shows brief usage.
 
 ---
 
 ## Configuration Files
 
-Switches can be stored in a plain-text `.cfg` file (UTF-8), one switch or argument per line. Environment variables in `%VAR%` form are expanded. A configuration file is loaded automatically if it has the same base name as the executable and lives in the same directory. Additional files can be loaded explicitly with `/LoadCommands`.
+Configuration files are UTF-8, with an optional BOM. Their contents are parsed as a Windows command line after
+newlines are converted to spaces and `%VAR%` environment variables are expanded. One argument per line is optional;
+arguments containing spaces still need double quotes. There is no comment syntax.
 
-Example `MyApp.cfg`:
+An automatic configuration uses the **launcher's** filename with `.exe` replaced by `.cfg` and sits beside it:
+`WinPrivCmd.exe` loads `WinPrivCmd.cfg`, while `WinPrivCmd-x64.exe` loads `WinPrivCmd-x64.cfg`. Its contents replace
+the supplied command line entirely, so it must include the target command for a normal launch. Automatic configs
+are not reloaded during WinPriv's internal privilege relaunch.
+
+Explicit `/LoadCommands` files are inserted at the switch's position and can contain just options, leaving the
+target on the command line. Relative paths resolve from the current working directory. Missing files, recursive
+cycles, or excessive command-file expansion produce an error.
+
+Example `WinPrivCmd.cfg` beside `WinPrivCmd.exe`, assuming the `HKLM\Software\MyApp` key already exists:
 ```
 /RegOverride
 HKLM\Software\MyApp
@@ -261,13 +358,14 @@ LicenseKey
 REG_SZ
 DEMO-0000-0000
 /BypassFileSecurity
+"C:\Tools\MyApp.exe"
 ```
 
 ---
 
 ## Examples
 
-Open a PowerShell session with full file system access, bypassing all ACLs:
+Open a PowerShell session with backup-intent file access and the requested backup/restore privileges:
 ```
 WinPrivCmd.exe /BypassFileSecurity powershell.exe
 ```
@@ -298,7 +396,11 @@ WinPrivCmd.exe /RunAsConsoleUser deploy.cmd
 
 Requirements: Visual Studio with the v145 C++ toolset, Desktop development with C++, ARM64 build tools, and a Windows SDK.
 
-Open `WinPriv.sln` and build either the `Release` or `Debug` configuration for the desired platform (`Win32`, `x64`, or `ARM64`). Release binaries are written to `Build\x86\`, `Build\x64\`, and `Build\ARM64\`; Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations automatically produce all three injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
+Open `WinPriv.sln` and select `Release` or `Debug` with solution platform `x86`, `x64`, or `ARM64` (`x86` maps to
+`Win32` in the project files). Release binaries are written to `Build\x86\`, `Build\x64\`, and `Build\ARM64\`;
+Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations automatically produce all three
+injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
+Install all three C++ toolchains even when building a launcher for only one architecture.
 
 The solution contains four product projects (listed below) and three native test fixture projects.
 
@@ -309,7 +411,10 @@ The solution contains four product projects (listed below) and three native test
 | `WinPrivLibrary` | `WinPrivLibrary.dll` | Injected hooking library containing the consolidated Detours fork |
 | `WinPrivShared` | static lib | Shared privilege and LSA utilities |
 
-The x86, x64, and ARM64 `WinPrivLibrary.dll` builds are embedded as resources inside each launcher and extracted to the user's temp directory at runtime. The native ARM64 launcher injects native ARM64 targets; use the x64 launcher under Windows emulation for x64 targets.
+Each launcher embeds the x86, x64, and ARM64 `WinPrivLibrary.dll` builds. Injection selects the library for the
+target's architecture, using a matching helper process when needed for a different architecture. The operating
+system must support running both the launcher and the target. Library extraction and reuse follow the
+`/ExtractLibrary` rules above.
 
 Code signing uses SignTool from `PATH` or an installed Windows SDK. It is best-effort by default: certificate or timestamp failures emit a build warning and preserve the generated files. Use `/p:SkipCodeSigning=true` to skip signing or `/p:RequireCodeSigning=true` to make signing failures fatal in MSBuild. For `Build\build.cmd`, use `/SkipCodeSigning` or set `RequireCodeSigning=true` in the environment. Files are signed and verified as temporary copies before replacing the outputs.
 
