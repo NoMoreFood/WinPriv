@@ -168,13 +168,34 @@ Describe 'WinPriv release package' -Tag 'Safe' {
                     Copy-Item -LiteralPath (Join-Path $env:WINPRIV_TEST_BINARY_ROOT "$architecture\WinPrivCmd.exe") -Destination $destination
                 }
 
-                $packaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
-                    -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd')) `
-                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
-                Assert-WinPrivInvocationSucceeded $packaging
-
                 $zipPath = Join-Path $build 'WinPriv.zip'
                 $hashPath = Join-Path $build 'WinPriv-hash.txt'
+                Set-Content -LiteralPath $zipPath -Value 'previous archive'
+                Set-Content -LiteralPath $hashPath -Value 'previous hashes'
+                $missingLauncher = Join-Path $build 'ARM64\WinPrivCmd.exe'
+                Remove-Item -LiteralPath $missingLauncher
+                $failedPackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
+                    -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
+                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
+                Assert-WinPrivInvocationFailedCleanly $failedPackaging
+                (Get-Content -LiteralPath $zipPath) | Should -Be 'previous archive'
+                (Get-Content -LiteralPath $hashPath) | Should -Be 'previous hashes'
+                (Join-Path $build 'PackageStage') | Should -Not -Exist
+                Copy-Item -LiteralPath (Join-Path $env:WINPRIV_TEST_BINARY_ROOT 'ARM64\WinPrivCmd.exe') `
+                    -Destination $missingLauncher
+
+                $intermediate = Join-Path $build 'x64\WinPrivLibrary.dll'
+                $extraArchive = Join-Path $build 'unrelated.zip'
+                Set-Content -LiteralPath $intermediate -Value 'preserved intermediate'
+                Set-Content -LiteralPath $extraArchive -Value 'preserved archive'
+                $packaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
+                    -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
+                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
+                Assert-WinPrivInvocationSucceeded $packaging
+                (Get-Content -LiteralPath $intermediate) | Should -Be 'preserved intermediate'
+                (Get-Content -LiteralPath $extraArchive) | Should -Be 'preserved archive'
+                (Join-Path $build 'PackageStage') | Should -Not -Exist
+
                 $zipPath | Should -Exist
                 $hashPath | Should -Exist
                 Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -37,6 +37,20 @@ The behavior of the subprocess is identical regardless of which launcher is used
 
 Source builds enable Control Flow Guard (CFG) in the launchers and injection libraries, including for strict-CFG processes. Process protections must still permit DLL loading and API hooking. When dynamic-code policy (ACG) already permits thread opt-out, WinPriv uses that permission during hook transactions and restores the previous thread policy afterward. It leaves the process policy unchanged and reports error 1655 when strict ACG prevents hook installation.
 
+## Building
+
+Run `Build\build.cmd` to rebuild and package the complete Release configuration. This requires Visual Studio C++
+build tools with the v145 x86, x64, and ARM64 toolchains, a Windows SDK, and 7-Zip. MSBuild is found on `PATH` or
+through the Visual Studio Installer.
+
+The script builds the shared libraries and all three injection DLLs, signs the DLLs in one SignTool invocation,
+then builds both launchers for every architecture and the native test fixtures. It signs the six release launchers
+in one further invocation before packaging. The launchers embed the already-signed DLLs.
+The archive contains the six launchers and the license; `Build\WinPriv-hash.txt` covers the launchers and archive.
+
+Use `Build\build.cmd /SkipCodeSigning` for an unsigned local build, or `/PackageOnly` to package existing Release
+launchers without compiling. Failures return a nonzero exit code, and the script does not pause for input.
+
 ## Usage
 
 ```
@@ -285,7 +299,7 @@ Requirements: Visual Studio with the v145 C++ toolset, Desktop development with 
 
 Open `WinPriv.sln` and build either the `Release` or `Debug` configuration for the desired platform (`Win32`, `x64`, or `ARM64`). Release binaries are written to `Build\x86\`, `Build\x64\`, and `Build\ARM64\`; Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations automatically produce all three injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
 
-The solution contains four projects:
+The solution contains four product projects (listed below) and three native test fixture projects.
 
 | Project | Output | Description |
 |---|---|---|
@@ -296,7 +310,7 @@ The solution contains four projects:
 
 The x86, x64, and ARM64 `WinPrivLibrary.dll` builds are embedded as resources inside each launcher and extracted to the user's temp directory at runtime. The native ARM64 launcher injects native ARM64 targets; use the x64 launcher under Windows emulation for x64 targets.
 
-Code signing is best-effort by default: certificate or timestamp failures emit a build warning and preserve the generated executable. Use `/p:SkipCodeSigning=true` to skip signing or `/p:RequireCodeSigning=true` to make signing failures fatal.
+Code signing uses SignTool from `PATH` or an installed Windows SDK. It is best-effort by default: certificate or timestamp failures emit a build warning and preserve the generated files. Use `/p:SkipCodeSigning=true` to skip signing or `/p:RequireCodeSigning=true` to make signing failures fatal in MSBuild. For `Build\build.cmd`, use `/SkipCodeSigning` or set `RequireCodeSigning=true` in the environment. Files are signed and verified as temporary copies before replacing the outputs.
 
 ---
 
