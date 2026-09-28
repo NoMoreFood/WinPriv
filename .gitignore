@@ -4,6 +4,9 @@ Build/Debug/
 *.aps
 *.exp
 *.user
+Build/*/*.exe
+Build/*.zip
+Build/*-hash.txt
 Build/*/*.lib
 Build/*/*.dll
 Build/*/Temp/

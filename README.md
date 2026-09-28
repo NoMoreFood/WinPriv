@@ -20,7 +20,8 @@ Typical uses include testing security configurations on a per-process basis, wor
 
 ## Downloads
 
-Pre-built binaries for x86, x64, and ARM64 are in the [`Build/`](Build/) directory. Two executables are provided:
+Pre-built binaries, ZIP archives, and binary hashes are available from the
+[GitHub releases](https://github.com/NoMoreFood/WinPriv/releases). Two executables are provided:
 
 | Executable | Use when… |
 |---|---|
