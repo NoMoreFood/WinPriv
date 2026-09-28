@@ -245,6 +245,12 @@ Optional Switches
    This option disables Antimalware Scan Interface (AMSI) scanning for the
    target process and its child processes.
 
+/ClmOn / /ClmOff
+
+   These options enable or disable PowerShell Constrained Language Mode (CLM)
+   for the target process and its child processes by overriding PowerShell
+   policy queries. The last CLM switch wins. The machine policy is unchanged.
+
 /RecordCrypto <Directory>
 
    This option records the data being input to common Windows encryption

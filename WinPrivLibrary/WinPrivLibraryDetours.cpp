@@ -22,6 +22,8 @@
 #include <wincrypt.h>
 #include <sqlext.h>
 #include <amsi.h>
+#include <wldp.h>
+#include <winsafer.h>
 
 #define _NTDEF_
 #include <NTSecAPI.h>
@@ -39,6 +41,7 @@
 
 #pragma comment(lib,"bcrypt.lib")
 #pragma comment(lib,"amsi.lib")
+#pragma comment(lib,"wldp.lib")
 
 //   ___         ___     __   __   ___
 //  |__  | |    |__     /  \ |__) |__  |\ |
@@ -874,6 +877,109 @@ static HRESULT WINAPI DetourAmsiScanString(_In_  HAMSICONTEXT amsiContext, _In_ 
 {
 	*result = AMSI_RESULT_CLEAN;
 	return S_OK;
+}
+
+//   __        __   __
+//  /  \ |    |  \ |__)
+//  \__/ |___ |__/ |
+//
+
+static decltype(&WldpGetLockdownPolicy) TrueWldpGetLockdownPolicy = WldpGetLockdownPolicy;
+
+static HRESULT WINAPI DetourWldpGetLockdownPolicy(
+	_In_opt_ PWLDP_HOST_INFORMATION hostInformation,
+	_Out_ PDWORD pdwLockdownState,
+	_In_ DWORD dwFlags)
+{
+	if (hostInformation == nullptr || hostInformation->dwHostId != WLDP_HOST_ID_POWERSHELL)
+		return TrueWldpGetLockdownPolicy(hostInformation, pdwLockdownState, dwFlags);
+	if (pdwLockdownState == nullptr) return E_INVALIDARG;
+
+	if (VariableIsSet(WINPRIV_EV_CLM, 1))
+	{
+		*pdwLockdownState = WLDP_LOCKDOWN_ENFORCE;
+		return S_OK;
+	}
+	if (VariableIsSet(WINPRIV_EV_CLM, 0))
+	{
+		*pdwLockdownState = WLDP_LOCKDOWN_OFF;
+		return S_OK;
+	}
+	return TrueWldpGetLockdownPolicy(hostInformation, pdwLockdownState, dwFlags);
+}
+
+static decltype(&WldpCanExecuteFile) TrueWldpCanExecuteFile = nullptr;
+
+static HRESULT WINAPI DetourWldpCanExecuteFile(
+	_In_ REFGUID host,
+	_In_ WLDP_EXECUTION_EVALUATION_OPTIONS options,
+	_In_ HANDLE fileHandle,
+	_In_opt_ PCWSTR auditInfo,
+	_Out_ WLDP_EXECUTION_POLICY* result)
+{
+	static constexpr GUID powershellHost{
+		0x8e9aaa7c, 0x198b, 0x4879, { 0xae, 0x41, 0xa5, 0x0d, 0x47, 0xad, 0x64, 0x58 } };
+	if (host != powershellHost) return TrueWldpCanExecuteFile(host, options, fileHandle, auditInfo, result);
+	if (result == nullptr) return E_INVALIDARG;
+
+	if (VariableIsSet(WINPRIV_EV_CLM, 1))
+	{
+		*result = WLDP_EXECUTION_POLICY_REQUIRE_SANDBOX;
+		return S_OK;
+	}
+	if (VariableIsSet(WINPRIV_EV_CLM, 0))
+	{
+		*result = WLDP_EXECUTION_POLICY_ALLOWED;
+		return S_OK;
+	}
+	return TrueWldpCanExecuteFile(host, options, fileHandle, auditInfo, result);
+}
+
+static decltype(&WldpIsClassInApprovedList) TrueWldpIsClassInApprovedList = WldpIsClassInApprovedList;
+
+static HRESULT WINAPI DetourWldpIsClassInApprovedList(
+	_In_ REFCLSID classID,
+	_In_ PWLDP_HOST_INFORMATION hostInformation,
+	_Out_ PBOOL isApproved,
+	_In_ DWORD optionalFlags)
+{
+	if (hostInformation == nullptr || hostInformation->dwHostId != WLDP_HOST_ID_POWERSHELL)
+		return TrueWldpIsClassInApprovedList(classID, hostInformation, isApproved, optionalFlags);
+	if (isApproved == nullptr) return E_INVALIDARG;
+
+	if (VariableIsSet(WINPRIV_EV_CLM, 1))
+	{
+		*isApproved = FALSE;
+		return S_OK;
+	}
+	if (VariableIsSet(WINPRIV_EV_CLM, 0))
+	{
+		*isApproved = TRUE;
+		return S_OK;
+	}
+	return TrueWldpIsClassInApprovedList(classID, hostInformation, isApproved, optionalFlags);
+}
+
+static decltype(&SaferIdentifyLevel) TrueSaferIdentifyLevel = SaferIdentifyLevel;
+
+static BOOL WINAPI DetourSaferIdentifyLevel(
+	_In_ DWORD dwNumProperties,
+	_In_reads_opt_(dwNumProperties) PSAFER_CODE_PROPERTIES pCodeProperties,
+	_Outptr_ SAFER_LEVEL_HANDLE* pLevelHandle,
+	_In_opt_ LPVOID lpReserved)
+{
+	if (lpReserved == nullptr || wcscmp(static_cast<LPCWSTR>(lpReserved), SRP_POLICY_SCRIPT) != 0 ||
+		!VariableIsSet(WINPRIV_EV_CLM, 0))
+		return TrueSaferIdentifyLevel(dwNumProperties, pCodeProperties, pLevelHandle, lpReserved);
+
+	if (pLevelHandle == nullptr)
+	{
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
+
+	// Override script classification while leaving token creation and handle lifetime to Windows.
+	return SaferCreateLevel(SAFER_SCOPEID_USER, SAFER_LEVELID_FULLYTRUSTED, SAFER_LEVEL_OPEN, pLevelHandle, nullptr);
 }
 
 //        __   __  ___     __        ___  __   __     __   ___
@@ -2035,6 +2141,18 @@ void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 	{
 		ApplyDetour(requestedAction, TrueAmsiScanBuffer, DetourAmsiScanBuffer);
 		ApplyDetour(requestedAction, TrueAmsiScanString, DetourAmsiScanString);
+	}
+
+	if (VariableNotEmpty(WINPRIV_EV_CLM))
+	{
+		ApplyDetour(requestedAction, TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy);
+		if (attaching)
+			TrueWldpCanExecuteFile = reinterpret_cast<decltype(TrueWldpCanExecuteFile)>(
+				GetProcAddress(GetModuleHandleW(L"wldp.dll"), "WldpCanExecuteFile"));
+		if (TrueWldpCanExecuteFile != nullptr)
+			ApplyDetour(requestedAction, TrueWldpCanExecuteFile, DetourWldpCanExecuteFile);
+		ApplyDetour(requestedAction, TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList);
+		ApplyDetour(requestedAction, TrueSaferIdentifyLevel, DetourSaferIdentifyLevel);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE))

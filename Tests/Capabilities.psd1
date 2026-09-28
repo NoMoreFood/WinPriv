@@ -63,6 +63,7 @@
         @{ Id = 'network.host-wide'; Surface = '/HostOverride WSALookupServiceNextW'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'network.host-ansi'; Surface = '/HostOverride WSALookupServiceNextA'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'network.host-pass-through'; Surface = '/HostOverride unrelated lookup pass-through'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
+        @{ Id = 'powershell.clm'; Surface = '/ClmOn, /ClmOff language mode, scripts, and descendants'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'amsi.scan-string'; Surface = '/DisableAmsi AmsiScanString'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }
         @{ Id = 'amsi.scan-buffer'; Surface = '/DisableAmsi AmsiScanBuffer'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }
         @{ Id = 'identity.is-user-admin'; Surface = '/AdminImpersonate IsUserAnAdmin'; Profile = 'Admin'; Test = 'SecurityAndRights'; Required = $true }

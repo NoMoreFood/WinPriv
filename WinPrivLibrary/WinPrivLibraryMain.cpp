@@ -38,10 +38,10 @@ namespace
 
 	constexpr GUID winPrivPayloadGuid{
 		0xa4b01a2d, 0xb07f, 0x47f8,
-		{ 0xb0, 0x30, 0x5a, 0x49, 0x25, 0x74, 0x47, 0x83 } };
+		{ 0xb0, 0x30, 0x5a, 0x49, 0x25, 0x74, 0x47, 0x84 } };
 	// The GUID versions this schema. Its data is one NUL-terminated UTF-16
 	// value per name below, in the same fixed order.
-	constexpr std::array<LPCWSTR, 16> winPrivSettingNames{
+	constexpr std::array<LPCWSTR, 17> winPrivSettingNames{
 		WINPRIV_EV_RELAUNCH_MODE,
 		WINPRIV_EV_REG_OVERRIDE,
 		WINPRIV_EV_MAC_OVERRIDE,
@@ -58,6 +58,7 @@ namespace
 		WINPRIV_EV_SQL_CONNECT_SEARCH,
 		WINPRIV_EV_SQL_CONNECT_REPLACE,
 		WINPRIV_EV_MEDIUM_PLUS,
+		WINPRIV_EV_CLM,
 	};
 
 	bool CaptureWinPrivPayload(std::vector<WCHAR>& payload) noexcept

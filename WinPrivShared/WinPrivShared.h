@@ -43,6 +43,7 @@ void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
 #define WINPRIV_EV_SQL_CONNECT_SEARCH L"_WINPRIV_EV_SQL_CONNECT_SEARCH_"
 #define WINPRIV_EV_SQL_CONNECT_REPLACE L"_WINPRIV_EV_SQL_CONNECT_REPLACE_"
 #define WINPRIV_EV_MEDIUM_PLUS L"_WINPRIV_EV_MEDIUM_PLUS_"
+#define WINPRIV_EV_CLM L"_WINPRIV_EV_CLM_"
 
 //
 // Miscellaneous Unicode String Helper Functions

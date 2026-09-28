@@ -4,7 +4,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
     $documentedSwitches = @(
         '/AdminImpersonate', '/AskMessage', '/BreakRemoteLocks', '/BypassFileSecurity',
-        '/ClearDenyRights', '/DisableAmsi', '/ExtractLibrary', '/FipsOff', '/FipsOn',
+        '/ClearDenyRights', '/ClmOn', '/ClmOff', '/DisableAmsi', '/ExtractLibrary', '/FipsOff', '/FipsOn',
         '/GrantAllRights', '/GrantRight', '/Help', '/HostOverride', '/KillProcess',
         '/ListPrivileges', '/LoadCommands', '/MacOverride', '/MeasureTime', '/MediumPlus',
         '/PolicyBlock', '/RecordCrypto', '/RegBlock', '/RegOverride', '/RevokeRight',

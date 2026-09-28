@@ -671,11 +671,7 @@ try {
     }
     Clear-WinPrivCapabilityResults -Confirm:$false
 
-    $testFiles = @(Get-ChildItem -LiteralPath $script:TestsRoot -Filter '*.Tests.ps1' -File -Recurse | Where-Object {
-        $_.FullName -notlike "$(Join-Path $script:TestsRoot '.tools')*" -and
-        $_.FullName -notlike "$(Join-Path $script:TestsRoot 'Results')*" -and
-        $_.FullName -notlike "$(Join-Path $script:TestsRoot 'TestResults')*"
-    } | Sort-Object FullName)
+    $testFiles = @(Get-ChildItem -LiteralPath $script:TestsRoot -Filter '*.Tests.ps1' -File | Sort-Object FullName)
     if ($testFiles.Count -eq 0) {
         throw "No Pester test files were found beneath '$script:TestsRoot'."
     }

@@ -150,6 +150,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
+	SetEnvironmentVariable(WINPRIV_EV_CLM, L"");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
@@ -608,8 +609,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// instructs winpriv to disable amsi scanning
 		else if (_wcsicmp(sArg.c_str(), L"/DisableAmsi") == 0)
 		{
-			// implement the fips override using the registry override capability
 			SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"1");
+		}
+
+		// instructs winpriv to control powershell constrained language mode
+		else if (_wcsicmp(sArg.c_str(), L"/ClmOn") == 0 || _wcsicmp(sArg.c_str(), L"/ClmOff") == 0)
+		{
+			SetEnvironmentVariable(WINPRIV_EV_CLM, _wcsicmp(sArg.c_str(), L"/ClmOn") == 0 ? L"1" : L"0");
 		}
 
 		// instructs winpriv to override all host name lookups
@@ -860,6 +866,14 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	{
 		PrintMessage(L"%s", GetWinPrivHelp().c_str());
 		return 0;
+	}
+
+	// Match PowerShell's machine-level debug fallback to the final CLM switch.
+	if (VariableNotEmpty(WINPRIV_EV_CLM))
+	{
+		sRegistryOverride += L"\"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\" ";
+		sRegistryOverride += L"__PSLockdownPolicy REG_SZ ";
+		sRegistryOverride += VariableIsSet(WINPRIV_EV_CLM, 1) ? L"4 " : L"0 ";
 	}
 
 	// setup the registry override and block values to pass to child processes

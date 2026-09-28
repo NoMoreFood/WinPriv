@@ -8,6 +8,63 @@ BeforeAll {
 
 $architectureCases = Get-WinPrivArchitectureCases
 
+Describe 'WinPriv PowerShell language mode (<Architecture>)' -Tag 'Safe' -ForEach $architectureCases {
+    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture }
+    AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
+
+    It 'controls commands, script files, and child hosts, with the last switch taking precedence' {
+        Invoke-WinPrivCapability -Id 'powershell.clm' -Architecture $Architecture -Body {
+            $hostPath = Get-WinPrivTestHost -Architecture $Architecture
+            $command = @'
+$ErrorActionPreference = 'Stop'
+$ExecutionContext.SessionState.LanguageMode
+try { [void][IO.File]::Exists('WinPriv-CLM-probe'); 'MethodAllowed' } catch { 'MethodBlocked' }
+'@
+            $scriptPath = Join-Path $sandbox.Working 'language-mode.ps1'
+            [IO.File]::WriteAllText($scriptPath, $command)
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+            $childCommand = "& '$($hostPath.Replace("'", "''"))' -NoProfile -NonInteractive -EncodedCommand $encoded"
+            $childEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+            $cases = @(
+                @{ Switches = @('/ClmOn'); Mode = 'ConstrainedLanguage'; Method = 'MethodBlocked' }
+                @{ Switches = @('/ClmOff'); Mode = 'FullLanguage'; Method = 'MethodAllowed' }
+                @{ Switches = @('/ClmOn', '/ClmOff'); Mode = 'FullLanguage'; Method = 'MethodAllowed' }
+                @{ Switches = @('/ClmOff', '/ClmOn'); Mode = 'ConstrainedLanguage'; Method = 'MethodBlocked' }
+                @{ Switches = @('/cLmOn'); Mode = 'ConstrainedLanguage'; Method = 'MethodBlocked' }
+            )
+            foreach ($case in $cases) {
+                foreach ($target in @(
+                    @{ Arguments = @('-EncodedCommand', $encoded) }
+                    @{ Arguments = @('-File', $scriptPath) }
+                    @{ Arguments = @('-EncodedCommand', $childEncoded) }
+                )) {
+                    $arguments = $case.Switches + @($hostPath, '-NoProfile', '-NonInteractive',
+                        '-ExecutionPolicy', 'Bypass') + $target.Arguments
+                    $invocation = Invoke-WinPriv -Architecture $Architecture -Arguments $arguments -Sandbox $sandbox
+                    Assert-WinPrivInvocationSucceeded $invocation
+                    $invocation.StdOut | Should -Match $case.Mode
+                    $invocation.StdOut | Should -Match $case.Method
+                }
+            }
+
+            $probeArguments = @{
+                Architecture = $Architecture; Sandbox = $sandbox; Operation = 'registry'
+                WinPrivArguments = @('/ClmOn', '/ClmOff')
+                Arguments = @{
+                    root = 'HKLM'; key = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+                    valueName = '__PSLockdownPolicy'
+                }
+            }
+            $registry = Invoke-WinPrivProbe @probeArguments
+            Assert-WinPrivInvocationSucceeded $registry
+            $registry.ProbeResult.result.win32.success | Should -BeTrue
+            $data = [Convert]::FromBase64String($registry.ProbeResult.result.win32.dataBase64)
+            [Text.Encoding]::Unicode.GetString($data).TrimEnd([char]0) | Should -Be '0'
+            return @{ Cases = $cases.Count * 3; RegistryFallback = '0' }
+        }
+    }
+}
+
 Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $architectureCases {
     BeforeEach {
         $sandbox = New-WinPrivSandbox -Architecture $Architecture
