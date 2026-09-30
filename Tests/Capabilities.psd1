@@ -46,6 +46,9 @@
         @{ Id = 'detour.load-time-import'; Surface = 'RegQueryValueExW through a normal PE import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.delay-load-import'; Surface = 'RegQueryValueExW through an MSVC delay-load import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.loadlibrary-getprocaddress'; Surface = 'RegQueryValueExW through LoadLibraryW/GetProcAddress'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'detour.thread-churn'; Surface = 'transactions during thread creation and exit'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'detour.thread-heap-lock'; Surface = 'transactions while a peer holds the process heap lock'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'detour.thread-inaccessible'; Surface = 'transaction rollback when a peer cannot be suspended'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
         @{ Id = 'detour.descendant-import-modes'; Surface = 'native descendant API import modes and multi-generation injection'; Profile = 'Safe'; Test = 'DescendantHookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
@@ -64,8 +67,9 @@
         @{ Id = 'network.host-ansi'; Surface = '/HostOverride WSALookupServiceNextA'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'network.host-pass-through'; Surface = '/HostOverride unrelated lookup pass-through'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'powershell.clm'; Surface = '/ClmOn, /ClmOff language mode, scripts, and descendants'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
-        @{ Id = 'amsi.scan-string'; Surface = '/DisableAmsi AmsiScanString'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }
-        @{ Id = 'amsi.scan-buffer'; Surface = '/DisableAmsi AmsiScanBuffer'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }
+        @{ Id = 'amsi.on'; Surface = '/AmsiOn native scanning and switch precedence'; Profile = 'Safe'; Test = 'CliAndConfig'; Gate = 'Amsi'; Required = $true }
+        @{ Id = 'amsi.scan-string'; Surface = '/AmsiOff AmsiScanString'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }
+        @{ Id = 'amsi.scan-buffer'; Surface = '/AmsiOff AmsiScanBuffer'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }
         @{ Id = 'identity.is-user-admin'; Surface = '/AdminImpersonate IsUserAnAdmin'; Profile = 'Admin'; Test = 'SecurityAndRights'; Required = $true }
         @{ Id = 'identity.check-token-membership'; Surface = '/AdminImpersonate CheckTokenMembership'; Profile = 'Admin'; Test = 'SecurityAndRights'; Required = $true }
         @{ Id = 'os.get-version-wide'; Surface = '/ServerEdition GetVersionExW'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }

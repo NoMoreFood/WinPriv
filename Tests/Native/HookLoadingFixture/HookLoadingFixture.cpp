@@ -1,10 +1,13 @@
 #include <windows.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 #include <iterator>
+#include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
@@ -633,6 +636,176 @@ __declspec(noinline) DWORD WINAPI MitigationReplacement(const DWORD value)
     return value * 5 + 11;
 }
 
+struct DetourThreadState final
+{
+    std::atomic<bool> stop = false;
+    std::atomic<DWORD> calls = 0;
+    std::atomic<DWORD> invalidValues = 0;
+    std::atomic<DWORD> createdThreads = 0;
+    HANDLE ready = nullptr;
+    HANDLE release = nullptr;
+};
+
+DWORD WINAPI DetourCallWorker(LPVOID parameter)
+{
+    auto& state = *static_cast<DetourThreadState*>(parameter);
+    auto volatile call = &MitigationOriginal;
+    while (!state.stop.load())
+    {
+        const DWORD value = call(11);
+        if (value != 40 && value != 66) ++state.invalidValues;
+        if (++state.calls % 256 == 0) Sleep(0);
+    }
+    return NO_ERROR;
+}
+
+DWORD WINAPI DetourChurnWorker(LPVOID parameter)
+{
+    auto& state = *static_cast<DetourThreadState*>(parameter);
+    while (!state.stop.load())
+    {
+        std::unique_ptr<void, decltype(&CloseHandle)> child(CreateThread(nullptr, 0, [](LPVOID context) -> DWORD {
+            auto& shared = *static_cast<DetourThreadState*>(context);
+            auto volatile call = &MitigationOriginal;
+            for (DWORD iteration = 0; iteration < 256; ++iteration)
+            {
+                const DWORD value = call(11);
+                if (value != 40 && value != 66) ++shared.invalidValues;
+                ++shared.calls;
+            }
+            return NO_ERROR;
+        }, parameter, 0, nullptr), CloseHandle);
+        if (!child) return GetLastError();
+        ++state.createdThreads;
+        if (WaitForSingleObject(child.get(), INFINITE) != WAIT_OBJECT_0) return GetLastError();
+    }
+    return NO_ERROR;
+}
+
+DWORD WINAPI DetourHeapWorker(LPVOID parameter)
+{
+    auto& state = *static_cast<DetourThreadState*>(parameter);
+    if (!HeapLock(GetProcessHeap())) return GetLastError();
+    SetEvent(state.ready);
+    WaitForSingleObject(state.release, INFINITE);
+    return HeapUnlock(GetProcessHeap()) ? NO_ERROR : GetLastError();
+}
+
+int TestThreadEnumeration(const wchar_t* scenario)
+{
+    const bool churn = wcscmp(scenario, L"churn") == 0;
+    const bool heapLock = wcscmp(scenario, L"heap-lock") == 0;
+    const bool inaccessible = wcscmp(scenario, L"inaccessible") == 0;
+    if (!churn && !heapLock && !inaccessible) return Fail(L"thread-scenario", ERROR_INVALID_PARAMETER);
+
+    using Handle = std::unique_ptr<void, decltype(&CloseHandle)>;
+    if (inaccessible)
+    {
+        // Disable inherited debug access so the empty thread DACL is enforced for every runner token.
+        std::unique_ptr<std::remove_pointer_t<HMODULE>, decltype(&FreeLibrary)> security(
+            LoadLibraryW(L"advapi32.dll"), FreeLibrary);
+        if (!security) return Fail(L"LoadLibraryW", GetLastError());
+        const auto openToken = reinterpret_cast<decltype(&OpenProcessToken)>(
+            GetProcAddress(security.get(), "OpenProcessToken"));
+        const auto lookupPrivilege = reinterpret_cast<decltype(&LookupPrivilegeValueW)>(
+            GetProcAddress(security.get(), "LookupPrivilegeValueW"));
+        const auto adjustPrivileges = reinterpret_cast<decltype(&AdjustTokenPrivileges)>(
+            GetProcAddress(security.get(), "AdjustTokenPrivileges"));
+        if (!openToken || !lookupPrivilege || !adjustPrivileges) return Fail(L"GetProcAddress", ERROR_PROC_NOT_FOUND);
+
+        HANDLE rawToken = nullptr;
+        if (!openToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &rawToken))
+            return Fail(L"OpenProcessToken", GetLastError());
+        Handle token(rawToken, CloseHandle);
+        TOKEN_PRIVILEGES privileges{ .PrivilegeCount = 1 };
+        if (!lookupPrivilege(nullptr, SE_DEBUG_NAME, &privileges.Privileges[0].Luid) ||
+            !adjustPrivileges(token.get(), FALSE, &privileges, 0, nullptr, nullptr))
+            return Fail(L"DisableDebugPrivilege", GetLastError());
+        const DWORD error = GetLastError();
+        if (error != NO_ERROR && error != ERROR_NOT_ALL_ASSIGNED) return Fail(L"DisableDebugPrivilege", error);
+    }
+
+    Handle ready(CreateEventW(nullptr, TRUE, FALSE, nullptr), CloseHandle);
+    Handle release(CreateEventW(nullptr, TRUE, FALSE, nullptr), CloseHandle);
+    if (!ready || !release) return Fail(L"CreateEventW", GetLastError());
+    DetourThreadState state;
+    state.ready = ready.get();
+    state.release = release.get();
+    std::vector<Handle> workers;
+    workers.reserve(5);
+    const auto stopWorkers = [&]() -> LONG {
+        state.stop = true;
+        SetEvent(release.get());
+        for (const auto& worker : workers)
+        {
+            if (WaitForSingleObject(worker.get(), 5000) != WAIT_OBJECT_0) return ERROR_TIMEOUT;
+            DWORD exitCode = NO_ERROR;
+            if (!GetExitCodeThread(worker.get(), &exitCode)) return GetLastError();
+            if (exitCode != NO_ERROR) return static_cast<LONG>(exitCode);
+        }
+        return NO_ERROR;
+    };
+    const auto fail = [&](const wchar_t* stage, LONG error) { stopWorkers(); return Fail(stage, error); };
+
+    // Keep peers executing the patched function throughout attachment and detachment.
+    for (DWORD index = 0; index < 4; ++index)
+    {
+        workers.emplace_back(CreateThread(nullptr, 0, DetourCallWorker, &state, 0, nullptr), CloseHandle);
+        if (!workers.back()) return fail(L"CreateThread", GetLastError());
+    }
+    while (state.calls.load() == 0) Sleep(1);
+
+    // Force thread churn, a held heap lock, or a peer that cannot be opened for suspension.
+    ACL emptyAcl{ ACL_REVISION, 0, sizeof(ACL), 0, 0 };
+    SECURITY_DESCRIPTOR descriptor{};
+    descriptor.Revision = SECURITY_DESCRIPTOR_REVISION;
+    descriptor.Control = SE_DACL_PRESENT;
+    descriptor.Dacl = &emptyAcl;
+    SECURITY_ATTRIBUTES attributes{ sizeof(attributes), &descriptor, FALSE };
+    const auto worker = churn ? DetourChurnWorker : heapLock ? DetourHeapWorker : DetourCallWorker;
+    DWORD peerId = 0;
+    workers.emplace_back(CreateThread(inaccessible ? &attributes : nullptr, 0, worker, &state, 0, &peerId),
+        CloseHandle);
+    if (!workers.back()) return fail(L"CreateThread", GetLastError());
+    if (heapLock && WaitForSingleObject(ready.get(), 5000) != WAIT_OBJECT_0)
+        return fail(L"HeapLock", ERROR_TIMEOUT);
+    if (inaccessible)
+    {
+        Handle denied(OpenThread(THREAD_SUSPEND_RESUME, FALSE, peerId), CloseHandle);
+        const DWORD error = GetLastError();
+        if (denied || error != ERROR_ACCESS_DENIED) return fail(L"thread-access", ERROR_INVALID_DATA);
+    }
+
+    auto target = &MitigationOriginal;
+    auto volatile call = &MitigationOriginal;
+    LONG commitError = NO_ERROR;
+    DWORD iterations = 0;
+    for (; iterations < 32; ++iterations)
+    {
+        for (const auto action : { winpriv::detours::action::attach, winpriv::detours::action::detach })
+        {
+            winpriv::detours::transaction transaction;
+            const LONG apply = transaction.apply(action, target, MitigationReplacement);
+            commitError = transaction.commit();
+            if (apply != NO_ERROR || commitError != NO_ERROR)
+            {
+                if (commitError == NO_ERROR) commitError = apply;
+                break;
+            }
+            const DWORD expected = action == winpriv::detours::action::attach ? 66 : 40;
+            if (call(11) != expected || target(11) != 40) ++state.invalidValues;
+        }
+        if (commitError != NO_ERROR) break;
+    }
+    const LONG joined = stopWorkers();
+    if (joined != NO_ERROR) return Fail(L"join-workers", joined);
+    std::wprintf(L"{\"schemaVersion\":1,\"scenario\":\"%ls\",\"iterations\":%lu,\"commitError\":%ld,"
+        L"\"calls\":%lu,\"createdThreads\":%lu,\"invalidValues\":%lu,\"originalPointer\":%ls,\"finalValue\":%lu}\n",
+        scenario, iterations, commitError, state.calls.load(), state.createdThreads.load(), state.invalidValues.load(),
+        target == &MitigationOriginal ? L"true" : L"false", call(11));
+    return 0;
+}
+
 int TestDynamicCodeAllocation()
 {
     PROCESS_MITIGATION_DYNAMIC_CODE_POLICY policy{};
@@ -788,6 +961,19 @@ int wmain(const int argumentCount, wchar_t* arguments[])
             return Fail(L"capability-mode", ERROR_INVALID_PARAMETER);
         return QueryDynamicCodeCapability(wcscmp(arguments[2], L"optout") == 0);
     }
+    if (argumentCount == 3 && wcscmp(arguments[1], L"--startup-timestamp") == 0)
+    {
+        LARGE_INTEGER counter{}, frequency{};
+        QueryPerformanceCounter(&counter);
+        QueryPerformanceFrequency(&frequency);
+        FILE* output = nullptr;
+        if (_wfopen_s(&output, arguments[2], L"w") != 0) return Fail(L"startup-output", ERROR_OPEN_FAILED);
+        std::fwprintf(output, L"%lld %lld\n", counter.QuadPart, frequency.QuadPart);
+        std::fclose(output);
+        return 0;
+    }
+    if (argumentCount == 3 && wcscmp(arguments[1], L"--thread-enumeration") == 0)
+        return TestThreadEnumeration(arguments[2]);
     if (argumentCount == 2 && wcscmp(arguments[1], L"--dynamic-code-allocation") == 0)
         return TestDynamicCodeAllocation();
     if (argumentCount == 3 && wcscmp(arguments[1], L"--dynamic-code-optout") == 0)

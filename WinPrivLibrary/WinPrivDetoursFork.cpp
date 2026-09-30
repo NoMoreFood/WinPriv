@@ -56,12 +56,13 @@ SOFTWARE.
 
 #include "WinPrivDetoursFork.h"
 
-#include <TlHelp32.h>
-
+#include <winternl.h>
+#include <algorithm>
 #include <climits>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -3332,9 +3333,19 @@ static void detour_resume_and_close_threads(
 static LONG detour_suspend_other_threads(
     DetourSuspendedThreads& threads)
 {
+    static const auto querySystemInformation = reinterpret_cast<decltype(&NtQuerySystemInformation)>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+    static const auto statusToError = reinterpret_cast<decltype(&RtlNtStatusToDosError)>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
+    if (querySystemInformation == NULL || statusToError == NULL) {
+        return ERROR_PROC_NOT_FOUND;
+    }
+
     const DWORD processId = GetCurrentProcessId();
     const DWORD currentThreadId = GetCurrentThreadId();
     DWORD transientRetries = 0;
+    std::vector<BYTE, DetourVirtualAllocator<BYTE>> snapshot;
+    const auto fail = [&threads](LONG error) { detour_resume_and_close_threads(threads); return error; };
 
     // Suspend newly discovered threads immediately, then enumerate again. Once
     // an enumeration finds no new thread, every peer that could create another
@@ -3344,147 +3355,152 @@ static LONG detour_suspend_other_threads(
         bool discoveredThread = false;
         bool retryEnumeration = false;
         LONG retryError = ERROR_RETRY;
-        const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snapshot == INVALID_HANDLE_VALUE) {
-            const LONG error = GetLastError();
-            detour_resume_and_close_threads(threads);
-            return error;
+
+        // Capture thread IDs in bulk without per-thread Toolhelp calls or heap allocation.
+        constexpr NTSTATUS lengthMismatch = static_cast<NTSTATUS>(0xC0000004UL);
+        ULONG snapshotBytes = 0;
+        NTSTATUS status = lengthMismatch;
+        SIZE_T requiredBytes = MM_ALLOCATION_GRANULARITY;
+        DWORD sizeRetries = 0;
+        while (status == lengthMismatch) {
+            if (requiredBytes > snapshot.size()) {
+                try { snapshot.resize(requiredBytes); }
+                catch (...) { return fail(ERROR_NOT_ENOUGH_MEMORY); }
+            }
+            status = querySystemInformation(SystemProcessInformation, snapshot.data(),
+                static_cast<ULONG>(snapshot.size()), &snapshotBytes);
+            if (status == lengthMismatch) {
+                if (++sizeRetries > DETOUR_THREAD_ENUMERATION_RETRY_LIMIT ||
+                    snapshot.size() > MAXDWORD / 2 || snapshotBytes > MAXDWORD - MM_ALLOCATION_GRANULARITY) {
+                    return fail(ERROR_NOT_ENOUGH_MEMORY);
+                }
+                requiredBytes = std::max<SIZE_T>(snapshot.size() * 2,
+                    static_cast<SIZE_T>(snapshotBytes) + MM_ALLOCATION_GRANULARITY);
+            }
+        }
+        if (status < 0) {
+            return fail(static_cast<LONG>(statusToError(status)));
+        }
+        if (snapshotBytes < sizeof(SYSTEM_PROCESS_INFORMATION) || snapshotBytes > snapshot.size()) {
+            return fail(ERROR_BAD_LENGTH);
         }
 
-        THREADENTRY32 entry{ .dwSize = sizeof(entry) };
-        BOOL more = Thread32First(snapshot, &entry);
-        while (more) {
-            if (entry.th32OwnerProcessID == processId &&
-                entry.th32ThreadID != currentThreadId) {
-
-                bool alreadyOpened = false;
-                for (const auto& opened : threads) {
-                    if (opened.threadId == entry.th32ThreadID) {
-                        alreadyOpened = true;
-                        break;
-                    }
+        // Walk process records, then inspect only this process's thread array.
+        const SYSTEM_PROCESS_INFORMATION* process = NULL;
+        SIZE_T processOffset = 0;
+        for (;;) {
+            const SIZE_T remaining = snapshotBytes - processOffset;
+            if (remaining < sizeof(SYSTEM_PROCESS_INFORMATION)) {
+                return fail(ERROR_BAD_LENGTH);
+            }
+            process = reinterpret_cast<const SYSTEM_PROCESS_INFORMATION*>(snapshot.data() + processOffset);
+            const SIZE_T recordBytes = process->NextEntryOffset != 0 ? process->NextEntryOffset : remaining;
+            if (recordBytes < sizeof(*process) || recordBytes > remaining) {
+                return fail(ERROR_BAD_LENGTH);
+            }
+            if (reinterpret_cast<ULONG_PTR>(process->UniqueProcessId) == processId) {
+                if (process->NumberOfThreads > (recordBytes - sizeof(*process)) / sizeof(SYSTEM_THREAD_INFORMATION)) {
+                    return fail(ERROR_BAD_LENGTH);
                 }
+                break;
+            }
+            if (process->NextEntryOffset == 0) {
+                return fail(ERROR_NOT_FOUND);
+            }
+            processOffset += process->NextEntryOffset;
+        }
 
-                if (!alreadyOpened) {
-                    try { threads.reserve(threads.size() + 1); }
-                    catch (...) {
-                        CloseHandle(snapshot); detour_resume_and_close_threads(threads);
-                        return ERROR_NOT_ENOUGH_MEMORY; }
-                    constexpr DWORD access = SYNCHRONIZE |
-                        THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME |
-                        THREAD_GET_CONTEXT | THREAD_SET_CONTEXT;
-                    HANDLE thread = OpenThread(access, FALSE, entry.th32ThreadID);
-                    if (thread != NULL) {
-                        // A thread ID from the snapshot can be reused before
-                        // OpenThread runs. Never suspend a recycled foreign ID.
-                        const DWORD openedProcessId = GetProcessIdOfThread(thread);
-                        if (openedProcessId == 0) {
-                            const LONG error = GetLastError();
-                            const DWORD wait = WaitForSingleObject(thread, 0);
-                            if (wait == WAIT_OBJECT_0 ||
-                                error == ERROR_INVALID_PARAMETER) {
-                                CloseHandle(thread);
-                                retryEnumeration = true;
-                                retryError = error;
-                            }
-                            else {
-                                CloseHandle(thread);
-                                CloseHandle(snapshot);
-                                detour_resume_and_close_threads(threads);
-                                return error;
-                            }
-                        }
-                        else if (openedProcessId != processId) {
-                            CloseHandle(thread);
-                            retryEnumeration = true;
-                        }
-                        else if (SuspendThread(thread) == MAXDWORD) {
-                            const LONG error = GetLastError();
-                            const DWORD wait = WaitForSingleObject(thread, 0);
-                            if (wait == WAIT_OBJECT_0 ||
-                                error == ERROR_INVALID_PARAMETER) {
-                                CloseHandle(thread);
-                                retryEnumeration = true;
-                                retryError = error;
-                            }
-                            else {
-                                CloseHandle(thread);
-                                CloseHandle(snapshot);
-                                detour_resume_and_close_threads(threads);
-                                return error;
-                            }
-                        }
-                        else {
-                            DetourSuspendedThread candidate{
-                                .threadId = entry.th32ThreadID,
-                                .handle = thread,
-                                .originalContext = {},
-                                .relocatedContext = {},
-                                .suspended = true,
-                                .contextChanged = false,
-                            };
-#if defined(_M_IX86)
-                            candidate.originalContext.ContextFlags = CONTEXT_CONTROL;
-#elif defined(_M_X64) || defined(_M_ARM64)
-                            candidate.originalContext.ContextFlags =
-                                CONTEXT_CONTROL | CONTEXT_INTEGER;
-#endif
-                            if (GetThreadContext(
-                                    thread, &candidate.originalContext)) {
-                                candidate.relocatedContext =
-                                    candidate.originalContext;
-                                threads.push_back(candidate);
-                                discoveredThread = true;
-                            }
-                            else {
-                                const LONG error = GetLastError();
-                                const DWORD wait = WaitForSingleObject(thread, 0);
-                                if (wait != WAIT_OBJECT_0) {
-                                    ResumeThread(thread);
-                                }
-                                CloseHandle(thread);
-                                if (wait == WAIT_OBJECT_0 ||
-                                    error == ERROR_INVALID_PARAMETER) {
-                                    retryEnumeration = true;
-                                    retryError = error;
-                                }
-                                else {
-                                    CloseHandle(snapshot);
-                                    detour_resume_and_close_threads(threads);
-                                    return error;
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        const LONG error = GetLastError();
-                        if (error == ERROR_INVALID_PARAMETER) {
-                            retryEnumeration = true;
-                            retryError = error;
-                        }
-                        else {
-                            CloseHandle(snapshot);
-                            detour_resume_and_close_threads(threads);
-                            return error;
-                        }
-                    }
+        const auto entries = reinterpret_cast<const SYSTEM_THREAD_INFORMATION*>(process + 1);
+        for (ULONG i = 0; i < process->NumberOfThreads; ++i) {
+            const DWORD threadId = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(entries[i].ClientId.UniqueThread));
+            if (threadId == currentThreadId) {
+                continue;
+            }
+            bool alreadyOpened = false;
+            for (const auto& opened : threads) {
+                if (opened.threadId == threadId) {
+                    alreadyOpened = true;
+                    break;
                 }
             }
+            if (alreadyOpened) {
+                continue;
+            }
 
-            entry.dwSize = sizeof(entry);
-            more = Thread32Next(snapshot, &entry);
+            try { threads.reserve(threads.size() + 1); }
+            catch (...) { return fail(ERROR_NOT_ENOUGH_MEMORY); }
+            constexpr DWORD access = SYNCHRONIZE | THREAD_QUERY_INFORMATION |
+                THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT;
+            std::unique_ptr<void, decltype(&CloseHandle)> thread(OpenThread(access, FALSE, threadId), CloseHandle);
+            if (!thread) {
+                const LONG error = GetLastError();
+                if (error != ERROR_INVALID_PARAMETER) {
+                    return fail(error);
+                }
+                retryEnumeration = true;
+                retryError = error;
+                continue;
+            }
+
+            // A thread ID from the snapshot can be reused before
+            // OpenThread runs. Never suspend a recycled foreign ID.
+            const DWORD openedProcessId = GetProcessIdOfThread(thread.get());
+            if (openedProcessId != processId) {
+                if (openedProcessId == 0) {
+                    const LONG error = GetLastError();
+                    if (WaitForSingleObject(thread.get(), 0) != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER) {
+                        return fail(error);
+                    }
+                    retryError = error;
+                }
+                retryEnumeration = true;
+                continue;
+            }
+            if (SuspendThread(thread.get()) == MAXDWORD) {
+                const LONG error = GetLastError();
+                if (WaitForSingleObject(thread.get(), 0) != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER) {
+                    return fail(error);
+                }
+                retryEnumeration = true;
+                retryError = error;
+                continue;
+            }
+
+            DetourSuspendedThread candidate{
+                .threadId = threadId,
+                .handle = thread.get(),
+                .originalContext = {},
+                .relocatedContext = {},
+                .suspended = true,
+                .contextChanged = false,
+            };
+#if defined(_M_IX86)
+            candidate.originalContext.ContextFlags = CONTEXT_CONTROL;
+#elif defined(_M_X64) || defined(_M_ARM64)
+            candidate.originalContext.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+#endif
+            if (!GetThreadContext(thread.get(), &candidate.originalContext)) {
+                const LONG error = GetLastError();
+                const DWORD wait = WaitForSingleObject(thread.get(), 0);
+                if (wait != WAIT_OBJECT_0) {
+                    ResumeThread(thread.get());
+                }
+                if (wait != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER) {
+                    return fail(error);
+                }
+                retryEnumeration = true;
+                retryError = error;
+                continue;
+            }
+            candidate.relocatedContext = candidate.originalContext;
+            threads.push_back(candidate);
+            (void)thread.release();
+            discoveredThread = true;
         }
 
-        const DWORD enumerationError = GetLastError();
-        CloseHandle(snapshot);
-        if (enumerationError != ERROR_NO_MORE_FILES) {
-            detour_resume_and_close_threads(threads);
-            return enumerationError;
-        }
         if (retryEnumeration) {
             if (++transientRetries > DETOUR_THREAD_ENUMERATION_RETRY_LIMIT) {
-                detour_resume_and_close_threads(threads);
-                return retryError;
+                return fail(retryError);
             }
             continue;
         }

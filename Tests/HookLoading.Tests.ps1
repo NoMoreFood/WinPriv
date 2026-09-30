@@ -329,3 +329,47 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
         }
     }
 }
+
+Describe 'WinPriv transaction thread enumeration (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeEach {
+        $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'thread-enumeration'
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+    }
+
+    AfterEach {
+        Remove-WinPrivSandbox -Sandbox $sandbox
+    }
+
+    It 'safely completes transactions with <Scenario>' -ForEach @(
+        @{ Scenario = 'churn' }, @{ Scenario = 'heap-lock' }, @{ Scenario = 'inaccessible' }
+    ) {
+        $capability = "detour.thread-$Scenario"
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id $capability -Architecture $Architecture `
+                -Reason 'The native transaction fixture is absent from the supplied binary root.'
+            return
+        }
+
+        Invoke-WinPrivCapability -Id $capability -Architecture $Architecture -Body {
+            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                -WorkingDirectory $sandbox.Working -TimeoutSeconds 30 -ArgumentList @('--thread-enumeration', $Scenario)
+            Assert-WinPrivInvocationSucceeded $result
+            $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+            $payload.scenario | Should -Be $Scenario
+            $payload.calls | Should -BeGreaterThan 0
+            $payload.invalidValues | Should -Be 0
+            $payload.originalPointer | Should -BeTrue
+            $payload.finalValue | Should -Be 40
+            if ($Scenario -eq 'inaccessible') {
+                $payload.commitError | Should -Be 5
+                $payload.iterations | Should -Be 0
+            }
+            else {
+                $payload.commitError | Should -Be 0
+                $payload.iterations | Should -Be 32
+            }
+            if ($Scenario -eq 'churn') { $payload.createdThreads | Should -BeGreaterThan 0 }
+            return $payload
+        }
+    }
+}

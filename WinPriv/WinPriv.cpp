@@ -606,8 +606,14 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			sRegistryOverride += L"N/A REG_BLOCK N/A ";
 		}
 
+		// instructs winpriv to use normal amsi scanning
+		else if (_wcsicmp(sArg.c_str(), L"/AmsiOn") == 0)
+		{
+			SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
+		}
+
 		// instructs winpriv to disable amsi scanning
-		else if (_wcsicmp(sArg.c_str(), L"/DisableAmsi") == 0)
+		else if (_wcsicmp(sArg.c_str(), L"/AmsiOff") == 0)
 		{
 			SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"1");
 		}

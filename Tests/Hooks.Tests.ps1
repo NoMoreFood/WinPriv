@@ -542,7 +542,7 @@ Describe 'WinPriv network and AMSI hooks (<Architecture>)' -Tag 'Safe' -ForEach 
     }
 
     It 'returns S_OK and CLEAN for AmsiScanString and AmsiScanBuffer' {
-        $result = Invoke-WinPrivProbe -Architecture $Architecture -WinPrivArguments @('/DisableAmsi') `
+        $result = Invoke-WinPrivProbe -Architecture $Architecture -WinPrivArguments @('/AmsiOff') `
             -Operation amsi -Arguments @{ content = 'WinPriv synthetic AMSI content'; contentName = 'WinPriv.Tests' } `
             -Sandbox $sandbox -TimeoutSeconds 25
         $supportedProperty = if ($null -ne $result.ProbeResult) {

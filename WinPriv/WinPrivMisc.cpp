@@ -71,33 +71,30 @@ std::wstring GetWinPrivHelp()
 	if (!WinPrivUsesConsoleSubsystem())
 	{
 		return std::wstring(PROJECT_NAME) +
-			L".exe [optional switches] <Command To Execute> \n" +
+			L".exe [optional switches] <Command to execute>\n" +
 			L"\n" +
-			L"See WinPrivCmd /Help to view optional switch information.";
+			L"Run WinPrivCmd.exe /Help for the full list of switches.";
 	}
 
 	// command line help
 	return std::wstring(PROJECT_NAME) +
-		LR"(.exe [optional switches] <Command To Execute>
+		LR"(.exe [optional switches] <Command to execute>
 
 WinPriv is a system administration utility that alters the runtime behavior of
 the specified process and its child processes. It does this by loading a
 supplemental library into memory to intercept and alter the behavior of
 common low-level functions such as registry and file system operations.
 
-WinPriv can be used for a variety of purposes including testing security
+WinPriv can be used for a variety of purposes, including testing security
 settings without altering system-wide policy, implementing security-related
 workarounds on a per-process basis instead of altering system-wide policy, and
 taking advantage of system privileges to perform file system auditing and
 reconfiguration.
 
-WinPriv comes in a normal version (WinPriv) and a console version (WinPrivCmd).
-The behavior of the subprocess is the same regardless of which version is used.
-These versions are provided in case the target program is a console program,
-in which case you will only be able to get its screen output if you use
-WinPrivCmd. Similarly, you may not wish to see the console window when
-targeting a non-console program, in which case it may be advantageous to use
-WinPriv.
+WinPriv is available as a GUI application (WinPriv) and a console application
+(WinPrivCmd). Both versions apply the same settings to the target process.
+Use WinPrivCmd for console programs whose output you need to see. Use WinPriv
+for programs that do not need a console window.
 
 Optional Switches
 =================
@@ -109,13 +106,11 @@ Optional Switches
 
 /LoadCommands <Path>
 
-   Specifies an additional config file to load command line paramters
-   from, similiar to automatically loaded configuration file but not
-   mandatory. The switches in the specified file are merged with any
-   remaining command-line arguments and processed as if they had been
-   provided directly on the command line.
+   Loads command-line parameters from an additional configuration file.
+   The switches in the file are merged with any remaining command-line
+   arguments and processed as if provided directly on the command line.
 
-   Examples:
+   Example:
 
 	  /LoadCommands C:\Config\MySettings.cfg
 
@@ -124,7 +119,7 @@ Optional Switches
    Enables one or more named Windows privileges for the target process. Use a
    comma-delimited list when enabling multiple privileges.
 
-   Examples:
+   Example:
 
 	  /WithPrivs SeDebugPrivilege,SeBackupPrivilege
 
@@ -147,22 +142,22 @@ Optional Switches
 /RegBlock <Registry Key Path>
 
    Specifies a registry key under which all values will be reported as
-   non-existent. When the application requests a particular value in the
+   nonexistent. When the application requests a particular value in the
    specified key or one of its subkeys, it will be reported as not found
    regardless of whether it actually exists in the registry.
 
-   Examples:
+   Example:
 
 	  /RegBlock HKCU\Software\Demo
 
 /MacOverride <MAC Address>
 
-   Specifies a physical network address that will be returned when the target
-   application makes a query to the system to provide its MAC addresses. Any
-   call to GetAdaptersAddresses, GetAdaptersInfo, and NetWkstaTransportEnum
-   is handled. The hex octets can be delimited by dashes, colons, or nothing.
+   Specifies the physical network address returned when the target application
+   queries the system for MAC addresses. Calls to GetAdaptersAddresses,
+   GetAdaptersInfo, and NetWkstaTransportEnum are intercepted. Hexadecimal
+   octets can be separated by dashes or colons, or written without separators.
 
-   Examples:
+   Example:
 
 	  /MacOverride 00-11-22-33-44-66
 
@@ -171,21 +166,21 @@ Optional Switches
    Specifies that any request to obtain the IP address for the specified target
    will instead receive the specified replacement IP address. This is done by
    intercepting calls to WSALookupServiceNext(), through which nearly all
-   address lookups ultimately occur. Be aware that due to special security
-   protections, this will not work for Internet Explorer and programs that use
-   Internet Explorer libraries, but should work for most other processes.
+   address lookups ultimately occur. Be aware that, due to special security
+   protections, this will not work for Internet Explorer or programs that use
+   its libraries, but it should work for most other processes.
 
    Examples:
 
 	  /HostOverride google.com yahoo.com
 	  /HostOverride google.com 127.0.0.1
 
-/FipsOn & /FipsOff
+/FipsOn, /FipsOff
 
-   This option will cause the system to report that Federal Information
-   Processing Standard enforcement is turned on or off, regardless of its
-   current setting on the system. This is a convenience option that actually
-   uses the /RegOverride functionality on the FIPS-related registry key.
+   These options cause the system to report that Federal Information
+   Processing Standards (FIPS) enforcement is enabled or disabled, regardless
+   of the current system setting. They use /RegOverride on the FIPS-related
+   registry key.
 
 /PolicyBlock
 
@@ -201,11 +196,11 @@ Optional Switches
    control lists on the file system are ignored. This allows an administrator
    to inspect and alter files without changing permissions or taking ownership.
 
-   Effective uses of this option include using command line utilities like
+   Effective uses of this option include using command-line utilities such as
    icacls.exe to inspect or alter permissions. Using this with cmd.exe or
    powershell.exe also provides a means to interact with secured areas.
 
-   Examples:
+   Example:
 
    Access detailed permissions under 'C:\System Volume Information':
    WinPrivCmd.exe /BypassFileSecurity icacls.exe
@@ -215,10 +210,10 @@ Optional Switches
 /BreakRemoteLocks
 
    This option attempts to break remote file locks if a file cannot be accessed
-   because it is opened by another program remotely. For example, this can be
-   used to allow programs like robocopy to mirror an area where the destination
-   system has an in-use file. This option will have no effect if the file is
-   in-use by a program on the same system where WinPriv is executed.
+   because it is open in a program on a remote system. For example, this can
+   allow programs such as robocopy to mirror an area where the destination
+   system has a file in use. This option has no effect if the file is in use
+   by a program on the same system as WinPriv.
 
 /MediumPlus
 
@@ -231,8 +226,8 @@ Optional Switches
 /AdminImpersonate
 
    This option causes any local administrator check using IsUserAnAdmin() or
-   CheckTokenMembership() to unconditionally succeed regardless of whether the
-   user is actually a member of the local administrator group.
+   CheckTokenMembership() to unconditionally succeed, regardless of whether
+   the user is actually a member of the local Administrators group.
 
 /ServerEdition
 
@@ -240,12 +235,18 @@ Optional Switches
    functions to indicate that the system is running a server edition of the
    operating system.
 
-/DisableAmsi
+/AmsiOn
+
+   This option preserves normal Antimalware Scan Interface (AMSI) scanning
+   for the target process and its child processes. It overrides an earlier
+   request to disable scanning without changing the machine configuration.
+
+/AmsiOff
 
    This option disables Antimalware Scan Interface (AMSI) scanning for the
    target process and its child processes.
 
-/ClmOn / /ClmOff
+/ClmOn, /ClmOff
 
    These options enable or disable PowerShell Constrained Language Mode (CLM)
    for the target process and its child processes by overriding PowerShell
@@ -253,54 +254,52 @@ Optional Switches
 
 /RecordCrypto <Directory>
 
-   This option records the data being input to common Windows encryption
-   functions and the data being output from common Windows decryption
-   functions. A separate file will be created for each operation in the
-   specified directory. If 'SHOW' is specified instead of a directory path,
-   information is output to the console or message boxes, depending on the
-   type of application.
+   This option records the input to common Windows encryption functions and
+   the output from common Windows decryption functions. A separate file is
+   created for each operation in the specified directory. If 'SHOW' is
+   specified instead of a directory path, information is output to the
+   console or message boxes, depending on the type of application.
 
 /SqlConnectShow
 
-   This option will display the ODBC connection parameters immediately before
-   a connection operation occurs.
+   This option displays the ODBC connection parameters immediately before a
+   connection operation occurs.
 
 /SqlConnectSearchReplace <SearchString> <ReplaceString>
 
-   This option performs a search and replace on an ODBC connection string prior
-   to passing it to the connection Open() function. The search string is
-   parsed as a regular expression.
+   This option searches for and replaces text in an ODBC connection string
+   before passing it to the connection's Open() function. The search string
+   is parsed as a regular expression.
 
-   Examples:
+   Example:
 
    WinPrivCmd.exe /SqlConnectSearchReplace
 	  Provider=SQLOLEDB Provider=SQLNCLI11 LegacyApplication.exe
 
 /KillProcess <ProcessName>
 
-   Kills the process with the specified name prior to running the target. This
-   is useful if the target has logic to prevent multiple instances from running
-   and needs to be terminated before the effects of a WinPriv session can be
-   effective.
+   Terminates the process with the specified name before running the target.
+   This is useful when the target prevents multiple instances and an existing
+   instance must be stopped before a new instance can run with WinPriv's
+   settings.
 
 /ExtractLibrary
 
-   This option extracts the embedded 32-bit and 64-bit libraries to the
-   directory where WinPriv is running. These are normally dynamically extracted
-   to the user's temporary directory. If WinPriv finds these libraries in the
-   directory where it is running, it will use those instead of writing them
-   to the temporary directory.
+   This option extracts the embedded x86, x64, and ARM64 libraries to the
+   directory containing the WinPriv executable. The libraries are normally
+   extracted to the user's temporary directory. If all three libraries are
+   beside the executable, WinPriv uses those copies instead.
 
 /WindowStyle <Style>
 
-   This option will launch the target process with the specified window style:
-   NoActive, Hidden, Maximized, Minimized, MinimizedNoActive
+   This option launches the target process with the specified window style:
+   NoActive, Hidden, Maximized, Minimized, or MinimizedNoActive.
 
 /UseShellExecute
 
-   This option will launch the target process with the ShellExecute() function
-   instead of CreateProcess(). This can be useful if launching an application
-   that is registered on the system but not in the system path.
+   This option launches the target process with ShellExecuteEx() instead of
+   CreateProcess(). This is useful for launching an application that is
+   registered on the system but not in the system path.
 
 /ShowMessage <Message>
 
@@ -310,7 +309,7 @@ Optional Switches
 /AskMessage <Message>
 
    This option displays a Yes/No message box with the specified message before
-   launching the target process. If No is clicked, execution is cancelled.
+   launching the target process. If you click No, execution is cancelled.
    The caption of the message box is "Message".
 
 /MeasureTime
@@ -320,13 +319,13 @@ Optional Switches
 
 /ListPrivileges
 
-   This option displays a list of available privileges and permissions.
+   This option displays a list of available privilege names and descriptions.
 
 /GrantRight <Right> <UserName>
 
    Grants the specified LSA account right or privilege to the named user or
    group account on the local machine. The right can be any privilege
-   constant (e.g. SeDebugPrivilege) or logon-right constant (e.g.
+   constant (e.g., SeDebugPrivilege) or a logon-right constant (e.g.,
    SeInteractiveLogonRight). Administrator rights are required. This
    operation takes effect immediately for new logon sessions.
 
@@ -366,32 +365,32 @@ Optional Switches
 
    Grants all system privileges and non-deny logon rights to the named user
    or group account. This includes every privilege enumerated on the local
-   machine (e.g. SeDebugPrivilege, SeShutdownPrivilege) as well as all
+   machine (e.g., SeDebugPrivilege, SeShutdownPrivilege) as well as all
    allow-logon rights. Deny-logon rights are not granted. Administrator
    rights are required. This operation takes effect immediately for new
    logon sessions.
 
 /RunAsConsoleUser, /RunAsConsoleUserNoWait
 
-   Runs the specified program as the user that is logged into the console.
-   If no user is logged into the console, the first active remote user
-   session is used. This can be useful when WinPriv is running under a system
-   context such as a scheduled task or system management agent.
-   With /RunAsConsoleUserNoWait, WinPriv will return immediately after the
-   process is started.
+   Runs the specified program as the user logged in at the console. If no
+   user is logged in at the console, the first active remote user session
+   is used. This can be useful when WinPriv runs in a system context, such
+   as a scheduled task or system management agent.
+   With /RunAsConsoleUserNoWait, WinPriv returns immediately after the
+   process starts.
 
 /RunAsUser [UserName], /RunAsUserNoWait [UserName]
 
    Runs the specified program as the specified user. The user must be logged
-   into the system at the console or remotely. This can be useful when WinPriv
-   is running under a system context such as a scheduled task or system
-   management agent. With /RunAsUserNoWait, WinPriv will return immediately 
-   after the process is started.
+   in to the system at the console or remotely. This can be useful when WinPriv
+   runs in a system context, such as a scheduled task or system management
+   agent. With /RunAsUserNoWait, WinPriv returns immediately after the
+   process starts.
 
 Other Notes
-=========================
-- Multiple switches can be specified in a single command. For example, one
-  can use multiple /RegBlock and /RegOverride switches to block and override
-  a specified set of registry keys and values for a target program.
+===========
+- Multiple switches can be specified in a single command. For example, you
+  can combine multiple /RegBlock and /RegOverride switches to block and
+  override a set of registry keys and values for the target program.
 )";
 }

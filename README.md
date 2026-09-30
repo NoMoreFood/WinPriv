@@ -201,8 +201,8 @@ checks accordingly. This changes the results of those APIs, not the installed Wi
 Set the duplicated session-user token to Medium Plus integrity. Place this before a `/RunAsConsoleUser`,
 `/RunAsUser`, or corresponding `NoWait` switch. It has no effect on the normal hooked launch path.
 
-**`/DisableAmsi`**  
-Make intercepted `AmsiScanBuffer` and `AmsiScanString` calls report clean content in hooked processes.
+**`/AmsiOn`** / **`/AmsiOff`**  
+Preserve or disable Antimalware Scan Interface (AMSI) scanning for the target process and its child processes. The last AMSI switch wins. Intercepted `AmsiScanBuffer` and `AmsiScanString` calls report clean content when disabled.
 
 **`/ClmOn`** / **`/ClmOff`**  
 Enable or disable PowerShell Constrained Language Mode (CLM) for the target process and its child processes by overriding PowerShell policy queries. The last CLM switch wins. The machine policy is unchanged.

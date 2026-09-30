@@ -3,8 +3,8 @@
 BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
     $documentedSwitches = @(
-        '/AdminImpersonate', '/AskMessage', '/BreakRemoteLocks', '/BypassFileSecurity',
-        '/ClearDenyRights', '/ClmOn', '/ClmOff', '/DisableAmsi', '/ExtractLibrary', '/FipsOff', '/FipsOn',
+        '/AdminImpersonate', '/AmsiOff', '/AmsiOn', '/AskMessage', '/BreakRemoteLocks', '/BypassFileSecurity',
+        '/ClearDenyRights', '/ClmOn', '/ClmOff', '/ExtractLibrary', '/FipsOff', '/FipsOn',
         '/GrantAllRights', '/GrantRight', '/Help', '/HostOverride', '/KillProcess',
         '/ListPrivileges', '/LoadCommands', '/MacOverride', '/MeasureTime', '/MediumPlus',
         '/PolicyBlock', '/RecordCrypto', '/RegBlock', '/RegOverride', '/RevokeRight',
@@ -81,6 +81,44 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
             Assert-WinPrivInvocationSucceeded $window
             $window.ProbeResult.result.showWindow | Should -Be 0
             return @{ HelpExitCode = $help.ExitCode; ShowWindow = $window.ProbeResult.result.showWindow }
+        }
+    }
+
+    It 'preserves native AMSI scanning with /AmsiOn and overrides earlier settings' {
+        $arguments = @{ content = 'WinPriv synthetic AMSI content'; contentName = 'WinPriv.Tests' }
+        $baseline = Invoke-WinPrivProbe -Architecture $Architecture -Operation amsi -Arguments $arguments `
+            -Sandbox $sandbox -TimeoutSeconds 25
+        Assert-WinPrivInvocationSucceeded $baseline
+        if (-not $baseline.ProbeResult.supported) {
+            Skip-WinPrivCapability -Id 'amsi.on' -Architecture $Architecture -Reason $baseline.ProbeResult.reason
+            return
+        }
+
+        Invoke-WinPrivCapability -Id 'amsi.on' -Architecture $Architecture -Body {
+            $config = Join-Path $sandbox.Root 'amsi-on.cfg'
+            [IO.File]::WriteAllText($config, "/AmsiOff`r`n", [Text.UTF8Encoding]::new($false))
+            foreach ($launcher in @('WinPrivCmd', 'WinPriv')) {
+                foreach ($switches in @(
+                    @{ Arguments = @('/AmsiOn') },
+                    @{ Arguments = @('/AmsiOff', '/aMsIoN') },
+                    @{ Arguments = @('/LoadCommands', $config, '/AmsiOn') }
+                )) {
+                    $result = Invoke-WinPrivProbe -Architecture $Architecture -Launcher $launcher `
+                        -WinPrivArguments $switches.Arguments -Operation amsi -Arguments $arguments `
+                        -Sandbox $sandbox -TimeoutSeconds 25
+                    Assert-WinPrivInvocationSucceeded $result
+                    $result.ProbeResult.supported | Should -BeTrue
+                    foreach ($callName in @('stringValid', 'bufferValid', 'stringInvalid', 'bufferInvalid')) {
+                        $result.ProbeResult.result.$callName.hresult |
+                            Should -Be $baseline.ProbeResult.result.$callName.hresult
+                        $result.ProbeResult.result.$callName.result |
+                            Should -Be $baseline.ProbeResult.result.$callName.result
+                    }
+                    $result.ProbeResult.result.stringInvalid.hresult | Should -Not -Be 0
+                    $result.ProbeResult.result.bufferInvalid.hresult | Should -Not -Be 0
+                }
+            }
+            return $baseline.ProbeResult
         }
     }
 
