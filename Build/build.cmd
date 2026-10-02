@@ -101,15 +101,11 @@ FOR %%A IN (x86 x64 ARM64) DO (
         IF ERRORLEVEL 1 EXIT /B 1
     )
 )
-MD "%STAGEDIR%\licenses"
-IF ERRORLEVEL 1 EXIT /B 1
-COPY /Y "%BINDIR%..\LICENSE" "%STAGEDIR%\licenses\WinPriv-LICENSE" >NUL
-IF ERRORLEVEL 1 EXIT /B 1
 
 :: zip up executatables
 PUSHD "%STAGEDIR%"
 IF ERRORLEVEL 1 EXIT /B 1
-"%SEVENZIP%" a -tzip -mm=Deflate -mx=9 WinPriv.zip x86 x64 ARM64 licenses
+"%SEVENZIP%" a -tzip -mm=Deflate -mx=9 WinPriv.zip x86 x64 ARM64
 SET ZIPRESULT=%ERRORLEVEL%
 POPD
 IF NOT "%ZIPRESULT%"=="0" EXIT /B 1

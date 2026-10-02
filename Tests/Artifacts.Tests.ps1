@@ -149,7 +149,7 @@ Describe 'WinPriv embedded payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-
 }
 
 Describe 'WinPriv release package' -Tag 'Safe' {
-    It 'packages six launchers, the license, and complete hash entries in an isolated tree' {
+    It 'packages six launchers and complete hash entries in an isolated tree' {
         $runtimeArchitecture = @(Get-WinPrivTestArchitectures)[0]
         $sandbox = New-WinPrivSandbox -Architecture $runtimeArchitecture -Purpose 'package-staging'
         try {
@@ -160,7 +160,6 @@ Describe 'WinPriv release package' -Tag 'Safe' {
                 $build = Join-Path $root 'Build'
                 New-Item -ItemType Directory -Path $build -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $env:WINPRIV_TEST_SOURCE_ROOT 'Build\build.cmd') -Destination $build
-                Copy-Item -LiteralPath (Join-Path $env:WINPRIV_TEST_SOURCE_ROOT 'LICENSE') -Destination $root
                 foreach ($architecture in @('x86', 'x64', 'ARM64')) {
                     $destination = Join-Path $build $architecture
                     New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -206,7 +205,6 @@ Describe 'WinPriv release package' -Tag 'Safe' {
                     foreach ($architecture in @('x86', 'x64', 'ARM64')) {
                         $expectedEntries += "$architecture/WinPriv.exe", "$architecture/WinPrivCmd.exe"
                     }
-                    $expectedEntries += 'licenses/WinPriv-LICENSE'
                     @($entries | Where-Object { -not $_.EndsWith('/') } | Sort-Object) |
                         Should -Be @($expectedEntries | Sort-Object)
                 }
