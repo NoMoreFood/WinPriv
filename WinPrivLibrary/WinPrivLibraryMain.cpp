@@ -3,23 +3,18 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
-#include <Windows.h>
+#include "WinPrivLibrary.h"
 #include <bcrypt.h>
 #include <sddl.h>
 #include <array>
 #include <cwchar>
 #include <vector>
 
-#include "WinPrivDetoursFork.h"
-#include "WinPrivShared.h"
-
 #pragma comment(lib,"ntdll.lib")
 #pragma comment(lib,"bcrypt.lib")
 #pragma comment(lib,"advapi32.lib")
 
-void DllExtraAttachDetach(winpriv::detours::action requestedAction);
-
-namespace
+namespace winpriv::library
 {
 	std::array<CHAR, MAX_PATH + 1> detourLibrary{};
 	std::array<HANDLE, 4> detourBundleLocks{};
@@ -37,11 +32,11 @@ namespace
 	auto trueCreateProcessW = &CreateProcessW;
 
 	constexpr GUID winPrivPayloadGuid{
-		0x04c36f50, 0xf799, 0x4b15,
-		{ 0x90, 0x34, 0x69, 0x82, 0x43, 0xa9, 0xbc, 0x21 } };
+		0x3e72189e, 0xf3b2, 0x48a9,
+		{ 0x8b, 0xd1, 0xa2, 0xfa, 0x98, 0x4f, 0x74, 0x31 } };
 	// The GUID versions this schema. Its data is one NUL-terminated UTF-16
 	// value per name below, in the same fixed order.
-	constexpr std::array<LPCWSTR, 18> winPrivSettingNames{
+	constexpr std::array<LPCWSTR, 19> winPrivSettingNames{
 		WINPRIV_EV_RELAUNCH_MODE,
 		WINPRIV_EV_REG_OVERRIDE,
 		WINPRIV_EV_MAC_OVERRIDE,
@@ -60,6 +55,7 @@ namespace
 		WINPRIV_EV_MEDIUM_PLUS,
 		WINPRIV_EV_CLM,
 		WINPRIV_EV_MOCK_TIME,
+		WINPRIV_EV_FILE_RULES,
 	};
 
 	bool CaptureWinPrivPayload(std::vector<WCHAR>& payload) noexcept
@@ -732,47 +728,35 @@ namespace
 
 EXTERN_C BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved)
 {
+	using namespace winpriv::library;
+
 	if (dwReason == DLL_PROCESS_ATTACH)
 	{
-		if (DetourIsHelperProcess())
-		{
-			return TRUE;
-		}
+		if (DetourIsHelperProcess()) return TRUE;
 
+		// Restore inherited settings and hold the injected library bundle open.
 		(void)DetourRestoreAfterWith();
-		if (!ApplyInjectedWinPrivPayload())
-		{
-			return FALSE;
-		}
-		if (!SetDetourLibraryPath(hinst))
-		{
-			return FALSE;
-		}
+		if (!ApplyInjectedWinPrivPayload() || !SetDetourLibraryPath(hinst)) return FALSE;
 
+		// Install feature and child-process hooks in one transaction.
 		winpriv::detours::transaction transaction;
-		if (!transaction)
+		if (!transaction || !DllExtraAttachDetach(winpriv::detours::action::attach))
 		{
 			CloseDetourBundleLocks();
 			return FALSE;
 		}
-
-		DllExtraAttachDetach(winpriv::detours::action::attach);
 		(void)transaction.apply(winpriv::detours::action::attach, trueCreateProcessA, HookCreateProcessA);
 		(void)transaction.apply(winpriv::detours::action::attach, trueCreateProcessW, HookCreateProcessW);
 		const LONG result = transaction.commit();
-		if (result != NO_ERROR)
-		{
-			CloseDetourBundleLocks();
-		}
+		if (result != NO_ERROR) CloseDetourBundleLocks();
 		return result == NO_ERROR;
 	}
-	else if (dwReason == DLL_PROCESS_DETACH)
-	{
-		if (reserved != nullptr)
-		{
-			return TRUE;
-		}
 
+	if (dwReason == DLL_PROCESS_DETACH)
+	{
+		if (reserved != nullptr) return TRUE;
+
+		// Remove hooks before releasing the library bundle during explicit unload.
 		winpriv::detours::transaction transaction;
 		if (!transaction)
 		{

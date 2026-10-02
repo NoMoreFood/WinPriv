@@ -188,6 +188,16 @@ Optional Switches
    HKLM\Software\Policies to be blocked. This is a convenience option that
    actually uses the /RegBlock functionality.
 
+/FileRedirect <Source Path> <Destination Path>
+
+   Redirects file and directory access from the source to the destination.
+   Directory rules also redirect all descendants, including new files.
+   Reads and writes use the destination; source contents are not copied.
+
+   This switch can be repeated. Paths are case-insensitive and relative
+   paths are resolved from WinPriv's working directory. The longest matching
+   path wins; the last rule wins for equal paths. Redirects apply once.
+
 /BypassFileSecurity
 
    This option causes the target process to enable the backup and restore

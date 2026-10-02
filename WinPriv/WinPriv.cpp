@@ -149,6 +149,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
+	SetEnvironmentVariable(WINPRIV_EV_FILE_RULES, L"");
 	SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_CLM, L"");
 	SetEnvironmentVariable(WINPRIV_EV_MOCK_TIME, L"");
@@ -166,6 +167,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 	// registry override parameters populated by command line args
 	std::wstring sRegistryOverride;
+
+	// file and directory rules populated by command line args
+	std::wstring sFileRules;
 
 	// host override parameters populated by command line args
 	std::wstring sHostOverride;
@@ -514,6 +518,31 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			std::wstring sMacAddr(aArgv[iArg + 1]);
 			std::erase_if(sMacAddr, [](const wchar_t c) { return c == ':' || c == '-'; });
 			SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str());
+			iArg += iArgsRequired;
+		}
+
+		// redirect a file path and its descendants
+		else if (_wcsicmp(sArg.c_str(), L"/FileRedirect") == 0)
+		{
+			constexpr int iArgsRequired = 2;
+			if (iArg + iArgsRequired >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+
+			// Resolve paths before launching so descendants retain the same rules after changing directories.
+			std::vector<std::wstring> vPaths(2);
+			for (int iPath = 0; iPath < iArgsRequired; ++iPath)
+			{
+				vPaths[iPath] = ResolveFileRulePath(aArgv[iArg + iPath + 1]);
+				if (vPaths[iPath].empty())
+				{
+					PrintMessage(L"ERROR: Invalid file path specified for: %s\n", sArg.c_str());
+					return __LINE__;
+				}
+			}
+			sFileRules += ArgvToCommandLine(0, 1, { vPaths[0].data(), vPaths[1].data() }) + L" ";
 			iArg += iArgsRequired;
 		}
 
@@ -907,6 +936,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// setup the registry override and block values to pass to child processes
 	sRegistryOverride = TrimString(sRegistryOverride, L' ');
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, sRegistryOverride.c_str());
+
+	// pass the complete ordered file rules to child processes
+	if (!SetEnvironmentVariableW(WINPRIV_EV_FILE_RULES, TrimString(sFileRules, L' ').c_str()))
+	{
+		PrintMessage(L"ERROR: Could not store file rules (error %lu).\n", GetLastError());
+		return __LINE__;
+	}
 
 	// setup the host override values to pass to child processes
 	sHostOverride = TrimString(sHostOverride, L' ');

@@ -48,6 +48,18 @@
         @{ Id = 'registry.fips-off'; Surface = '/FipsOff'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'registry.policy-block'; Surface = '/PolicyBlock'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
 
+        # Injected file and directory behavior.
+        @{ Id = 'filesystem.redirect-file'; Surface = '/FileRedirect file reads, attributes, writes, and deletion'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.redirect-directory'; Surface = '/FileRedirect directory descendants and relative handles'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.path-syntax'; Surface = 'relative, device, UNC, extended, and long file paths'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.rule-order'; Surface = 'file rule precedence and configuration paths'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.redirect-mutation'; Surface = 'file rename and hard-link destinations'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.rule-propagation'; Surface = 'file rules in descendants with replacement environments'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.redirect-rename-handle'; Surface = 'relative directory handles after rename'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.redirect-junction'; Surface = 'relative directory handles through junction destinations'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.redirect-stream'; Surface = 'native stream renames in redirected files'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+        @{ Id = 'filesystem.redirect-duplicate'; Surface = 'directory duplication without process query access'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
+
         # Explicit native caller loading paths for an inline detour.
         @{ Id = 'detour.load-time-import'; Surface = 'RegQueryValueExW through a normal PE import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.delay-load-import'; Surface = 'RegQueryValueExW through an MSVC delay-load import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }

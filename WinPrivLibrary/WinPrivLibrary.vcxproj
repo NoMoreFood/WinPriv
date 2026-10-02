@@ -193,6 +193,7 @@
       <AdditionalOptions>/Gw /Zc:preprocessor /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="WinPrivLibraryDetours.cpp" />
+    <ClCompile Include="WinPrivLibraryFiles.cpp" />
     <ClCompile Include="WinPrivLibraryDetoursCom.c" />
     <ClCompile Include="WinPrivLibraryMain.cpp" />
     <ClCompile Include="WinPrivLibraryTime.cpp" />

@@ -608,6 +608,15 @@ try {
                 $path,
                 $data)
         }
+        'file-paths' {
+            $result = @(foreach ($entry in (Get-ArgumentValue -Name 'requests' -DefaultValue @())) {
+                $request = @{}
+                foreach ($property in $entry.PSObject.Properties) { $request[$property.Name] = $property.Value }
+                [WinPrivProbe.Native]::RunFilePath([string]$request['action'], [string]$request['path'],
+                    [string]$request['target'], [string]$request['root'], [bool]$request['duplicateRoot'],
+                    [string]$request['duplicateProcess'], [bool]$request['closeSource'])
+            })
+        }
         'native-file' {
             $result = [WinPrivProbe.Native]::RunNativeFile(
                 [string](Get-ArgumentValue -Name 'api' -DefaultValue 'NtCreateFile'),

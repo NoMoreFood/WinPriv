@@ -23,6 +23,13 @@ BOOL GrantAllRights(const std::wstring& sAccountName);
 std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
 void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset);
+std::wstring ResolveFileRulePath(std::wstring path);
+
+template <typename Function>
+Function LoadNtFunction(LPCSTR name) noexcept
+{
+	return reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), name));
+}
 #endif
 
 //
@@ -31,6 +38,7 @@ bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLO
 
 #define WINPRIV_EV_RELAUNCH_MODE L"_WINPRIV_RELAUNCH_PHASE_"
 #define WINPRIV_EV_REG_OVERRIDE L"_WINPRIV_REG_OVERRIDE_"
+#define WINPRIV_EV_FILE_RULES L"_WINPRIV_FILE_RULES_"
 #define WINPRIV_EV_MAC_OVERRIDE L"_WINPRIV_MAC_OVERRIDE_"
 #define WINPRIV_EV_BACKUP_RESTORE L"_WINPRIV_BACKUP_RESTORE_"
 #define WINPRIV_EV_DISABLE_AMSI L"_WINPRIV_DISABLE_AMSI_"

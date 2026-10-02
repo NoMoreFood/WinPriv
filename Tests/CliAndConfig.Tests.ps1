@@ -4,8 +4,8 @@ BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
     $documentedSwitches = @(
         '/AdminImpersonate', '/AmsiOff', '/AmsiOn', '/AskMessage', '/BreakRemoteLocks', '/BypassFileSecurity',
-        '/ClearDenyRights', '/ClmOn', '/ClmOff', '/ExtractLibrary', '/FipsOff', '/FipsOn',
-        '/GrantAllRights', '/GrantRight', '/Help', '/HostOverride', '/KillProcess',
+        '/ClearDenyRights', '/ClmOn', '/ClmOff', '/ExtractLibrary', '/FileRedirect',
+        '/FipsOff', '/FipsOn', '/GrantAllRights', '/GrantRight', '/Help', '/HostOverride', '/KillProcess',
         '/ListPrivileges', '/LoadCommands', '/MacOverride', '/MeasureTime', '/MediumPlus', '/MockTime',
         '/PolicyBlock', '/RecordCrypto', '/RegBlock', '/RegOverride', '/RevokeRight',
         '/RunAsConsoleUser', '/RunAsConsoleUserNoWait', '/RunAsUser', '/RunAsUserNoWait',
@@ -138,6 +138,12 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
                 @{ Arguments = [string[]]@('/MockTime') },
                 @{ Arguments = [string[]]@('/RegOverride', 'HKCU\Software') },
                 @{ Arguments = [string[]]@('/RegBlock') },
+                @{ Arguments = [string[]]@('/FileRedirect') },
+                @{ Arguments = [string[]]@('/FileRedirect', 'source') },
+                @{ Arguments = [string[]]@('/FileRedirect', 'source', '') },
+                @{ Arguments = [string[]]@('/FileRedirect', '', 'destination') },
+                @{ Arguments = [string[]]@('/FileRedirect', '*.txt', 'destination') },
+                @{ Arguments = [string[]]@('/FileRedirect', 'source', '*.txt') },
                 @{ Arguments = [string[]]@('/WindowStyle') },
                 @{ Arguments = [string[]]@('/HostOverride', 'source.invalid') },
                 @{ Arguments = [string[]]@('/RecordCrypto') },

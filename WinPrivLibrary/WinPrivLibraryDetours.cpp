@@ -3,13 +3,8 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
-#define UMDF_USING_NTSTATUS
-#include <ntstatus.h>
-
 #define _WINSOCKAPI_
-#include <Windows.h>
-#include <winternl.h>
-#include "WinPrivDetoursFork.h"
+#include "WinPrivLibrary.h"
 #include <cstdio>
 #include <conio.h>
 #include <ShlObj.h>
@@ -36,162 +31,9 @@
 #include <cerrno>
 #include <limits>
 
-#include "WinPrivShared.h"
-#include "WinPrivLibrary.h"
-
 #pragma comment(lib,"bcrypt.lib")
 #pragma comment(lib,"amsi.lib")
 #pragma comment(lib,"wldp.lib")
-
-//   ___         ___     __   __   ___
-//  |__  | |    |__     /  \ |__) |__  |\ |
-//  |    | |___ |___    \__/ |    |___ | \|
-//
-
-static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
-{
-	// valid path formats
-	static const std::wregex tRegexLocal(LR"(\\\?\?\\(.*))", std::wregex::optimize);
-	static const std::wregex tRegexUnc(LR"(\\\?\?\\UNC\\([^\\]+?)\\([^\\]+?)\\(.*))", std::wregex::optimize);
-
-	std::wstring sComputerName;
-	std::wstring sPath;
-
-	const std::wstring sFileName(sFileNameUnicodeString->Buffer, sFileNameUnicodeString->Length / sizeof(WCHAR));
-
-	// see if the path looks like a unc path
-	std::wsmatch tMatches;
-	if (std::regex_match(sFileName, tMatches, tRegexUnc))
-	{
-		// extract the important parts of the regular expression result
-		sComputerName = tMatches[1].str();
-		const std::wstring sShareName = tMatches[2].str();
-		const std::wstring sLocalPath = tMatches[3].str();
-
-		// get the real path name using the computer and share name
-		SmartPointer<PSHARE_INFO_502> tShareInfo(NetApiBufferFree, nullptr);
-		if (NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(), 502, (LPBYTE*)&tShareInfo) != NERR_Success || tShareInfo == nullptr)
-			return false;
-		const size_t iSharePathLength = tShareInfo->shi502_path == nullptr ? 0 : wcslen(tShareInfo->shi502_path);
-		if (iSharePathLength == 0) return false;
-		const bool bNeedsBackslash = tShareInfo->shi502_path[iSharePathLength - 1] != L'\\';
-		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
-	}
-
-	// see if the path looks like a local path
-	else if (std::regex_match(sFileName, tMatches, tRegexLocal))
-	{
-		sPath = tMatches[1].str();
-	}
-
-	// unrecognized path type
-	else
-	{
-		return false;
-	}
-
-	// loop through the files matching the path
-	DWORD iClosedFiles = 0;
-	DWORD iStatus = 0;
-	DWORD iEntriesRead = 0;
-	DWORD iReturned = 0;
-	DWORD_PTR hHandle = 0;
-	std::vector<DWORD> tFileIds;
-	SmartPointer<PFILE_INFO_3> tFileInfo(NetApiBufferFree, nullptr);
-	while ((iStatus = NetFileEnum(sComputerName.empty() ? nullptr : (LPWSTR)sComputerName.c_str(),
-		(LPWSTR)sPath.c_str(), nullptr, 3, (LPBYTE*)&tFileInfo,
-		MAX_PREFERRED_LENGTH, &iEntriesRead, &iReturned, &hHandle)) == NERR_Success || iStatus == ERROR_MORE_DATA)
-	{
-		if (iEntriesRead == 0) break;
-
-		// put the files into a vector so we can close them all at once and not
-		// interrupt the enumeration operation
-		for (DWORD iEntry = 0; iEntry < iEntriesRead; iEntry++)
-		{
-			if (tFileInfo[iEntry].fi3_pathname != nullptr &&
-				CompareStringOrdinal(tFileInfo[iEntry].fi3_pathname, -1,
-					sPath.c_str(), -1, TRUE) == CSTR_EQUAL)
-			{
-				tFileIds.push_back(tFileInfo[iEntry].fi3_id);
-			}
-		}
-		tFileInfo.Cleanup();
-		if (iStatus != ERROR_MORE_DATA) break;
-	}
-
-	// close the open files
-	for (const DWORD iFileId : tFileIds)
-	{
-		if (NetFileClose(sComputerName.empty() ? nullptr : (LPWSTR)sComputerName.c_str(),
-			iFileId) == NERR_Success)
-		{
-			iClosedFiles++;
-		}
-	}
-	return iClosedFiles > 0;
-}
-
-static decltype(&NtOpenFile) TrueNtOpenFile = (decltype(&NtOpenFile))
-GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtOpenFile");
-static decltype(&NtCreateFile) TrueNtCreateFile = (decltype(&NtCreateFile))
-GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtCreateFile");
-
-EXTERN_C NTSTATUS NTAPI DetourNtOpenFile(OUT PHANDLE FileHandle,
-	IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, OUT PIO_STATUS_BLOCK IoStatusBlock,
-	IN ULONG ShareAccess, IN ULONG OpenOptions)
-{
-	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1))
-	{
-		OpenOptions |= FILE_OPEN_FOR_BACKUP_INTENT;
-	}
-
-	NTSTATUS iStatus = TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes,
-		IoStatusBlock, ShareAccess, OpenOptions);
-
-	if (VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
-	{
-		if (iStatus == STATUS_SHARING_VIOLATION || iStatus == STATUS_ACCESS_DENIED)
-		{
-			if (CloseFileHandle(ObjectAttributes->ObjectName))
-			{
-				// try operation again now that file is closed
-				iStatus = TrueNtOpenFile(FileHandle, DesiredAccess, ObjectAttributes,
-					IoStatusBlock, ShareAccess, OpenOptions);
-			}
-		}
-	}
-
-	return iStatus;
-}
-
-EXTERN_C NTSTATUS NTAPI DetourNtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess,
-	IN POBJECT_ATTRIBUTES ObjectAttributes, OUT PIO_STATUS_BLOCK IoStatusBlock,
-	IN PLARGE_INTEGER AllocationSize OPTIONAL, IN ULONG FileAttributes, IN ULONG ShareAccess,
-	IN ULONG CreateDisposition, IN ULONG CreateOptions, IN PVOID EaBuffer OPTIONAL, IN ULONG EaLength)
-{
-	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1))
-	{
-		CreateOptions |= FILE_OPEN_FOR_BACKUP_INTENT;
-	}
-
-	NTSTATUS iStatus = TrueNtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
-		FileAttributes, ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
-
-	if (VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
-	{
-		if (iStatus == STATUS_SHARING_VIOLATION || iStatus == STATUS_ACCESS_DENIED)
-		{
-			if (CloseFileHandle(ObjectAttributes->ObjectName))
-			{
-				// try operation again now that file is closed
-				iStatus = TrueNtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
-					FileAttributes, ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
-			}
-		}
-	}
-
-	return iStatus;
-}
 
 //   __   ___  __     __  ___  __          __   ___       __
 //  |__) |__  / _` | /__`  |  |__) \ /    |__) |__   /\  |  \
@@ -2098,25 +1940,16 @@ static HRESULT STDAPICALLTYPE DetourCoCreateInstanceEx(_In_ REFCLSID Clsid,
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
-template <winpriv::detours::function_pointer Function>
-void ApplyDetour(
-	winpriv::detours::action requestedAction,
-	Function& target,
-	Function replacement) noexcept
-{
-	(void)winpriv::detours::apply(requestedAction, target, replacement);
-}
-
 void DllTimeAttachDetach(winpriv::detours::action requestedAction);
 
-void DllExtraAttachDetach(winpriv::detours::action requestedAction)
+bool DllExtraAttachDetach(winpriv::detours::action requestedAction)
 {
 	const bool attaching = requestedAction == winpriv::detours::action::attach;
 
 	// Skip if this is the parent process
 	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
 	{
-		return;
+		return true;
 	}
 
 	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
@@ -2171,11 +2004,7 @@ void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 		ApplyDetour(requestedAction, TrueWSALookupServiceEnd, DetourWSALookupServiceEnd);
 	}
 
-	if (VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1) || VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
-	{
-		ApplyDetour(requestedAction, TrueNtOpenFile, DetourNtOpenFile);
-		ApplyDetour(requestedAction, TrueNtCreateFile, DetourNtCreateFile);
-	}
+	if (!DllFileAttachDetach(requestedAction)) return false;
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
@@ -2246,6 +2075,7 @@ void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 #endif
 		}
 	}
+	return true;
 }
 
 EXTERN_C LPWSTR SearchReplace(LPCWSTR sInputString, LPCWSTR sSearchString, LPCWSTR sReplaceString)

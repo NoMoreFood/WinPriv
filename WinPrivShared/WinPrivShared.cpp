@@ -18,9 +18,12 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "WinPrivShared.h"
+
+#pragma comment(lib, "ntdll.lib")
 
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset)
 {
@@ -111,6 +114,23 @@ bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLO
 	if (!bParsed || !FileTimeToSystemTime(&tTime, &tDate) || tDate.wYear > 30827) return false;
 	iOffset = iTime - iCurrentTime;
 	return true;
+}
+
+std::wstring ResolveFileRulePath(std::wstring path)
+{
+	// Normalize DOS paths once, before rules are inherited by processes with different current directories.
+	std::ranges::replace(path, L'/', L'\\');
+	constexpr std::wstring_view extendedPrefix = L"\\\\?\\";
+	if (path.empty() || path.find_first_of(L"*?\"",
+		path.starts_with(extendedPrefix) ? extendedPrefix.size() : 0) != std::wstring::npos) return {};
+
+	// Let the native runtime allocate the absolute NT path.
+	static const auto convert = LoadNtFunction<NTSTATUS(NTAPI*)(PCWSTR, PUNICODE_STRING, PWSTR*, PVOID)>(
+		"RtlDosLongPathNameToNtPathName_U_WithStatus");
+	UNICODE_STRING name{};
+	SmartPointer<PUNICODE_STRING> cleanup(RtlFreeUnicodeString, &name);
+	if (convert(path.c_str(), &name, nullptr, nullptr) < 0) return {};
+	return { name.Buffer, name.Length / sizeof(WCHAR) };
 }
 
 std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEnd, const std::vector<LPWSTR>& vArgs)
