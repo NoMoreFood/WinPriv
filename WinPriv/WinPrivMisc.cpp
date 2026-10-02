@@ -312,6 +312,19 @@ Optional Switches
    launching the target process. If you click No, execution is cancelled.
    The caption of the message box is "Message".
 
+/MockTime <Delta>
+
+   Shifts the target's wall clock and its descendants by a signed time delta.
+   Units: y/yr, mo/mon, w/wk, d, h/hr, m/min, s/sec, ms, us. Abbreviations are
+   case-insensitive; yrs, wks, hrs, mins, and secs are also accepted.
+   Combine components, for example +1y2mo-3d or "-2w 4h 30min", applied from
+   left to right. A sign applies to following components until changed.
+   Unsigned deltas are positive.
+   Years and months are whole calendar units, with month-end dates clamped.
+   Other units accept decimal fractions down to 100 ns. The resulting offset
+   is fixed at launch, and the last /MockTime wins. Uptime, stopwatches, and
+   relative waits retain their normal behavior.
+
 /MeasureTime
 
    This option measures the execution time of the target process and displays

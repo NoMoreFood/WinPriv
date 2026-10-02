@@ -37,11 +37,11 @@ namespace
 	auto trueCreateProcessW = &CreateProcessW;
 
 	constexpr GUID winPrivPayloadGuid{
-		0xa4b01a2d, 0xb07f, 0x47f8,
-		{ 0xb0, 0x30, 0x5a, 0x49, 0x25, 0x74, 0x47, 0x84 } };
+		0x04c36f50, 0xf799, 0x4b15,
+		{ 0x90, 0x34, 0x69, 0x82, 0x43, 0xa9, 0xbc, 0x21 } };
 	// The GUID versions this schema. Its data is one NUL-terminated UTF-16
 	// value per name below, in the same fixed order.
-	constexpr std::array<LPCWSTR, 17> winPrivSettingNames{
+	constexpr std::array<LPCWSTR, 18> winPrivSettingNames{
 		WINPRIV_EV_RELAUNCH_MODE,
 		WINPRIV_EV_REG_OVERRIDE,
 		WINPRIV_EV_MAC_OVERRIDE,
@@ -59,6 +59,7 @@ namespace
 		WINPRIV_EV_SQL_CONNECT_REPLACE,
 		WINPRIV_EV_MEDIUM_PLUS,
 		WINPRIV_EV_CLM,
+		WINPRIV_EV_MOCK_TIME,
 	};
 
 	bool CaptureWinPrivPayload(std::vector<WCHAR>& payload) noexcept

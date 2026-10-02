@@ -2107,6 +2107,8 @@ void ApplyDetour(
 	(void)winpriv::detours::apply(requestedAction, target, replacement);
 }
 
+void DllTimeAttachDetach(winpriv::detours::action requestedAction);
+
 void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 {
 	const bool attaching = requestedAction == winpriv::detours::action::attach;
@@ -2120,6 +2122,11 @@ void DllExtraAttachDetach(winpriv::detours::action requestedAction)
 	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
 		ApplyDetour(requestedAction, TrueRtlExitUserProcess, DetourRtlExitUserProcess);
+	}
+
+	if (!attaching || VariableNotEmpty(WINPRIV_EV_MOCK_TIME))
+	{
+		DllTimeAttachDetach(requestedAction);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))

@@ -195,6 +195,7 @@
     <ClCompile Include="WinPrivLibraryDetours.cpp" />
     <ClCompile Include="WinPrivLibraryDetoursCom.c" />
     <ClCompile Include="WinPrivLibraryMain.cpp" />
+    <ClCompile Include="WinPrivLibraryTime.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="WinPrivDetoursFork.h" />

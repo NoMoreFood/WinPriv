@@ -304,6 +304,7 @@ function Invoke-CreateProcessProbe {
             -ChildOutputPath $childOutputPath
     }
     $parentState = [WinPrivProbe.Native]::GetState([string[]]@(), [string[]]@())
+    $parentState['mockTimeOffset'] = [Environment]::GetEnvironmentVariable('_WINPRIV_EV_MOCK_TIME_')
     $nativeResult = [WinPrivProbe.Native]::RunCreateProcess(
         $api,
         $powerShellPath,
@@ -443,7 +444,7 @@ try {
             $result = [ordered]@{
                 operations = [string[]]@(
                     'capabilities', 'state', 'args', 'cwd', 'env', 'exit', 'window', 'token',
-                    'registry', 'adapters', 'wsa', 'amsi', 'admin', 'version', 'crypto',
+                    'registry', 'adapters', 'wsa', 'amsi', 'admin', 'version', 'clock', 'crypto',
                     'odbc', 'ado', 'file', 'native-file', 'lsa', 'create-process', 'sleep', 'marker')
                 nativeSourceFiles = [string[]]@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'WinPrivProbe.*.cs' |
                     Sort-Object -Property Name | ForEach-Object { $_.Name })
@@ -568,6 +569,9 @@ try {
                 $environment[$name] = [Environment]::GetEnvironmentVariable($name)
             }
             $result['environment'] = $environment
+        }
+        'clock' {
+            $result = [WinPrivProbe.Native]::GetClockState()
         }
         'crypto' {
             $base64 = Get-ArgumentValue -Name 'plaintextBase64'

@@ -5,6 +5,7 @@
 #ifdef __cplusplus
 #include <vector>
 #include <string>
+#include <string_view>
 #include <functional>
 #include <ranges>
 #endif
@@ -21,6 +22,7 @@ BOOL ClearDenyRights(const std::wstring& sAccountName = L"");
 BOOL GrantAllRights(const std::wstring& sAccountName);
 std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
 void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
+bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset);
 #endif
 
 //
@@ -44,6 +46,7 @@ void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
 #define WINPRIV_EV_SQL_CONNECT_REPLACE L"_WINPRIV_EV_SQL_CONNECT_REPLACE_"
 #define WINPRIV_EV_MEDIUM_PLUS L"_WINPRIV_EV_MEDIUM_PLUS_"
 #define WINPRIV_EV_CLM L"_WINPRIV_EV_CLM_"
+#define WINPRIV_EV_MOCK_TIME L"_WINPRIV_EV_MOCK_TIME_"
 
 //
 // Miscellaneous Unicode String Helper Functions

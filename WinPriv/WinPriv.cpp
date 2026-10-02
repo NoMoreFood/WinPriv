@@ -151,6 +151,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
 	SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_CLM, L"");
+	SetEnvironmentVariable(WINPRIV_EV_MOCK_TIME, L"");
 	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"0");
 	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
@@ -843,6 +844,27 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			{
 				return __LINE__;
 			}
+		}
+
+		// Apply a fixed wall clock offset to the target and its descendants.
+		else if (_wcsicmp(sArg.c_str(), L"/MockTime") == 0)
+		{
+			if (iArg + 1 >= iArgc)
+			{
+				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				return __LINE__;
+			}
+			FILETIME tTime{};
+			GetSystemTimeAsFileTime(&tTime);
+			const LONGLONG iCurrentTime = static_cast<LONGLONG>(tTime.dwHighDateTime) << 32 | tTime.dwLowDateTime;
+			LONGLONG iOffset = 0;
+			if (!ParseMockTimeOffset(aArgv[++iArg], iCurrentTime, iOffset))
+			{
+				PrintMessage(L"ERROR: Invalid /MockTime delta: %s. Use +/-number with y, mo, w, d, h, min, s, ms, us.\n",
+					aArgv[iArg]);
+				return __LINE__;
+			}
+			if (!SetEnvironmentVariable(WINPRIV_EV_MOCK_TIME, std::to_wstring(iOffset).c_str())) return __LINE__;
 		}
 
 		// instruct winpriv to display process execution time

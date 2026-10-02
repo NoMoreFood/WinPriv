@@ -228,6 +228,273 @@ namespace WinPrivProbe
             return value;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClockSystemTime
+        {
+            public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds;
+
+            public DateTime ToDateTime()
+            {
+                return new DateTime(Year, Month, Day, Hour, Minute, Second, Milliseconds);
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClockTimeOfDay
+        {
+            public long BootTime, CurrentTime, TimeZoneBias;
+            public uint TimeZoneId, Reserved;
+            public ulong BootTimeBias, SleepTimeBias;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClockTimeB
+        {
+            public long Seconds;
+            public ushort Milliseconds;
+            public short TimeZone, Dst;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ClockTimeSpec
+        {
+            public long Seconds;
+            public int Nanoseconds;
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern void GetSystemTimeAsFileTime(out long time);
+
+        [DllImport("kernel32.dll")]
+        private static extern void GetSystemTimePreciseAsFileTime(out long time);
+
+        [DllImport("kernel32.dll")]
+        private static extern void GetSystemTime(out ClockSystemTime time);
+
+        [DllImport("kernel32.dll")]
+        private static extern void GetLocalTime(out ClockSystemTime time);
+
+        [DllImport("kernelbase.dll", EntryPoint = "GetSystemTimeAsFileTime")]
+        private static extern void GetBaseSystemTimeAsFileTime(out long time);
+
+        [DllImport("kernelbase.dll", EntryPoint = "GetSystemTime")]
+        private static extern void GetBaseSystemTime(out ClockSystemTime time);
+
+        [DllImport("kernelbase.dll", EntryPoint = "GetLocalTime")]
+        private static extern void GetBaseLocalTime(out ClockSystemTime time);
+
+        [DllImport("kernel32.dll")]
+        private static extern void SetLastError(uint error);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetLastError();
+
+        [DllImport("kernel32.dll")]
+        private static extern ulong GetTickCount64();
+
+        [DllImport("kernelbase.dll")]
+        private static extern void QueryInterruptTime(out ulong time);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtQueryPerformanceCounter(out long counter, out long frequency);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtQuerySystemTime(out long time);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtQuerySystemTime(IntPtr time);
+
+        [DllImport("ntdll.dll")]
+        private static extern long RtlGetSystemTimePrecise();
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtQuerySystemInformation(int informationClass, out ClockTimeOfDay time,
+            int length, out int returnLength);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetDateFormatEx(string locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count, string calendar);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetTimeFormatEx(string locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, EntryPoint = "GetDateFormatEx")]
+        private static extern int GetBaseDateFormatEx(string locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count, string calendar);
+
+        [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, EntryPoint = "GetTimeFormatEx")]
+        private static extern int GetBaseTimeFormatEx(string locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+        private static extern int GetDateFormatA(uint locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetDateFormatW(uint locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+        private static extern int GetTimeFormatA(uint locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetTimeFormatW(uint locale, uint flags, IntPtr time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetDateFormatEx(string locale, uint flags, ref ClockSystemTime time, string format,
+            StringBuilder output, int count, string calendar);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetTimeFormatEx(string locale, uint flags, ref ClockSystemTime time, string format,
+            StringBuilder output, int count);
+
+        [DllImport("ucrtbase.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "_time64")]
+        private static extern long UcrtTime64(IntPtr time);
+
+        [DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "_time64")]
+        private static extern long MsvcrtTime64(IntPtr time);
+
+        [DllImport("ucrtbase.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "_ftime64_s")]
+        private static extern int UcrtTimeB(out ClockTimeB time);
+
+        [DllImport("ucrtbase.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "_timespec64_get")]
+        private static extern int UcrtTimeSpec(out ClockTimeSpec time, int timeBase);
+
+        private static long ReadSharedClock(int offset)
+        {
+            IntPtr address = new IntPtr(0x7FFE0000 + offset);
+            int high;
+            uint low;
+            do
+            {
+                high = Marshal.ReadInt32(address, 4);
+                low = unchecked((uint)Marshal.ReadInt32(address));
+            }
+            while (high != Marshal.ReadInt32(address, 8));
+            return ((long)high << 32) | low;
+        }
+
+        public static Dictionary<string, object> GetClockState()
+        {
+            Dictionary<string, object> result = MethodResult(true, true, null);
+            Dictionary<string, object> clocks = new Dictionary<string, object>();
+            long time;
+            ClockSystemTime date;
+            ClockTimeOfDay timeOfDay;
+            int returned;
+            long epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).ToFileTimeUtc();
+            result["rawBefore"] = ReadSharedClock(0x14);
+            GetSystemTimeAsFileTime(out time);
+            clocks["fileTime"] = time;
+            GetSystemTimePreciseAsFileTime(out time);
+            clocks["preciseFileTime"] = time;
+            result["ntStatus"] = NtQuerySystemTime(out time);
+            clocks["ntTime"] = time;
+            clocks["rtlPrecise"] = RtlGetSystemTimePrecise();
+            GetSystemTime(out date);
+            clocks["systemTime"] = DateTime.SpecifyKind(date.ToDateTime(), DateTimeKind.Utc).ToFileTimeUtc();
+            GetBaseSystemTimeAsFileTime(out time);
+            clocks["baseFileTime"] = time;
+            GetBaseSystemTime(out date);
+            clocks["baseSystemTime"] = DateTime.SpecifyKind(date.ToDateTime(), DateTimeKind.Utc).ToFileTimeUtc();
+            GetBaseLocalTime(out date);
+            clocks["baseLocalTime"] = DateTime.SpecifyKind(date.ToDateTime(), DateTimeKind.Local).ToFileTimeUtc();
+            GetLocalTime(out date);
+            clocks["localTime"] = DateTime.SpecifyKind(date.ToDateTime(), DateTimeKind.Local).ToFileTimeUtc();
+            result["localDate"] = date.ToDateTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            result["localTime"] = date.ToDateTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+            clocks["managedUtc"] = DateTime.UtcNow.ToFileTimeUtc();
+            clocks["managedLocal"] = DateTime.Now.ToFileTimeUtc();
+            result["timeOfDayStatus"] = NtQuerySystemInformation(3, out timeOfDay,
+                Marshal.SizeOf(typeof(ClockTimeOfDay)), out returned);
+            clocks["timeOfDay"] = timeOfDay.CurrentTime;
+            result["bootTime"] = timeOfDay.BootTime;
+            result["invalidNtStatus"] = NtQuerySystemTime(IntPtr.Zero);
+            clocks["ucrtTime"] = epoch + UcrtTime64(IntPtr.Zero) * 10000000;
+            clocks["msvcrtTime"] = epoch + MsvcrtTime64(IntPtr.Zero) * 10000000;
+            ClockTimeB timeB;
+            result["timeBStatus"] = UcrtTimeB(out timeB);
+            clocks["ucrtTimeB"] = epoch + timeB.Seconds * 10000000 + timeB.Milliseconds * 10000;
+            ClockTimeSpec timeSpec;
+            result["timeSpecStatus"] = UcrtTimeSpec(out timeSpec, 1);
+            clocks["ucrtTimeSpec"] = epoch + timeSpec.Seconds * 10000000 + timeSpec.Nanoseconds / 100;
+            StringBuilder formatted = new StringBuilder(64);
+            result["dateFormatStatus"] = GetDateFormatEx("", 0, IntPtr.Zero, "yyyy-MM-dd", formatted, 64, null);
+            result["formattedDate"] = formatted.ToString();
+            formatted.Length = 0;
+            result["timeFormatStatus"] = GetTimeFormatEx("", 0, IntPtr.Zero, "HH:mm:ss", formatted, 64);
+            result["formattedTime"] = formatted.ToString();
+            formatted.Length = 0;
+            GetDateFormatA(0x7F, 0, IntPtr.Zero, "yyyy-MM-dd", formatted, 64);
+            result["formattedDateA"] = formatted.ToString();
+            formatted.Length = 0;
+            GetDateFormatW(0x7F, 0, IntPtr.Zero, "yyyy-MM-dd", formatted, 64);
+            result["formattedDateW"] = formatted.ToString();
+            formatted.Length = 0;
+            GetTimeFormatA(0x7F, 0, IntPtr.Zero, "HH:mm:ss", formatted, 64);
+            result["formattedTimeA"] = formatted.ToString();
+            formatted.Length = 0;
+            GetTimeFormatW(0x7F, 0, IntPtr.Zero, "HH:mm:ss", formatted, 64);
+            result["formattedTimeW"] = formatted.ToString();
+            formatted.Length = 0;
+            GetBaseDateFormatEx("", 0, IntPtr.Zero, "yyyy-MM-dd", formatted, 64, null);
+            result["formattedDateBase"] = formatted.ToString();
+            formatted.Length = 0;
+            GetBaseTimeFormatEx("", 0, IntPtr.Zero, "HH:mm:ss", formatted, 64);
+            result["formattedTimeBase"] = formatted.ToString();
+            GetLocalTime(out date);
+            result["localDateAfter"] = date.ToDateTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            result["localTimeAfter"] = date.ToDateTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+            result["rawAfter"] = ReadSharedClock(0x14);
+            result["clocks"] = clocks;
+            result["offset"] = Environment.GetEnvironmentVariable("_WINPRIV_EV_MOCK_TIME_");
+
+            // Formatting an explicit date/time must not add another offset.
+            date = new ClockSystemTime { Year = 1975, Month = 6, Day = 15, Hour = 12, Minute = 34, Second = 56 };
+            formatted.Length = 0;
+            GetDateFormatEx("", 0, ref date, "yyyy-MM-dd", formatted, 64, null);
+            result["explicitDate"] = formatted.ToString();
+            formatted.Length = 0;
+            GetTimeFormatEx("", 0, ref date, "HH:mm:ss", formatted, 64);
+            result["explicitTime"] = formatted.ToString();
+
+            // Wall clock mocking must preserve elapsed clocks and relative sleeps.
+            ulong interrupt;
+            QueryInterruptTime(out interrupt);
+            result["interruptTime"] = interrupt;
+            result["rawInterrupt"] = ReadSharedClock(0x8);
+            result["uptimeMilliseconds"] = GetTickCount64();
+            long performance, frequency;
+            NtQueryPerformanceCounter(out performance, out frequency);
+            result["nativePerformance"] = performance;
+            result["performance"] = Stopwatch.GetTimestamp();
+            result["performanceFrequency"] = frequency;
+            Stopwatch elapsed = Stopwatch.StartNew();
+            ulong tickStart = GetTickCount64();
+            System.Threading.Thread.Sleep(120);
+            result["elapsedMilliseconds"] = elapsed.Elapsed.TotalMilliseconds;
+            result["tickElapsedMilliseconds"] = GetTickCount64() - tickStart;
+
+            // The void clock getters preserve the caller's last-error value.
+            GetLastError();
+            SetLastError(0x1234);
+            GetSystemTimeAsFileTime(out time);
+            result["fileTimeLastError"] = GetLastError();
+            SetLastError(0x1234);
+            GetSystemTimePreciseAsFileTime(out time);
+            result["preciseLastError"] = GetLastError();
+            SetLastError(0x1234);
+            GetSystemTime(out date);
+            result["systemLastError"] = GetLastError();
+            SetLastError(0x1234);
+            GetLocalTime(out date);
+            result["localLastError"] = GetLastError();
+            return result;
+        }
+
         private static string Win32Message(int error)
         {
             return new Win32Exception(error).Message;

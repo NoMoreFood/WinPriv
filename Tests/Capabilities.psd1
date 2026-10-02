@@ -25,6 +25,12 @@
         @{ Id = 'utility.ask-message-no'; Surface = '/AskMessage No'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
         @{ Id = 'utility.dialog-gui-parity'; Surface = 'WinPriv.exe message dialog parity'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
 
+        # Wall clock offsets and their process propagation.
+        @{ Id = 'time.mock-clock'; Surface = '/MockTime native, Win32, CRT, and managed wall clocks'; Profile = 'Safe'; Test = 'Time'; Required = $true }
+        @{ Id = 'time.mock-deltas'; Surface = '/MockTime signed abbreviated and calendar deltas'; Profile = 'Safe'; Test = 'Time'; Required = $true }
+        @{ Id = 'time.mock-errors'; Surface = '/MockTime malformed and out-of-range deltas'; Profile = 'Safe'; Test = 'Time'; Required = $true }
+        @{ Id = 'time.mock-propagation'; Surface = '/MockTime descendants and custom environments'; Profile = 'Safe'; Test = 'Time'; Required = $true }
+
         # Injected registry behavior.
         @{ Id = 'registry.override-dword'; Surface = '/RegOverride REG_DWORD'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'registry.override-qword'; Surface = '/RegOverride REG_QWORD'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }

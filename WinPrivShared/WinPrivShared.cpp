@@ -13,11 +13,105 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cwctype>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "WinPrivShared.h"
+
+bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset)
+{
+	// Parse signed components exactly to the clock's 100-nanosecond resolution.
+	constexpr LONGLONG iMaxTime = (std::numeric_limits<LONGLONG>::max)();
+	using TimeUnit = std::pair<std::wstring_view, LONGLONG>;
+	constexpr TimeUnit vUnits[] = {
+		{ L"w", 6048000000000 }, { L"wk", 6048000000000 }, { L"d", 864000000000 },
+		{ L"h", 36000000000 }, { L"hr", 36000000000 }, { L"m", 600000000 }, { L"min", 600000000 },
+		{ L"s", 10000000 }, { L"sec", 10000000 }, { L"ms", 10000 }, { L"us", 10 },
+	};
+	LONGLONG iTime = iCurrentTime;
+	int iSign = 1;
+	size_t iPosition = 0;
+	bool bParsed = false;
+	if (iCurrentTime < 0) return false;
+	while (iPosition < sDelta.size())
+	{
+		while (iPosition < sDelta.size() && iswspace(sDelta[iPosition])) ++iPosition;
+		if (iPosition == sDelta.size()) break;
+		if (sDelta[iPosition] == L'+' || sDelta[iPosition] == L'-')
+			iSign = sDelta[iPosition++] == L'-' ? -1 : 1;
+		if (iPosition == sDelta.size() || sDelta[iPosition] < L'0' || sDelta[iPosition] > L'9') return false;
+		LONGLONG iWhole = 0;
+		while (iPosition < sDelta.size() && sDelta[iPosition] >= L'0' && sDelta[iPosition] <= L'9')
+		{
+			const int iDigit = sDelta[iPosition++] - L'0';
+			if (iWhole > (iMaxTime - iDigit) / 10) return false;
+			iWhole = iWhole * 10 + iDigit;
+		}
+		LONGLONG iFraction = 0;
+		LONGLONG iScale = 1;
+		if (iPosition < sDelta.size() && sDelta[iPosition] == L'.')
+		{
+			++iPosition;
+			const size_t iStart = iPosition;
+			while (iPosition < sDelta.size() && sDelta[iPosition] >= L'0' && sDelta[iPosition] <= L'9')
+			{
+				if (iScale == 10000000) return false;
+				iFraction = iFraction * 10 + sDelta[iPosition++] - L'0';
+				iScale *= 10;
+			}
+			if (iStart == iPosition) return false;
+		}
+		while (iPosition < sDelta.size() && iswspace(sDelta[iPosition])) ++iPosition;
+		std::wstring sUnit;
+		while (iPosition < sDelta.size() && iswalpha(sDelta[iPosition]))
+			sUnit += static_cast<wchar_t>(towlower(sDelta[iPosition++]));
+		if (sUnit.size() > 2 && sUnit.ends_with(L's')) sUnit.pop_back();
+
+		// Calendar components keep the time of day and clamp month-end and leap-day dates.
+		if (sUnit == L"y" || sUnit == L"yr" || sUnit == L"mo" || sUnit == L"mon")
+		{
+			const LONGLONG iMonthsPerUnit = sUnit == L"y" || sUnit == L"yr" ? 12 : 1;
+			if (iFraction != 0 || iWhole > 30827 * 12) return false;
+			FILETIME tTime{ static_cast<DWORD>(iTime), static_cast<DWORD>(iTime >> 32) };
+			SYSTEMTIME tDate{};
+			if (!FileTimeToSystemTime(&tTime, &tDate)) return false;
+			const LONGLONG iMonth = tDate.wYear * 12 + tDate.wMonth - 1 + iSign * iWhole * iMonthsPerUnit;
+			if (iMonth < 1601 * 12 || iMonth >= 30828 * 12) return false;
+			tDate.wYear = static_cast<WORD>(iMonth / 12);
+			tDate.wMonth = static_cast<WORD>(iMonth % 12 + 1);
+			const std::chrono::year_month_day_last tLastDay{
+				std::chrono::year{ tDate.wYear }, std::chrono::month_day_last{ std::chrono::month{ tDate.wMonth } } };
+			tDate.wDay = (std::min)(tDate.wDay, static_cast<WORD>(static_cast<unsigned>(tLastDay.day())));
+			if (!SystemTimeToFileTime(&tDate, &tTime)) return false;
+			iTime = (static_cast<LONGLONG>(tTime.dwHighDateTime) << 32 | tTime.dwLowDateTime) + iTime % 10000;
+			bParsed = true;
+			continue;
+		}
+
+		// Fixed-duration components reject overflow and fractions smaller than one clock tick.
+		const auto pUnit = std::ranges::find(vUnits, sUnit, &TimeUnit::first);
+		if (pUnit == std::end(vUnits)) return false;
+		const LONGLONG iUnit = pUnit->second;
+		if (iWhole > iMaxTime / iUnit || iFraction * (iUnit % iScale) % iScale != 0) return false;
+		const LONGLONG iFractionTicks = iFraction * (iUnit / iScale) + iFraction * (iUnit % iScale) / iScale;
+		const LONGLONG iWholeTicks = iWhole * iUnit;
+		if (iFractionTicks > iMaxTime - iWholeTicks) return false;
+		const LONGLONG iTicks = iWholeTicks + iFractionTicks;
+		if ((iSign > 0 && iTicks > iMaxTime - iTime) || (iSign < 0 && iTicks > iTime)) return false;
+		iTime += iSign * iTicks;
+		bParsed = true;
+	}
+
+	FILETIME tTime{ static_cast<DWORD>(iTime), static_cast<DWORD>(iTime >> 32) };
+	SYSTEMTIME tDate{};
+	if (!bParsed || !FileTimeToSystemTime(&tTime, &tDate) || tDate.wYear > 30827) return false;
+	iOffset = iTime - iCurrentTime;
+	return true;
+}
 
 std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEnd, const std::vector<LPWSTR>& vArgs)
 {
