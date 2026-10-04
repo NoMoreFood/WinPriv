@@ -444,7 +444,7 @@ try {
             $result = [ordered]@{
                 operations = [string[]]@(
                     'capabilities', 'state', 'args', 'cwd', 'env', 'exit', 'window', 'token',
-                    'registry', 'adapters', 'wsa', 'amsi', 'admin', 'version', 'clock', 'crypto',
+                    'registry', 'adapters', 'wsa', 'hosts', 'amsi', 'admin', 'version', 'clock', 'crypto',
                     'odbc', 'ado', 'file', 'native-file', 'lsa', 'create-process', 'sleep', 'marker')
                 nativeSourceFiles = [string[]]@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'WinPrivProbe.*.cs' |
                     Sort-Object -Property Name | ForEach-Object { $_.Name })
@@ -553,6 +553,12 @@ try {
         'wsa' {
             $result = [WinPrivProbe.Native]::LookupWsa(
                 [string](Get-ArgumentValue -Name 'name' -DefaultValue 'localhost'))
+        }
+        'hosts' {
+            $result = [WinPrivProbe.Native]::LookupHostResolvers(
+                [string](Get-ArgumentValue -Name 'name' -DefaultValue 'localhost'),
+                [int](Get-ArgumentValue -Name 'family' -DefaultValue 0),
+                [uint16](Get-ArgumentValue -Name 'type' -DefaultValue 1))
         }
         'amsi' {
             $result = [WinPrivProbe.Native]::ScanAmsi(

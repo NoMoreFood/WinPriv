@@ -10,6 +10,7 @@
 // Shared hook registration and native entry points.
 bool DllExtraAttachDetach(winpriv::detours::action requestedAction);
 bool DllFileAttachDetach(winpriv::detours::action requestedAction);
+bool DllHostAttachDetach(winpriv::detours::action requestedAction);
 
 template <winpriv::detours::function_pointer Function>
 void ApplyDetour(winpriv::detours::action requestedAction, Function& target, Function replacement) noexcept

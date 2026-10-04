@@ -24,6 +24,26 @@
 #include "WinPrivShared.h"
 
 #pragma comment(lib, "ntdll.lib")
+#pragma comment(lib, "normaliz.lib")
+
+std::wstring NormalizeHostName(std::wstring_view name)
+{
+	// Match DNS names by their ASCII spelling without a terminal root separator.
+	if (name.empty() || name.size() > static_cast<size_t>((std::numeric_limits<int>::max)()) ||
+		name.find_first_of(L" \t\r\n\"/\\*?") != name.npos) return {};
+	std::wstring normalized(name);
+	if (name.find(L':') == name.npos)
+	{
+		const int length = IdnToAscii(0, name.data(), static_cast<int>(name.size()), nullptr, 0);
+		if (length == 0) return {};
+		normalized.resize(length);
+		if (IdnToAscii(0, name.data(), static_cast<int>(name.size()), normalized.data(), length) == 0) return {};
+	}
+	if (!normalized.empty() && normalized.back() == L'.') normalized.pop_back();
+	for (wchar_t& character : normalized)
+		if (character >= L'A' && character <= L'Z') character += L'a' - L'A';
+	return normalized;
+}
 
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset)
 {

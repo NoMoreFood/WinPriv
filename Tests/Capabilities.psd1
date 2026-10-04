@@ -84,6 +84,11 @@
         @{ Id = 'network.host-wide'; Surface = '/HostOverride WSALookupServiceNextW'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'network.host-ansi'; Surface = '/HostOverride WSALookupServiceNextA'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'network.host-pass-through'; Surface = '/HostOverride unrelated lookup pass-through'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
+        @{ Id = 'network.host-resolvers'; Surface = '/HostOverride address and DNS resolver APIs'; Profile = 'Safe'; Test = 'HostOverride'; Required = $true }
+        @{ Id = 'network.host-ipv6'; Surface = '/HostOverride native IPv6 and family restrictions'; Profile = 'Safe'; Test = 'HostOverride'; Required = $true }
+        @{ Id = 'network.host-destination'; Surface = '/HostOverride replacement address sets and canonical names'; Profile = 'Safe'; Test = 'HostOverride'; Required = $true }
+        @{ Id = 'network.host-names'; Surface = '/HostOverride normalized DNS and IDN names'; Profile = 'Safe'; Test = 'HostOverride'; Required = $true }
+        @{ Id = 'network.host-diagnostics'; Surface = '/HostOverride resolver failure diagnostics'; Profile = 'Safe'; Test = 'HostOverride'; Required = $true }
         @{ Id = 'powershell.clm'; Surface = '/ClmOn, /ClmOff language mode, scripts, and descendants'; Profile = 'Safe'; Test = 'Hooks'; Required = $true }
         @{ Id = 'amsi.on'; Surface = '/AmsiOn native scanning and switch precedence'; Profile = 'Safe'; Test = 'CliAndConfig'; Gate = 'Amsi'; Required = $true }
         @{ Id = 'amsi.scan-string'; Surface = '/AmsiOff AmsiScanString'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'Amsi'; Required = $true }

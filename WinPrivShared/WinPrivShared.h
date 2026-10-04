@@ -24,6 +24,7 @@ std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std
 void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset);
 std::wstring ResolveFileRulePath(std::wstring path);
+std::wstring NormalizeHostName(std::wstring_view name);
 
 template <typename Function>
 Function LoadNtFunction(LPCSTR name) noexcept

@@ -666,31 +666,40 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				return __LINE__;
 			}
 
-			// initialize winsock
-			WSADATA tWSAData;
-			if (WSAStartup(MAKEWORD(2, 2), &tWSAData) != 0)
+			// Validate names while retaining the replacement's DNS identity and absolute spelling.
+			const std::wstring sTargetHost = NormalizeHostName(aArgv[iArg + 1]);
+			std::wstring sReplacementHost = NormalizeHostName(aArgv[iArg + 2]);
+			if (sTargetHost.empty() || sReplacementHost.empty())
 			{
+				PrintMessage(L"ERROR: Invalid host name specified for: %s\n", sArg.c_str());
 				return __LINE__;
 			}
+			const wchar_t cLastReplacement = std::wstring_view(aArgv[iArg + 2]).back();
+			if (cLastReplacement == L'.' || cLastReplacement == L'\u3002' ||
+				cLastReplacement == L'\uFF0E' || cLastReplacement == L'\uFF61') sReplacementHost += L'.';
 
-			// first lookup the address
-			PADDRINFOW tResult;
-			ADDRINFOW tHints{ .ai_family = AF_INET };
-			INT iGetAddrInfoResult = GetAddrInfoW(aArgv[iArg + 2], nullptr, &tHints, &tResult);
+			// Verify that the replacement resolves without pinning its addresses in child processes.
+			WSADATA tWSAData;
+			const int iStartupResult = WSAStartup(MAKEWORD(2, 2), &tWSAData);
+			if (iStartupResult != 0)
+			{
+				PrintMessage(L"ERROR: Could not initialize host resolution (error %d).\n", iStartupResult);
+				return __LINE__;
+			}
 			SmartPointer<LPWSADATA> oWinsockCleanup([](LPWSADATA) { WSACleanup(); }, &tWSAData);
+			PADDRINFOW tResult = nullptr;
+			const int iGetAddrInfoResult = GetAddrInfoW(sReplacementHost.c_str(), nullptr, nullptr, &tResult);
+			SmartPointer<PADDRINFOW> oAddressCleanup(FreeAddrInfoW, tResult);
 			if (iGetAddrInfoResult != 0)
 			{
+				PrintMessage(L"ERROR: Could not resolve replacement host: %s (error %d).\n",
+					aArgv[iArg + 2], iGetAddrInfoResult);
 				return __LINE__;
 			}
-
-			// convert the address to a string
-			WCHAR sAddress[INET_ADDRSTRLEN];
-			if (InetNtop(AF_INET, &reinterpret_cast<PSOCKADDR_IN>(tResult->ai_addr)->sin_addr, sAddress, INET_ADDRSTRLEN) == nullptr) { FreeAddrInfoW(tResult); return __LINE__; }
-			FreeAddrInfoW(tResult);
 
 			// append the host override data which should be two params:
 			// <host name to override> <host override value>
-			sHostOverride += std::wstring(aArgv[iArg + 1]) + L" " + sAddress + L" ";
+			sHostOverride += sTargetHost + L" " + sReplacementHost + L" ";
 			iArg += iArgsRequired;
 		}
 
@@ -946,7 +955,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 	// setup the host override values to pass to child processes
 	sHostOverride = TrimString(sHostOverride, L' ');
-	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, sHostOverride.c_str());
+	if (!SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, sHostOverride.c_str()))
+	{
+		PrintMessage(L"ERROR: Could not store host overrides (error %lu).\n", GetLastError());
+		return __LINE__;
+	}
 
 	// sort privs, remove duplicate privs, and reconstruct into a list of privs
 	// that can be set as an environment variable and passed to a child process
