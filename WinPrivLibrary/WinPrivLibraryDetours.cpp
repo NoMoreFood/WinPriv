@@ -23,6 +23,7 @@
 #define _NTDEF_
 #include <NTSecAPI.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <regex>
@@ -30,6 +31,7 @@
 #include <array>
 #include <cerrno>
 #include <limits>
+#include <memory>
 
 #pragma comment(lib,"bcrypt.lib")
 #pragma comment(lib,"amsi.lib")
@@ -65,8 +67,8 @@ static bool UnicodeStringEquals(const UNICODE_STRING& sLeft, const UNICODE_STRIN
 {
 	if (sRight == nullptr || sLeft.Length != sRight->Length) return false;
 	if (sLeft.Length == 0) return true;
-	return sLeft.Buffer != nullptr && sRight->Buffer != nullptr &&
-		_wcsnicmp(sLeft.Buffer, sRight->Buffer, sLeft.Length / sizeof(WCHAR)) == 0;
+	return sLeft.Buffer != nullptr && sRight->Buffer != nullptr && CompareStringOrdinal(sLeft.Buffer,
+		sLeft.Length / sizeof(WCHAR), sRight->Buffer, sRight->Length / sizeof(WCHAR), TRUE) == CSTR_EQUAL;
 }
 
 static bool RegistryKeyIsSameOrDescendant(const UNICODE_STRING& sParent, const UNICODE_STRING& sKey)
@@ -74,39 +76,44 @@ static bool RegistryKeyIsSameOrDescendant(const UNICODE_STRING& sParent, const U
 	if (sParent.Length > sKey.Length || sParent.Buffer == nullptr || sKey.Buffer == nullptr)
 		return false;
 
-	const size_t iParentChars = sParent.Length / sizeof(WCHAR);
-	if (_wcsnicmp(sParent.Buffer, sKey.Buffer, iParentChars) != 0) return false;
+	const int iParentChars = sParent.Length / sizeof(WCHAR);
+	if (CompareStringOrdinal(sParent.Buffer, iParentChars, sKey.Buffer, iParentChars, TRUE) != CSTR_EQUAL) return false;
 	return sParent.Length == sKey.Length || sKey.Buffer[iParentChars] == L'\\';
 }
 
-static bool ParseRegistryDword(LPCWSTR sData, DWORD& iValue)
+template <typename Integer>
+static bool ParseRegistryInteger(LPCWSTR sData, Integer& iValue)
 {
+	// accept decimal, hexadecimal, or octal notation that fits the value type
 	if (sData == nullptr || *sData == L'\0') return false;
 	errno = 0;
 	LPWSTR sEnd = nullptr;
-	const unsigned long iParsed = wcstoul(sData, &sEnd, 0);
+	unsigned __int64 iParsed = 0;
+	if constexpr (sizeof(Integer) == sizeof(DWORD)) iParsed = wcstoul(sData, &sEnd, 0);
+	else iParsed = _wcstoui64(sData, &sEnd, 0);
 	if (errno == ERANGE || sEnd == sData || *sEnd != L'\0') return false;
-	iValue = static_cast<DWORD>(iParsed);
+	iValue = static_cast<Integer>(iParsed);
 	return true;
 }
 
-static bool ParseRegistryQword(LPCWSTR sData, unsigned __int64& iValue)
+static bool DecodeHex(std::wstring_view sText, PBYTE pBytes)
 {
-	if (sData == nullptr || *sData == L'\0') return false;
-	errno = 0;
-	LPWSTR sEnd = nullptr;
-	const unsigned __int64 iParsed = _wcstoui64(sData, &sEnd, 0);
-	if (errno == ERANGE || sEnd == sData || *sEnd != L'\0') return false;
-	iValue = iParsed;
+	// decode pairs of hexadecimal digits into the caller's buffer of sText.size() / 2 bytes
+	const auto HexDigitValue = [](const WCHAR iChar)
+	{
+		if (iChar >= L'0' && iChar <= L'9') return iChar - L'0';
+		if (iChar >= L'a' && iChar <= L'f') return iChar - L'a' + 10;
+		if (iChar >= L'A' && iChar <= L'F') return iChar - L'A' + 10;
+		return -1;
+	};
+	for (size_t iByte = 0; iByte < sText.size() / 2; iByte++)
+	{
+		const int iHigh = HexDigitValue(sText[iByte * 2]);
+		const int iLow = HexDigitValue(sText[iByte * 2 + 1]);
+		if (iHigh < 0 || iLow < 0) return false;
+		pBytes[iByte] = static_cast<BYTE>((iHigh << 4) | iLow);
+	}
 	return true;
-}
-
-static int HexDigitValue(const WCHAR iChar)
-{
-	if (iChar >= L'0' && iChar <= L'9') return iChar - L'0';
-	if (iChar >= L'a' && iChar <= L'f') return iChar - L'a' + 10;
-	if (iChar >= L'A' && iChar <= L'F') return iChar - L'A' + 10;
-	return -1;
 }
 
 static NTSTATUS RegistryBufferStatus(PVOID pBuffer, ULONG iLength,
@@ -136,6 +143,13 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 			return STATUS_DATATYPE_MISALIGNMENT;
 	}
 
+	// copy as much of a field as fits; the status reports any truncation
+	const auto CopyField = [&](ULONG iOffset, const void* pSource, ULONG iSize)
+	{
+		if (iLength > iOffset && iSize != 0)
+			memcpy(static_cast<PBYTE>(pInformation) + iOffset, pSource, (std::min)(iLength - iOffset, iSize));
+	};
+
 	if (iInformationClass == KeyValueBasicInformation)
 	{
 		const ULONG iNameOffset = static_cast<ULONG>(offsetof(KEY_VALUE_BASIC_INFORMATION, Name));
@@ -148,13 +162,7 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 		tKeyInfo->TitleIndex = 0;
 		tKeyInfo->Type = tOverride.RegValueType;
 		tKeyInfo->NameLength = tOverride.RegValueName.Length;
-		if (iLength > iNameOffset && tOverride.RegValueName.Length != 0)
-		{
-			const ULONG iAvailable = iLength - iNameOffset;
-			const ULONG iCopyLength = iAvailable < tOverride.RegValueName.Length
-				? iAvailable : tOverride.RegValueName.Length;
-			memcpy(tKeyInfo->Name, tOverride.RegValueName.Buffer, iCopyLength);
-		}
+		CopyField(iNameOffset, tOverride.RegValueName.Buffer, tOverride.RegValueName.Length);
 		return iStatus;
 	}
 
@@ -179,22 +187,8 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 		tKeyInfo->DataOffset = iDataOffset;
 		tKeyInfo->DataLength = tOverride.RegValueDataSize;
 		tKeyInfo->NameLength = tOverride.RegValueName.Length;
-		if (iLength > iNameOffset && tOverride.RegValueName.Length != 0)
-		{
-			const ULONG iAvailable = iLength - iNameOffset;
-			const ULONG iCopyLength = iAvailable < tOverride.RegValueName.Length
-				? iAvailable : tOverride.RegValueName.Length;
-			memcpy(tKeyInfo->Name, tOverride.RegValueName.Buffer,
-				iCopyLength);
-		}
-		if (iLength > iDataOffset && tOverride.RegValueDataSize != 0)
-		{
-			const ULONG iAvailable = iLength - iDataOffset;
-			const ULONG iCopyLength = iAvailable < tOverride.RegValueDataSize
-				? iAvailable : tOverride.RegValueDataSize;
-			memcpy(static_cast<PBYTE>(pInformation) + iDataOffset,
-				tOverride.RegValueData, iCopyLength);
-		}
+		CopyField(iNameOffset, tOverride.RegValueName.Buffer, tOverride.RegValueName.Length);
+		CopyField(iDataOffset, tOverride.RegValueData, tOverride.RegValueDataSize);
 		return iStatus;
 	}
 
@@ -212,13 +206,7 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 		tKeyInfo->TitleIndex = 0;
 		tKeyInfo->Type = tOverride.RegValueType;
 		tKeyInfo->DataLength = tOverride.RegValueDataSize;
-		if (iLength > iDataOffset && tOverride.RegValueDataSize != 0)
-		{
-			const ULONG iAvailable = iLength - iDataOffset;
-			const ULONG iCopyLength = iAvailable < tOverride.RegValueDataSize
-				? iAvailable : tOverride.RegValueDataSize;
-			memcpy(tKeyInfo->Data, tOverride.RegValueData, iCopyLength);
-		}
+		CopyField(iDataOffset, tOverride.RegValueData, tOverride.RegValueDataSize);
 		return iStatus;
 	}
 
@@ -238,13 +226,7 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 		const PBYTE pBytes = static_cast<PBYTE>(pInformation);
 		*reinterpret_cast<PULONG>(pBytes + iTypeOffset) = tOverride.RegValueType;
 		*reinterpret_cast<PULONG>(pBytes + iDataLengthOffset) = tOverride.RegValueDataSize;
-		if (iLength > iDataOffset && tOverride.RegValueDataSize != 0)
-		{
-			const ULONG iAvailable = iLength - iDataOffset;
-			const ULONG iCopyLength = iAvailable < tOverride.RegValueDataSize
-				? iAvailable : tOverride.RegValueDataSize;
-			memcpy(pBytes + iDataOffset, tOverride.RegValueData, iCopyLength);
-		}
+		CopyField(iDataOffset, tOverride.RegValueData, tOverride.RegValueDataSize);
 		return iStatus;
 	}
 
@@ -256,208 +238,147 @@ static NTSTATUS(WINAPI* TrueNtQueryValueKey)(_In_ HANDLE KeyHandle, _In_ PUNICOD
 	GetProcAddress(GetModuleHandle(L"ntdll.dll"), "NtQueryValueKey");
 
 static std::vector<RegInterceptInfo*> vRegInterceptList;
+static bool bRegInterceptBlocks = false;
 
 static void InitializeRegistryOverrides()
 {
-	vRegInterceptList = []
+	// parse the parameters to create the intercept list
+	int iParams = 0;
+	SmartPointer<LPWSTR*> sParams(LocalFree, CommandLineToArgvW(_wgetenv(WINPRIV_EV_REG_OVERRIDE), &iParams));
+	if (sParams == nullptr) return;
+	for (int iParam = 0; iParam + 3 < iParams; iParam += 4)
 	{
-		std::vector<RegInterceptInfo*> vResult;
+		// entries that cannot be fully decoded are released and skipped
+		std::unique_ptr<RegInterceptInfo, decltype(&FreeRegInterceptInfo)> tInterceptInfo(
+			static_cast<RegInterceptInfo*>(calloc(1, sizeof(RegInterceptInfo))), &FreeRegInterceptInfo);
+		if (tInterceptInfo == nullptr) continue;
 
-		// parse the parameters to create the intercept list
-		int iParams = 0;
-		SmartPointer<LPWSTR*> sParams(LocalFree,
-			CommandLineToArgvW(_wgetenv(WINPRIV_EV_REG_OVERRIDE), &iParams));
-		if (sParams == nullptr) return vResult;
-		for (int iParam = 0; iParam + 3 < iParams; iParam += 4)
+		// split the first argument into a root name and subkey name
+		const std::wstring sKeyPath(sParams[iParam]);
+		const size_t iSeparator = sKeyPath.find(L'\\');
+		const std::wstring sRootKeyName = sKeyPath.substr(0, iSeparator);
+		const std::wstring sSubKeyName = iSeparator == std::wstring::npos
+			? L"" : sKeyPath.substr(iSeparator + 1);
+
+		// match the aesthetic name to the builtin roots
+		HKEY hRootKey = nullptr;
+		if (_wcsicmp(sRootKeyName.c_str(), L"HKLM") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_LOCAL_MACHINE") == 0)
+			hRootKey = HKEY_LOCAL_MACHINE;
+		else if (_wcsicmp(sRootKeyName.c_str(), L"HKCU") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_CURRENT_USER") == 0)
+			hRootKey = HKEY_CURRENT_USER;
+		else if (_wcsicmp(sRootKeyName.c_str(), L"HKCR") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_CLASSES_ROOT") == 0)
+			hRootKey = HKEY_CLASSES_ROOT;
+		else if (_wcsicmp(sRootKeyName.c_str(), L"HKU") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_USERS") == 0)
+			hRootKey = HKEY_USERS;
+		else continue;
+
+		// lookup the real key name after all redirection has been done
+		SmartPointer<HKEY> hKey(RegCloseKey, nullptr);
+		if (RegOpenKeyEx(hRootKey, sSubKeyName.empty() ? nullptr : sSubKeyName.c_str(),
+			0, KEY_READ, &hKey) == ERROR_SUCCESS)
 		{
-			RegInterceptInfo* tInterceptInfo = static_cast<RegInterceptInfo*>(calloc(1, sizeof(RegInterceptInfo)));
-			if (tInterceptInfo == nullptr) continue;
-
-			// split the first argument into a root name and subkey name
-			const std::wstring sKeyPath(sParams[iParam]);
-			const size_t iSeparator = sKeyPath.find(L'\\');
-			const std::wstring sRootKeyName = sKeyPath.substr(0, iSeparator);
-			const std::wstring sSubKeyName = iSeparator == std::wstring::npos
-				? L"" : sKeyPath.substr(iSeparator + 1);
-
-			// match the aesthetic name to the builtin roots
-			HKEY hRootKey = nullptr;
-			if (_wcsicmp(sRootKeyName.c_str(), L"HKLM") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_LOCAL_MACHINE") == 0)
-				hRootKey = HKEY_LOCAL_MACHINE;
-			else if (_wcsicmp(sRootKeyName.c_str(), L"HKCU") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_CURRENT_USER") == 0)
-				hRootKey = HKEY_CURRENT_USER;
-			else if (_wcsicmp(sRootKeyName.c_str(), L"HKCR") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_CLASSES_ROOT") == 0)
-				hRootKey = HKEY_CLASSES_ROOT;
-			else if (_wcsicmp(sRootKeyName.c_str(), L"HKU") == 0 || _wcsicmp(sRootKeyName.c_str(), L"HKEY_USERS") == 0)
-				hRootKey = HKEY_USERS;
-			else
+			DWORD iSize = 0;
+			const NTSTATUS iSizeStatus = NtQueryKey(hKey, KeyNameInformation, nullptr, 0, &iSize);
+			if ((iSizeStatus == STATUS_BUFFER_TOO_SMALL || iSizeStatus == STATUS_BUFFER_OVERFLOW) &&
+				iSize >= offsetof(KEY_NAME_INFORMATION, Name))
 			{
-				FreeRegInterceptInfo(tInterceptInfo);
-				continue;
-			}
-
-			// lookup the real key name after all redirection has been done
-			SmartPointer<HKEY> hKey(RegCloseKey, nullptr);
-			if (RegOpenKeyEx(hRootKey, sSubKeyName.empty() ? nullptr : sSubKeyName.c_str(),
-				0, KEY_READ, &hKey) == ERROR_SUCCESS)
-			{
-				DWORD iSize = 0;
-				const NTSTATUS iSizeStatus = NtQueryKey(hKey, KeyNameInformation, nullptr, 0, &iSize);
-				if ((iSizeStatus == STATUS_BUFFER_TOO_SMALL || iSizeStatus == STATUS_BUFFER_OVERFLOW) &&
-					iSize >= offsetof(KEY_NAME_INFORMATION, Name))
+				SmartPointer<PKEY_NAME_INFORMATION> pNameInfo(free,
+					static_cast<PKEY_NAME_INFORMATION>(malloc(iSize)));
+				if (pNameInfo != nullptr &&
+					NtQueryKey(hKey, KeyNameInformation, pNameInfo, iSize, &iSize) == STATUS_SUCCESS &&
+					pNameInfo->NameLength <=
+						(std::numeric_limits<USHORT>::max)() - sizeof(WCHAR))
 				{
-					SmartPointer<PKEY_NAME_INFORMATION> pNameInfo(free,
-						static_cast<PKEY_NAME_INFORMATION>(malloc(iSize)));
-					if (pNameInfo != nullptr &&
-						NtQueryKey(hKey, KeyNameInformation, pNameInfo, iSize, &iSize) == STATUS_SUCCESS &&
-						pNameInfo->NameLength <=
-							(std::numeric_limits<USHORT>::max)() - sizeof(WCHAR))
+					const size_t iNameBytes = pNameInfo->NameLength;
+					const PWSTR sNameCopy = static_cast<PWSTR>(malloc(iNameBytes + sizeof(WCHAR)));
+					if (sNameCopy != nullptr)
 					{
-						const size_t iNameBytes = pNameInfo->NameLength;
-						const PWSTR sNameCopy = static_cast<PWSTR>(malloc(iNameBytes + sizeof(WCHAR)));
-						if (sNameCopy != nullptr)
-						{
-							memcpy(sNameCopy, pNameInfo->Name, iNameBytes);
-							sNameCopy[iNameBytes / sizeof(WCHAR)] = L'\0';
-							tInterceptInfo->RegKeyName = { static_cast<USHORT>(iNameBytes),
-								static_cast<USHORT>(iNameBytes + sizeof(WCHAR)), sNameCopy };
-						}
+						memcpy(sNameCopy, pNameInfo->Name, iNameBytes);
+						sNameCopy[iNameBytes / sizeof(WCHAR)] = L'\0';
+						tInterceptInfo->RegKeyName = { static_cast<USHORT>(iNameBytes),
+							static_cast<USHORT>(iNameBytes + sizeof(WCHAR)), sNameCopy };
 					}
 				}
 			}
-
-			// verify key name lookup succeeded
-			if (tInterceptInfo->RegKeyName.Length == 0)
-			{
-				FreeRegInterceptInfo(tInterceptInfo);
-				continue;
-			}
-
-			// fetch value name
-			const LPWSTR sValueName = sParams[iParam + 1];
-			const size_t iValueNameBytes = wcslen(sValueName) * sizeof(WCHAR);
-			if (iValueNameBytes >
-				(std::numeric_limits<USHORT>::max)() - sizeof(WCHAR))
-			{
-				FreeRegInterceptInfo(tInterceptInfo);
-				continue;
-			}
-			tInterceptInfo->RegValueName = { static_cast<USHORT>(wcslen(sValueName) * sizeof(WCHAR)),
-				static_cast<USHORT>(iValueNameBytes + sizeof(WCHAR)), _wcsdup(sValueName) };
-			if (tInterceptInfo->RegValueName.Buffer == nullptr)
-			{
-				FreeRegInterceptInfo(tInterceptInfo);
-				continue;
-			}
-
-			// match the aesthetic types to the typed enumerations
-			const LPWSTR sType = sParams[iParam + 2];
-			if (_wcsicmp(sType, L"REG_DWORD") == 0) tInterceptInfo->RegValueType = REG_DWORD;
-			else if (_wcsicmp(sType, L"REG_QWORD") == 0) tInterceptInfo->RegValueType = REG_QWORD;
-			else if (_wcsicmp(sType, L"REG_SZ") == 0) tInterceptInfo->RegValueType = REG_SZ;
-			else if (_wcsicmp(sType, L"REG_BINARY") == 0) tInterceptInfo->RegValueType = REG_BINARY;
-			else if (_wcsicmp(sType, L"REG_BLOCK") == 0) tInterceptInfo->RegValueType = REG_BLOCK;
-			else
-			{
-				FreeRegInterceptInfo(tInterceptInfo);
-				continue;
-			}
-
-			// decode the value string to a data blob
-			const LPWSTR sData = sParams[iParam + 3];
-			if (tInterceptInfo->RegValueType == REG_DWORD)
-			{
-				DWORD iValue = 0;
-				if (!ParseRegistryDword(sData, iValue))
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-				tInterceptInfo->RegValueData = malloc(sizeof(iValue));
-				if (tInterceptInfo->RegValueData == nullptr)
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-				memcpy(tInterceptInfo->RegValueData, &iValue, sizeof(iValue));
-				tInterceptInfo->RegValueDataSize = sizeof(DWORD);
-			}
-			else if (tInterceptInfo->RegValueType == REG_QWORD)
-			{
-				unsigned __int64 iValue = 0;
-				if (!ParseRegistryQword(sData, iValue))
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-				tInterceptInfo->RegValueData = malloc(sizeof(iValue));
-				if (tInterceptInfo->RegValueData == nullptr)
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-				memcpy(tInterceptInfo->RegValueData, &iValue, sizeof(iValue));
-				tInterceptInfo->RegValueDataSize = sizeof(unsigned __int64);
-			}
-			else if (tInterceptInfo->RegValueType == REG_SZ)
-			{
-				tInterceptInfo->RegValueData = _wcsdup(sData);
-				if (tInterceptInfo->RegValueData == nullptr)
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-				tInterceptInfo->RegValueDataSize =
-					static_cast<DWORD>((wcslen(sData) + 1) * sizeof(WCHAR));
-			}
-			else if (tInterceptInfo->RegValueType == REG_BINARY)
-			{
-				const size_t iDataChars = wcslen(sData);
-				if ((iDataChars % 2) != 0)
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-				tInterceptInfo->RegValueDataSize = static_cast<DWORD>(iDataChars / 2);
-				if (tInterceptInfo->RegValueDataSize != 0)
-				{
-					tInterceptInfo->RegValueData = malloc(tInterceptInfo->RegValueDataSize);
-					if (tInterceptInfo->RegValueData == nullptr)
-					{
-						FreeRegInterceptInfo(tInterceptInfo);
-						continue;
-					}
-				}
-				bool bValid = true;
-				for (size_t iByte = 0; iByte < tInterceptInfo->RegValueDataSize; iByte++)
-				{
-					const int iHigh = HexDigitValue(sData[iByte * 2]);
-					const int iLow = HexDigitValue(sData[iByte * 2 + 1]);
-					if (iHigh < 0 || iLow < 0)
-					{
-						bValid = false;
-						break;
-					}
-					static_cast<PBYTE>(tInterceptInfo->RegValueData)[iByte] =
-						static_cast<BYTE>((iHigh << 4) | iLow);
-				}
-				if (!bValid)
-				{
-					FreeRegInterceptInfo(tInterceptInfo);
-					continue;
-				}
-			}
-			else if (tInterceptInfo->RegValueType == REG_BLOCK)
-			{
-				tInterceptInfo->RegValueData = nullptr;
-				tInterceptInfo->RegValueDataSize = 0;
-			}
-
-			// fully processed entry - continue
-			vResult.push_back(tInterceptInfo);
 		}
-		return vResult;
-	}();
+		if (tInterceptInfo->RegKeyName.Length == 0) continue;
+
+		// fetch value name
+		const LPWSTR sValueName = sParams[iParam + 1];
+		const size_t iValueNameBytes = wcslen(sValueName) * sizeof(WCHAR);
+		if (iValueNameBytes > (std::numeric_limits<USHORT>::max)() - sizeof(WCHAR)) continue;
+		tInterceptInfo->RegValueName = { static_cast<USHORT>(iValueNameBytes),
+			static_cast<USHORT>(iValueNameBytes + sizeof(WCHAR)), _wcsdup(sValueName) };
+		if (tInterceptInfo->RegValueName.Buffer == nullptr) continue;
+
+		// match the aesthetic types to the typed enumerations
+		const LPWSTR sType = sParams[iParam + 2];
+		DWORD& iType = tInterceptInfo->RegValueType;
+		if (_wcsicmp(sType, L"REG_DWORD") == 0) iType = REG_DWORD;
+		else if (_wcsicmp(sType, L"REG_QWORD") == 0) iType = REG_QWORD;
+		else if (_wcsicmp(sType, L"REG_SZ") == 0) iType = REG_SZ;
+		else if (_wcsicmp(sType, L"REG_BINARY") == 0) iType = REG_BINARY;
+		else if (_wcsicmp(sType, L"REG_BLOCK") == 0) iType = REG_BLOCK;
+		else continue;
+
+		// decode the value string to a data blob
+		const auto StoreData = [&](const void* pSource, size_t iSize)
+		{
+			tInterceptInfo->RegValueDataSize = static_cast<DWORD>(iSize);
+			tInterceptInfo->RegValueData = iSize == 0 ? nullptr : malloc(iSize);
+			if (tInterceptInfo->RegValueData != nullptr && pSource != nullptr)
+				memcpy(tInterceptInfo->RegValueData, pSource, iSize);
+			return iSize == 0 || tInterceptInfo->RegValueData != nullptr;
+		};
+		const LPWSTR sData = sParams[iParam + 3];
+		const size_t iDataChars = wcslen(sData);
+		DWORD iDword = 0;
+		unsigned __int64 iQword = 0;
+		if (iType == REG_DWORD && !(ParseRegistryInteger(sData, iDword) && StoreData(&iDword, sizeof(iDword)))) continue;
+		if (iType == REG_QWORD && !(ParseRegistryInteger(sData, iQword) && StoreData(&iQword, sizeof(iQword)))) continue;
+		if (iType == REG_SZ && !StoreData(sData, (iDataChars + 1) * sizeof(WCHAR))) continue;
+		if (iType == REG_BINARY && (iDataChars % 2 != 0 || !StoreData(nullptr, iDataChars / 2) ||
+			!DecodeHex(sData, static_cast<PBYTE>(tInterceptInfo->RegValueData)))) continue;
+
+		// fully processed entry
+		bRegInterceptBlocks |= iType == REG_BLOCK;
+		vRegInterceptList.push_back(tInterceptInfo.get());
+		(void)tInterceptInfo.release();
+	}
+}
+
+static const RegInterceptInfo* FindRegistryIntercept(HANDLE KeyHandle, PUNICODE_STRING ValueName)
+{
+	// Only blocks and overrides for this value name require the key name.
+	if (!bRegInterceptBlocks && std::ranges::none_of(vRegInterceptList, [&](const RegInterceptInfo* tInfo) {
+		return UnicodeStringEquals(tInfo->RegValueName, ValueName); })) return nullptr;
+
+	// Read the key name on the stack, using the heap only for unusually deep keys.
+	alignas(KEY_NAME_INFORMATION) BYTE aNameBuffer[1024];
+	PKEY_NAME_INFORMATION pNameInfo = reinterpret_cast<PKEY_NAME_INFORMATION>(aNameBuffer);
+	ULONG iNameSize = 0;
+	NTSTATUS iStatus = NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo, sizeof(aNameBuffer), &iNameSize);
+	SmartPointer<PKEY_NAME_INFORMATION> pLargeNameInfo(free, iStatus == STATUS_BUFFER_OVERFLOW ||
+		iStatus == STATUS_BUFFER_TOO_SMALL ? static_cast<PKEY_NAME_INFORMATION>(malloc(iNameSize)) : nullptr);
+	if (pLargeNameInfo != nullptr)
+	{
+		pNameInfo = pLargeNameInfo;
+		iStatus = NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo, iNameSize, &iNameSize);
+	}
+	if (iStatus != STATUS_SUCCESS || pNameInfo->NameLength > (std::numeric_limits<USHORT>::max)()) return nullptr;
+	const UNICODE_STRING sKeyName = { static_cast<USHORT>(pNameInfo->NameLength),
+		static_cast<USHORT>(pNameInfo->NameLength), pNameInfo->Name };
+
+	// A block hides every value beneath its key; otherwise the last matching override wins.
+	const RegInterceptInfo* tMatch = nullptr;
+	for (const RegInterceptInfo* tInfo : vRegInterceptList)
+	{
+		if (tInfo->RegValueType == REG_BLOCK && RegistryKeyIsSameOrDescendant(tInfo->RegKeyName, sKeyName))
+			return tInfo;
+		if (UnicodeStringEquals(tInfo->RegKeyName, &sKeyName) && UnicodeStringEquals(tInfo->RegValueName, ValueName))
+			tMatch = tInfo;
+	}
+	return tMatch;
 }
 
 EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
@@ -470,56 +391,19 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 		return STATUS_INVALID_PARAMETER;
 	}
 
-	// lookup the size for the key name so we can allocate space for it
-	DWORD iKeyNameSize;
-	const NTSTATUS iKeyStatus = NtQueryKey(KeyHandle, KeyNameInformation, nullptr, 0, &iKeyNameSize);
-	if (iKeyStatus != STATUS_BUFFER_TOO_SMALL)
+	// report blocked values as missing and return overrides in the requested layout
+	const RegInterceptInfo* tInfo = FindRegistryIntercept(KeyHandle, ValueName);
+	if (tInfo != nullptr && tInfo->RegValueType == REG_BLOCK)
 	{
-		return iKeyStatus;
+		*ResultLength = 0;
+		return STATUS_OBJECT_NAME_NOT_FOUND;
 	}
+	const NTSTATUS iStatus = tInfo == nullptr ? STATUS_NOT_SUPPORTED :
+		WriteRegistryOverride(*tInfo, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 
-	// allocate space for name and lookup
-	bool bIntercepted = false;
-	NTSTATUS iStatus = STATUS_UNSUCCESSFUL;
-	SmartPointer<PKEY_NAME_INFORMATION> pNameInfo(free, static_cast<PKEY_NAME_INFORMATION>(malloc(iKeyNameSize)));
-	if (pNameInfo != nullptr && NtQueryKey(KeyHandle, KeyNameInformation, pNameInfo,
-		iKeyNameSize, &iKeyNameSize) == STATUS_SUCCESS)
-	{
-		// convert to unicode string structure for quick comparisons
-		const UNICODE_STRING sKeyName = { static_cast<USHORT>(pNameInfo->NameLength),
-			static_cast<USHORT>(pNameInfo->NameLength), pNameInfo->Name };
-
-		for (const RegInterceptInfo* tRegOverrideInfo : vRegInterceptList)
-		{
-			// handle registry block
-			if (RegistryKeyIsSameOrDescendant(tRegOverrideInfo->RegKeyName, sKeyName) &&
-				tRegOverrideInfo->RegValueType == REG_BLOCK)
-			{
-				*ResultLength = 0;
-				bIntercepted = true;
-				iStatus = STATUS_OBJECT_NAME_NOT_FOUND;
-				break;
-			}
-
-			// handle registry override
-			if (UnicodeStringEquals(tRegOverrideInfo->RegKeyName, &sKeyName) &&
-				UnicodeStringEquals(tRegOverrideInfo->RegValueName, ValueName))
-			{
-				iStatus = WriteRegistryOverride(*tRegOverrideInfo,
-					KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
-				if (iStatus != STATUS_NOT_SUPPORTED) bIntercepted = true;
-			}
-		}
-	}
-
-	// return the real value if no match was found
-	if (!bIntercepted)
-	{
-		iStatus = TrueNtQueryValueKey(KeyHandle, ValueName, KeyValueInformationClass,
-			KeyValueInformation, Length, ResultLength);
-	}
-
-	return iStatus;
+	// return the real value if no match was found or the information class is not supported
+	return iStatus != STATUS_NOT_SUPPORTED ? iStatus : TrueNtQueryValueKey(KeyHandle, ValueName,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 }
 
 static NTSTATUS(WINAPI* TrueNtEnumerateValueKey)(_In_ HANDLE KeyHandle, _In_ ULONG Index,
@@ -538,25 +422,28 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 			KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 	}
 
+	// Read the value name on the stack, using the heap only for unusually long names.
+	alignas(KEY_VALUE_BASIC_INFORMATION) BYTE aNameBuffer[512];
+	PKEY_VALUE_BASIC_INFORMATION tKeyInfo = reinterpret_cast<PKEY_VALUE_BASIC_INFORMATION>(aNameBuffer);
+	std::unique_ptr<void, decltype(&free)> pLargeKeyInfo(nullptr, free);
 	ULONG iRequired = 0;
 	NTSTATUS iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
-		KeyValueBasicInformation, nullptr, 0, &iRequired);
-	if (iStatus != STATUS_BUFFER_TOO_SMALL && iStatus != STATUS_BUFFER_OVERFLOW) return iStatus;
-	for (;;)
+		KeyValueBasicInformation, tKeyInfo, sizeof(aNameBuffer), &iRequired);
+	while (iStatus == STATUS_BUFFER_TOO_SMALL || iStatus == STATUS_BUFFER_OVERFLOW)
 	{
-		SmartPointer<PKEY_VALUE_BASIC_INFORMATION> tKeyInfo(free,
-			static_cast<PKEY_VALUE_BASIC_INFORMATION>(malloc(iRequired)));
-		if (tKeyInfo == nullptr) return STATUS_NO_MEMORY;
+		pLargeKeyInfo.reset(malloc(iRequired));
+		if (pLargeKeyInfo == nullptr) return STATUS_NO_MEMORY;
+		tKeyInfo = static_cast<PKEY_VALUE_BASIC_INFORMATION>(pLargeKeyInfo.get());
 		iStatus = TrueNtEnumerateValueKey(KeyHandle, Index,
 			KeyValueBasicInformation, tKeyInfo, iRequired, &iRequired);
-		if (iStatus == STATUS_BUFFER_TOO_SMALL || iStatus == STATUS_BUFFER_OVERFLOW) continue;
-		if (iStatus != STATUS_SUCCESS) return iStatus;
-
-		UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
-			static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
-		return DetourNtQueryValueKey(KeyHandle, &sValue,
-			KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 	}
+
+	if (iStatus != STATUS_SUCCESS) return iStatus;
+
+	UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
+		static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
+	return DetourNtQueryValueKey(KeyHandle, &sValue,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 }
 
 //   __   __   __   __   ___  __   __      ___       ___
@@ -604,19 +491,8 @@ static const MacOverrideInfo& GetMacOverrideInfo()
 			tResult.Text.length() > tResult.Address.size() * 2)
 			return tResult;
 
-		tResult.Length = tResult.Text.length() / 2;
-		for (size_t iByte = 0; iByte < tResult.Length; iByte++)
-		{
-			const int iHigh = HexDigitValue(tResult.Text[iByte * 2]);
-			const int iLow = HexDigitValue(tResult.Text[iByte * 2 + 1]);
-			if (iHigh < 0 || iLow < 0)
-			{
-				tResult.Length = 0;
-				return tResult;
-			}
-			tResult.Address[iByte] = static_cast<BYTE>((iHigh << 4) | iLow);
-		}
-		tResult.Valid = true;
+		tResult.Valid = DecodeHex(tResult.Text, tResult.Address.data());
+		tResult.Length = tResult.Valid ? tResult.Text.length() / 2 : 0;
 		return tResult;
 	}();
 	return tOverride;
@@ -708,6 +584,7 @@ static decltype(&AmsiScanBuffer) TrueAmsiScanBuffer = AmsiScanBuffer;
 static HRESULT WINAPI DetourAmsiScanBuffer(_In_  HAMSICONTEXT amsiContext, _In_reads_bytes_(length) PVOID buffer, _In_  ULONG length,
 									_In_opt_  LPCWSTR contentName, _In_opt_  HAMSISESSION amsiSession, _Out_ AMSI_RESULT* result)
 {
+	if (result == nullptr) return E_INVALIDARG;
 	*result = AMSI_RESULT_CLEAN;
 	return S_OK;
 }
@@ -717,6 +594,7 @@ static decltype(&AmsiScanString) TrueAmsiScanString = AmsiScanString;
 static HRESULT WINAPI DetourAmsiScanString(_In_  HAMSICONTEXT amsiContext, _In_  LPCWSTR string, _In_opt_  LPCWSTR contentName,
 									_In_opt_  HAMSISESSION amsiSession, _Out_ AMSI_RESULT* result)
 {
+	if (result == nullptr) return E_INVALIDARG;
 	*result = AMSI_RESULT_CLEAN;
 	return S_OK;
 }
@@ -838,8 +716,7 @@ static BOOL __stdcall DetourIsUserAnAdmin()
 
 static decltype(&CheckTokenMembership) TrueCheckTokenMembership = CheckTokenMembership;
 
-static BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
-												_In_ PSID SidToCheck, _Out_ PBOOL IsMember)
+static PSID GetLocalAdministratorsGroup()
 {
 	// fetch and allocate the local admin structure (once)
 	static SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
@@ -850,12 +727,19 @@ static BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 		return pSid;
 	}());
 
+	return LocalAdministratorsGroup;
+}
+
+static BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
+	_In_ PSID SidToCheck, _Out_ PBOOL IsMember)
+{
 	// get the real value of the function - return if failure
 	const BOOL bRealResult = TrueCheckTokenMembership(TokenHandle, SidToCheck, IsMember);
 	if (bRealResult == 0) return bRealResult;
 
 	// check if the local admin group is being requested
-	if (LocalAdministratorsGroup != nullptr && EqualSid(SidToCheck, LocalAdministratorsGroup))
+	const PSID administrators = GetLocalAdministratorsGroup();
+	if (administrators != nullptr && EqualSid(SidToCheck, administrators))
 	{
 		// unconditionally say this user is running as an admin
 		*IsMember = TRUE;
@@ -947,50 +831,60 @@ static std::wstring IntToString(int iValue, size_t iPadding = 5)
 	return std::wstring(iPadding - sValue.length(), '0') + sValue;
 }
 
-static void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen)
+static void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen) noexcept
 {
 	// Several crypto APIs support size-query calls with a null data buffer.
 	// Those calls contain no plaintext to record and must remain side-effect free.
 	if (sFunction == nullptr || pData == nullptr || iDataLen == 0) return;
 
-	// remove 'Detour' from the function name
-	sFunction = &sFunction[wcslen(L"Detour")];
-
-	// decide whether to output to console or file system
-	static const LPWSTR sCryptoValue = _wgetenv(WINPRIV_EV_RECORD_CRYPTO);
-	if (sCryptoValue == nullptr || *sCryptoValue == L'\0') return;
-	if (_wcsicmp(sCryptoValue, L"SHOW") == 0)
+	// Recording must not change the crypto operation's error state or leak allocation failures to its caller.
+	const DWORD iLastError = GetLastError();
+	try
 	{
-		if (IsTextUnicode(pData, iDataLen, nullptr))
+		SmartPointer<const DWORD*> tErrorCleanup([](const DWORD* pError) { SetLastError(*pError); }, &iLastError);
+
+		// remove 'Detour' from the function name
+		sFunction = &sFunction[wcslen(L"Detour")];
+
+		// decide whether to output to console or file system
+		const LPWSTR sCryptoValue = _wgetenv(WINPRIV_EV_RECORD_CRYPTO);
+		if (sCryptoValue == nullptr || *sCryptoValue == L'\0') return;
+		if (_wcsicmp(sCryptoValue, L"SHOW") == 0)
 		{
-			PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*s\n",
-				sFunction, L"Unicode", iDataLen, (int)(iDataLen / sizeof(WCHAR)), (LPWSTR)pData);
+			if (IsTextUnicode(pData, iDataLen, nullptr))
+			{
+				PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*s\n",
+					sFunction, L"Unicode", iDataLen, (int)(iDataLen / sizeof(WCHAR)), (LPWSTR)pData);
+			}
+			else
+			{
+				PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*S\n",
+					sFunction, L"Multibyte", iDataLen, (int)iDataLen, pData);
+			}
 		}
 		else
 		{
-			PrintMessage(L"Function: %s\nGuessed Encoding: %s\nLength In Bytes: %d\nData:%.*S\n",
-				sFunction, L"Multibyte", iDataLen, (int)iDataLen, pData);
+			// formulate the file name to write to
+			static std::atomic<int> iOrder = 0;
+			const std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
+				+ IntToString(GetCurrentProcessId()) + L"-TID" + IntToString(GetCurrentThreadId())
+				+ L"-" + sFunction + L".bin";
+
+			// create the crypto data file
+			DWORD iSizeWritten = 0;
+			SmartPointer<HANDLE> hFile(CloseHandle, CreateFile(sFilePath.c_str(), GENERIC_ALL,
+				FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+			if (hFile == INVALID_HANDLE_VALUE ||
+				WriteFile(hFile, pData, iDataLen, &iSizeWritten, nullptr) == 0 ||
+				iDataLen != iSizeWritten)
+			{
+				PrintMessage(L"ERROR: Problem committing data to crypto data file.\n");
+			}
 		}
 	}
-	else
+	catch (...)
 	{
-		// formulate the file name to write to
-		static std::atomic<int> iOrder = 0;
-		const std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
-			+ IntToString(GetCurrentProcessId()) + L"-TID" + IntToString(GetCurrentThreadId())
-			+ L"-" + sFunction + L".bin";
-
-		// create the crypto data file
-		DWORD iSizeWritten = 0;
-		SmartPointer<HANDLE> hFile(CloseHandle, CreateFile(sFilePath.c_str(), GENERIC_ALL, 
-			FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
-		if (hFile == INVALID_HANDLE_VALUE ||
-			WriteFile(hFile, pData, iDataLen, &iSizeWritten, nullptr) == 0 ||
-			iDataLen != iSizeWritten)
-		{
-			PrintMessage(L"ERROR: Problem committing data to crypto data file.\n");
-			return;
-		}
+		SetLastError(iLastError);
 	}
 }
 
@@ -1083,13 +977,9 @@ static bool TryRegexReplace(const std::wstring& sInput, LPCWSTR sSearch,
 		sResult = std::regex_replace(sInput, std::wregex(sSearch), sReplace);
 		return true;
 	}
-	catch (const std::regex_error&)
-	{
-		return false;
-	}
 	catch (...)
 	{
-		// No C++ exception may cross an ODBC or COM ABI boundary.
+		// Invalid patterns and allocation failures must not cross an ODBC or COM ABI boundary.
 		return false;
 	}
 }
@@ -1098,18 +988,6 @@ static LPCWSTR GetSqlConnectReplacement() noexcept
 {
 	const LPCWSTR sReplacement = _wgetenv(WINPRIV_EV_SQL_CONNECT_REPLACE);
 	return sReplacement == nullptr ? L"" : sReplacement;
-}
-
-static decltype(&SQLDriverConnectA) TrueSQLDriverConnectA = SQLDriverConnectA;
-
-static SQLRETURN SQL_API DetourSQLDriverConnectA(SQLHDBC hdbc, SQLHWND hwnd, _In_reads_(cbConnStrIn) SQLCHAR* szConnStrIn,
-												 SQLSMALLINT cbConnStrIn, _Out_writes_opt_(cbConnStrOutMax) SQLCHAR* szConnStrOut, SQLSMALLINT cbConnStrOutMax,
-												 _Out_opt_ SQLSMALLINT* pcbConnStrOut, SQLUSMALLINT fDriverCompletion)
-{
-	// internally, the ansi function is routed through the wide character function
-	// so we do not need to add any handling logic here
-	return TrueSQLDriverConnectA(hdbc, hwnd, szConnStrIn, cbConnStrIn, szConnStrOut,
-		cbConnStrOutMax, pcbConnStrOut, fDriverCompletion);
 }
 
 static decltype(&SQLDriverConnectW) TrueSQLDriverConnectW = SQLDriverConnectW;
@@ -1155,7 +1033,7 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 				const size_t iShownLength = cchConnStrIn == SQL_NTS
 					? wcslen(szConnStrIn) : static_cast<size_t>(cchConnStrIn);
 				const std::wstring sShownConnection(szConnStrIn, iShownLength);
-				PrintMessage(L"SQL Connection String: %s", sShownConnection.c_str());
+				PrintMessage(L"SQL Connection String: %s\n", sShownConnection.c_str());
 			}
 		}
 	}
@@ -1178,41 +1056,62 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 //  \__, \__/  |  |    |__/ |___  |  \__/ \__/ |  \ .__/
 //
 
-EXTERN_C VOID WINAPI DllExtraAttachCom(VOID);
-EXTERN_C VOID WINAPI DllExtraDetachCom(VOID);
 static std::atomic<bool> bComDetoursNeedToBeInitialized = true;
-static thread_local bool bComDetoursAreBeingInitialized = false;
+static DWORD iComInitializationSlot = TLS_OUT_OF_INDEXES;
+static DWORD iAdoRewriteSlot = TLS_OUT_OF_INDEXES;
+static SRWLOCK tComDetourInitializationLock = SRWLOCK_INIT;
 
-using AdoDispatchInvoke = HRESULT(STDMETHODCALLTYPE*)(IDispatch*, DISPID,
-	REFIID, LCID, WORD, DISPPARAMS*, VARIANT*, EXCEPINFO*, UINT*);
-using AdoConnectionOpen = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, BSTR, BSTR,
-	BSTR, LONG);
-
-static AdoDispatchInvoke TrueAdoDispatchInvoke = nullptr;
-static PVOID pAdoDispatchInvokeTarget = nullptr;
+using AdoConnectionOpen = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, BSTR, BSTR, BSTR, LONG);
 static AdoConnectionOpen TrueAdoConnectionOpen = nullptr;
 static PVOID pAdoConnectionOpenTarget = nullptr;
-static HMODULE hAdoDispatchModule = nullptr;
 static HMODULE hAdoConnectionOpenModule = nullptr;
-static HMODULE hWinPrivDispatchModule = nullptr;
+static bool bAdoDispatchAttached = false;
+
+// Connection15 inherits IDispatch (slots 0-6), then _ADO::Properties (7), connection members (8-14),
+// Close/Execute/transaction methods (15-19), and Open at slot 20.
+constexpr size_t iConnectionOpenVtableIndex = 20;
+
+#if !defined(_M_IX86)
+using AdoDispatchInvoke = HRESULT(STDMETHODCALLTYPE*)(IDispatch*, DISPID,
+	REFIID, LCID, WORD, DISPPARAMS*, VARIANT*, EXCEPINFO*, UINT*);
+static AdoDispatchInvoke TrueAdoDispatchInvoke = nullptr;
+static PVOID pAdoDispatchInvokeTarget = nullptr;
+static HMODULE hAdoDispatchModule = nullptr;
 static DISPID iAdoOpenDispatchId = DISPID_UNKNOWN;
 static DISPID iAdoConnectionStringDispatchId = DISPID_UNKNOWN;
-static bool bAdoDispatchAttached = false;
-static SRWLOCK tComDetourInitializationLock = SRWLOCK_INIT;
-static thread_local ULONG iAdoRewriteDepth = 0;
+#endif
+
+static bool InitializeHookThreadState()
+{
+	// Dynamic slots support threads created after the in-memory library is initialized.
+	iComInitializationSlot = TlsAlloc();
+	iAdoRewriteSlot = TlsAlloc();
+	if (iComInitializationSlot != TLS_OUT_OF_INDEXES && iAdoRewriteSlot != TLS_OUT_OF_INDEXES) return true;
+	if (iComInitializationSlot != TLS_OUT_OF_INDEXES) TlsFree(iComInitializationSlot);
+	if (iAdoRewriteSlot != TLS_OUT_OF_INDEXES) TlsFree(iAdoRewriteSlot);
+	return false;
+}
+
+static ULONG_PTR GetHookThreadValue(DWORD slot)
+{
+	const DWORD error = GetLastError();
+	const auto value = reinterpret_cast<ULONG_PTR>(TlsGetValue(slot));
+	SetLastError(error);
+	return value;
+}
 
 class ComDetourInitializationScope final
 {
 public:
 	explicit ComDetourInitializationScope(SRWLOCK* pLock) noexcept : pLock_(pLock)
 	{
-		bComDetoursAreBeingInitialized = true;
+		TlsSetValue(iComInitializationSlot, reinterpret_cast<PVOID>(1));
 	}
 
 	~ComDetourInitializationScope() noexcept
 	{
 		ReleaseSRWLockExclusive(pLock_);
-		bComDetoursAreBeingInitialized = false;
+		TlsSetValue(iComInitializationSlot, nullptr);
 	}
 
 	ComDetourInitializationScope(const ComDetourInitializationScope&) = delete;
@@ -1225,8 +1124,14 @@ private:
 class AdoRewriteScope final
 {
 public:
-	AdoRewriteScope() { iAdoRewriteDepth++; }
-	~AdoRewriteScope() { iAdoRewriteDepth--; }
+	AdoRewriteScope()
+	{
+		TlsSetValue(iAdoRewriteSlot, reinterpret_cast<PVOID>(GetHookThreadValue(iAdoRewriteSlot) + 1));
+	}
+	~AdoRewriteScope()
+	{
+		TlsSetValue(iAdoRewriteSlot, reinterpret_cast<PVOID>(GetHookThreadValue(iAdoRewriteSlot) - 1));
+	}
 	AdoRewriteScope(const AdoRewriteScope&) = delete;
 	AdoRewriteScope& operator=(const AdoRewriteScope&) = delete;
 };
@@ -1235,17 +1140,6 @@ static constexpr IID IID_WinPrivConnection15 =
 	{ 0x00000515, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x6D, 0x2E, 0xA4 } };
 static constexpr CLSID CLSID_WinPrivAdoConnection =
 	{ 0x00000514, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x6D, 0x2E, 0xA4 } };
-
-static BSTR GetVariantString(VARIANTARG* pArgument)
-{
-	if (pArgument == nullptr) return nullptr;
-	if (V_VT(pArgument) == VT_BSTR) return V_BSTR(pArgument);
-	if (V_VT(pArgument) == (VT_BSTR | VT_BYREF) && V_BSTRREF(pArgument) != nullptr)
-		return *V_BSTRREF(pArgument);
-	if (V_VT(pArgument) == (VT_VARIANT | VT_BYREF))
-		return GetVariantString(V_VARIANTREF(pArgument));
-	return nullptr;
-}
 
 static BSTR GetStoredAdoConnectionString(IUnknown* pConnection)
 {
@@ -1279,7 +1173,7 @@ static BSTR PrepareAdoConnectionString(BSTR sPassedString) noexcept
 		}
 		if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1))
 		{
-			PrintMessage(L"SQL Connection String: %s", sRevised.c_str());
+			PrintMessage(L"SQL Connection String: %s\n", sRevised.c_str());
 		}
 	}
 	catch (...)
@@ -1294,7 +1188,7 @@ static HRESULT STDMETHODCALLTYPE DetourAdoConnectionOpen(IUnknown* pConnection,
 	BSTR sConnectionString, BSTR sUserId, BSTR sPassword, LONG iOptions)
 {
 	if (TrueAdoConnectionOpen == nullptr) return E_UNEXPECTED;
-	if (iAdoRewriteDepth != 0)
+	if (GetHookThreadValue(iAdoRewriteSlot) != 0)
 	{
 		return TrueAdoConnectionOpen(pConnection, sConnectionString, sUserId,
 			sPassword, iOptions);
@@ -1312,6 +1206,18 @@ static HRESULT STDMETHODCALLTYPE DetourAdoConnectionOpen(IUnknown* pConnection,
 	return iResult;
 }
 
+#if !defined(_M_IX86)
+static BSTR GetVariantString(VARIANTARG* pArgument)
+{
+	if (pArgument == nullptr) return nullptr;
+	if (V_VT(pArgument) == VT_BSTR) return V_BSTR(pArgument);
+	if (V_VT(pArgument) == (VT_BSTR | VT_BYREF) && V_BSTRREF(pArgument) != nullptr)
+		return *V_BSTRREF(pArgument);
+	if (V_VT(pArgument) == (VT_VARIANT | VT_BYREF))
+		return GetVariantString(V_VARIANTREF(pArgument));
+	return nullptr;
+}
+
 static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	DISPID iMember, REFIID iInterface, LCID iLocale, WORD iFlags,
 	DISPPARAMS* pParameters, VARIANT* pResult, EXCEPINFO* pException,
@@ -1327,7 +1233,7 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
 			iFlags, pParameters, pResult, pException, pArgumentError);
 	}
-	if (iAdoRewriteDepth != 0)
+	if (GetHookThreadValue(iAdoRewriteSlot) != 0)
 	{
 		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
 			iFlags, pParameters, pResult, pException, pArgumentError);
@@ -1507,10 +1413,6 @@ static void AttachAdoDispatchDetour()
 			pAdoDispatchInvokeTarget = pVtable[6];
 			TrueAdoDispatchInvoke =
 				reinterpret_cast<AdoDispatchInvoke>(pAdoDispatchInvokeTarget);
-			// Connection15 inherits IDispatch (slots 0-6), then _ADO::Properties
-			// (7), connection members (8-14), Close/Execute/transaction methods
-			// (15-19), and Open at slot 20.
-			constexpr size_t iConnectionOpenVtableIndex = 20;
 			pAdoConnectionOpenTarget =
 				pConnectionVtable[iConnectionOpenVtableIndex];
 			TrueAdoConnectionOpen =
@@ -1526,11 +1428,7 @@ static void AttachAdoDispatchDetour()
 				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
 				reinterpret_cast<LPCWSTR>(pAdoConnectionOpenTarget),
 				&hAdoConnectionOpenModule) != FALSE;
-			const bool bWinPrivPinned = GetModuleHandleExW(
-				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-				reinterpret_cast<LPCWSTR>(reinterpret_cast<ULONG_PTR>(
-					DetourAdoDispatchInvoke)), &hWinPrivDispatchModule) != FALSE;
-			const bool bTargetsReady = bTargetPinned && bOpenTargetPinned && bWinPrivPinned &&
+			const bool bTargetsReady = bTargetPinned && bOpenTargetPinned &&
 				pAdoConnectionOpenTarget != pAdoDispatchInvokeTarget;
 #if defined(_M_X64)
 			USHORT iProcessMachine = IMAGE_FILE_MACHINE_UNKNOWN;
@@ -1548,9 +1446,9 @@ static void AttachAdoDispatchDetour()
 			{
 				winpriv::detours::transaction tTransaction;
 				if (bTargetsReady && tTransaction &&
-					tTransaction.apply(winpriv::detours::action::attach,
+					tTransaction.attach(
 						TrueAdoDispatchInvoke, DetourAdoDispatchInvoke) == NO_ERROR &&
-					tTransaction.apply(winpriv::detours::action::attach,
+					tTransaction.attach(
 						TrueAdoConnectionOpen, DetourAdoConnectionOpen) == NO_ERROR &&
 					tTransaction.commit() == NO_ERROR)
 				{
@@ -1562,21 +1460,39 @@ static void AttachAdoDispatchDetour()
 	if (pConnection != nullptr) pConnection->Release();
 	if (pDispatch != nullptr) pDispatch->Release();
 }
+#else
+static void AttachAdoOpenDetour()
+{
+	// x86 targets hook Connection15::Open directly.
+	if (bAdoDispatchAttached) return;
+	IUnknown* pConnection = nullptr;
+	if (FAILED(CoCreateInstance(CLSID_WinPrivAdoConnection, nullptr, CLSCTX_INPROC_SERVER,
+		IID_WinPrivConnection15, reinterpret_cast<void**>(&pConnection))) || pConnection == nullptr) return;
+	pAdoConnectionOpenTarget = (*reinterpret_cast<PVOID**>(pConnection))[iConnectionOpenVtableIndex];
+	TrueAdoConnectionOpen = reinterpret_cast<AdoConnectionOpen>(pAdoConnectionOpenTarget);
+	winpriv::detours::transaction tTransaction;
+	bAdoDispatchAttached = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(pAdoConnectionOpenTarget), &hAdoConnectionOpenModule) && tTransaction &&
+		tTransaction.attach(TrueAdoConnectionOpen, DetourAdoConnectionOpen) == NO_ERROR &&
+		tTransaction.commit() == NO_ERROR;
+	pConnection->Release();
+}
+#endif
 
 static void InitializeComDetoursForCurrentThread()
 {
-	if (bComDetoursAreBeingInitialized) return;
+	if (GetHookThreadValue(iComInitializationSlot) != 0) return;
 	if (!TryAcquireSRWLockExclusive(&tComDetourInitializationLock)) return;
 	const ComDetourInitializationScope tInitializationScope(
 		&tComDetourInitializationLock);
 	try
 	{
-#if defined(_M_X64) || defined(_M_ARM64)
-		// x64 and ARM64 need both late-bound Invoke and direct Connection15::Open coverage;
-		// the two C++ hooks share a thread-local rewrite guard.
-		AttachAdoDispatchDetour();
+#if defined(_M_IX86)
+		AttachAdoOpenDetour();
 #else
-		DllExtraAttachCom();
+		// x64 and ARM64 need both late-bound Invoke and direct Connection15::Open coverage;
+		// the two hooks share a thread-local rewrite guard.
+		AttachAdoDispatchDetour();
 #endif
 	}
 	catch (...)
@@ -1648,12 +1564,9 @@ static HRESULT STDAPICALLTYPE DetourCoCreateInstanceEx(_In_ REFCLSID Clsid,
 //   __   ___ ___  __        __   __                           __   ___        ___      ___
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
-void DllTimeAttachDetach(winpriv::detours::action requestedAction);
 
-bool DllExtraAttachDetach(winpriv::detours::action requestedAction)
+bool AttachExtraHooks()
 {
-	const bool attaching = requestedAction == winpriv::detours::action::attach;
-
 	// Skip if this is the parent process
 	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
 	{
@@ -1662,130 +1575,97 @@ bool DllExtraAttachDetach(winpriv::detours::action requestedAction)
 
 	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
-		ApplyDetour(requestedAction, TrueRtlExitUserProcess, DetourRtlExitUserProcess);
+		AttachDetour(TrueRtlExitUserProcess, DetourRtlExitUserProcess);
 	}
 
-	if (!attaching || VariableNotEmpty(WINPRIV_EV_MOCK_TIME))
+	if (VariableNotEmpty(WINPRIV_EV_MOCK_TIME))
 	{
-		DllTimeAttachDetach(requestedAction);
+		AttachTimeHooks();
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))
 	{
-		ApplyDetour(requestedAction, TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
-		ApplyDetour(requestedAction, TrueGetAdaptersInfo, DetourGetAdaptersInfo);
-		ApplyDetour(requestedAction, TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
+		(void)GetMacOverrideInfo();
+		AttachDetour(TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
+		AttachDetour(TrueGetAdaptersInfo, DetourGetAdaptersInfo);
+		AttachDetour(TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
 		// Emulated x86 threads can query the registry before their static TLS is initialized.
-		if (attaching) InitializeRegistryOverrides();
-		ApplyDetour(requestedAction, TrueNtQueryValueKey, DetourNtQueryValueKey);
-		ApplyDetour(requestedAction, TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
+		InitializeRegistryOverrides();
+		AttachDetour(TrueNtQueryValueKey, DetourNtQueryValueKey);
+		AttachDetour(TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_DISABLE_AMSI, 1))
 	{
-		ApplyDetour(requestedAction, TrueAmsiScanBuffer, DetourAmsiScanBuffer);
-		ApplyDetour(requestedAction, TrueAmsiScanString, DetourAmsiScanString);
+		AttachDetour(TrueAmsiScanBuffer, DetourAmsiScanBuffer);
+		AttachDetour(TrueAmsiScanString, DetourAmsiScanString);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_CLM))
 	{
-		ApplyDetour(requestedAction, TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy);
-		if (attaching)
-			TrueWldpCanExecuteFile = reinterpret_cast<decltype(TrueWldpCanExecuteFile)>(
-				GetProcAddress(GetModuleHandleW(L"wldp.dll"), "WldpCanExecuteFile"));
+		AttachDetour(TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy);
+		TrueWldpCanExecuteFile = reinterpret_cast<decltype(TrueWldpCanExecuteFile)>(
+			GetProcAddress(GetModuleHandleW(L"wldp.dll"), "WldpCanExecuteFile"));
 		if (TrueWldpCanExecuteFile != nullptr)
-			ApplyDetour(requestedAction, TrueWldpCanExecuteFile, DetourWldpCanExecuteFile);
-		ApplyDetour(requestedAction, TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList);
-		ApplyDetour(requestedAction, TrueSaferIdentifyLevel, DetourSaferIdentifyLevel);
+			AttachDetour(TrueWldpCanExecuteFile, DetourWldpCanExecuteFile);
+		AttachDetour(TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList);
+		AttachDetour(TrueSaferIdentifyLevel, DetourSaferIdentifyLevel);
 	}
 
-	if (!DllHostAttachDetach(requestedAction)) return false;
+	if (!AttachHostHooks()) return false;
 
-	if (!DllFileAttachDetach(requestedAction)) return false;
+	if (!AttachFileHooks()) return false;
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
-		ApplyDetour(requestedAction, TrueIsUserAnAdmin, DetourIsUserAnAdmin);
-		ApplyDetour(requestedAction, TrueCheckTokenMembership, DetourCheckTokenMembership);
+		(void)GetLocalAdministratorsGroup();
+		AttachDetour(TrueIsUserAnAdmin, DetourIsUserAnAdmin);
+		AttachDetour(TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
 	{
-		ApplyDetour(requestedAction, TrueGetVersionExW, DetourGetVersionExW);
-		ApplyDetour(requestedAction, TrueGetVersionExA, DetourGetVersionExA);
-		ApplyDetour(requestedAction, TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
+		AttachDetour(TrueGetVersionExW, DetourGetVersionExW);
+		AttachDetour(TrueGetVersionExA, DetourGetVersionExA);
+		AttachDetour(TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
 	{
-		ApplyDetour(requestedAction, TrueBCryptEncrypt, DetourBCryptEncrypt);
-		ApplyDetour(requestedAction, TrueBCryptDecrypt, DetourBCryptDecrypt);
-		ApplyDetour(requestedAction, TrueCryptEncrypt, DetourCryptEncrypt);
-		ApplyDetour(requestedAction, TrueCryptDecrypt, DetourCryptDecrypt);
-		ApplyDetour(requestedAction, TrueRtlEncryptMemory, DetourRtlEncryptMemory);
-		ApplyDetour(requestedAction, TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+		AttachDetour(TrueBCryptEncrypt, DetourBCryptEncrypt);
+		AttachDetour(TrueBCryptDecrypt, DetourBCryptDecrypt);
+		AttachDetour(TrueCryptEncrypt, DetourCryptEncrypt);
+		AttachDetour(TrueCryptDecrypt, DetourCryptDecrypt);
+		AttachDetour(TrueRtlEncryptMemory, DetourRtlEncryptMemory);
+		AttachDetour(TrueRtlDecryptMemory, DetourRtlDecryptMemory);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		ApplyDetour(requestedAction, TrueSQLDriverConnectA, DetourSQLDriverConnectA);
-		ApplyDetour(requestedAction, TrueSQLDriverConnectW, DetourSQLDriverConnectW);
+		if (!InitializeHookThreadState()) return false;
+		AttachDetour(TrueSQLDriverConnectW, DetourSQLDriverConnectW);
 	}
 
-	if (attaching && VariableNotEmpty(WINPRIV_EV_PRIVLIST))
+	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
 	{
-		// tokenize the string using ranges
-		std::wstring sPrivString(_wgetenv(WINPRIV_EV_PRIVLIST));
-		auto tokens = sPrivString 
-			| std::views::split(L',')
-			| std::views::transform([](auto&& rng) {
-				return std::wstring(std::ranges::begin(rng), std::ranges::end(rng));
-			});
-
+		// enable the comma-delimited privileges inherited from the launcher
 		std::vector<std::wstring> vPrivs;
-		for (auto&& token : tokens)
-		{
-			vPrivs.push_back(token);
-		}
-
-		// attempt to enable the privileges
-		std::vector<std::wstring> tFailedPrivs = EnablePrivs(vPrivs);
-
-		// grant any privileges that cannot be enabled
-		if (!tFailedPrivs.empty())
-		{
-			PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.");
-		}
+		for (const auto sPriv : std::wstring_view(_wgetenv(WINPRIV_EV_PRIVLIST)) | std::views::split(L','))
+			vPrivs.emplace_back(sPriv.begin(), sPriv.end());
+		if (!EnablePrivs(vPrivs).empty()) PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.\n");
 	}
 
 	// special handling for com-based detours
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		ApplyDetour(requestedAction, TrueCoInitializeEx, DetourCoInitializeEx);
-		ApplyDetour(requestedAction, TrueCoInitialize, DetourCoInitialize);
-		ApplyDetour(requestedAction, TrueCoCreateInstance, DetourCoCreateInstance);
-		ApplyDetour(requestedAction, TrueCoCreateInstanceEx, DetourCoCreateInstanceEx);
-		if (!attaching)
-		{
-#if !defined(_M_X64) && !defined(_M_ARM64)
-			DllExtraDetachCom();
-#endif
-		}
+		AttachDetour(TrueCoInitializeEx, DetourCoInitializeEx);
+		AttachDetour(TrueCoInitialize, DetourCoInitialize);
+		AttachDetour(TrueCoCreateInstance, DetourCoCreateInstance);
+		AttachDetour(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx);
 	}
 	return true;
-}
-
-EXTERN_C LPWSTR SearchReplace(LPCWSTR sInputString, LPCWSTR sSearchString, LPCWSTR sReplaceString)
-{
-	const std::wstring sInput = sInputString == nullptr ? L"" : sInputString;
-	std::wstring sResult;
-	if (!TryRegexReplace(sInput, sSearchString, sReplaceString, sResult))
-	{
-		sResult = sInput;
-	}
-	return _wcsdup(sResult.c_str());
 }

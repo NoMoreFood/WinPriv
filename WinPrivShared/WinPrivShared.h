@@ -2,19 +2,18 @@
 
 #include <Windows.h>
 
-#ifdef __cplusplus
+#include <array>
 #include <vector>
 #include <string>
 #include <string_view>
 #include <functional>
 #include <ranges>
-#endif
 
 //
 // Shared Functions
 //
-#ifdef __cplusplus
-std::vector<std::wstring> EnablePrivs(std::vector<std::wstring> tRequestedPrivs);
+
+std::vector<std::wstring> EnablePrivs(const std::vector<std::wstring>& vRequestedPrivs);
 BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights,
 	std::vector<std::wstring>* pAddedPrivs = nullptr);
 BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
@@ -31,7 +30,6 @@ Function LoadNtFunction(LPCSTR name) noexcept
 {
 	return reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), name));
 }
-#endif
 
 //
 // Environment Variables Used For Interprocess Communication
@@ -57,15 +55,13 @@ Function LoadNtFunction(LPCSTR name) noexcept
 #define WINPRIV_EV_CLM L"_WINPRIV_EV_CLM_"
 #define WINPRIV_EV_MOCK_TIME L"_WINPRIV_EV_MOCK_TIME_"
 
-//
-// Miscellaneous Unicode String Helper Functions
-//
-
-#define UnicodeStringsEqual(x,y) ((x)->Length == (y)->Length && \
-	_wcsnicmp((x)->Buffer,(y)->Buffer,(x)->Length / sizeof(WCHAR)) == 0)
-
-#define UnicodeStringPrefix(x,y) (((x)->Length <= (y)->Length) ? \
-	_wcsnicmp((x)->Buffer,(y)->Buffer,(x)->Length / sizeof(WCHAR)) == 0 : FALSE)
+inline constexpr std::array<LPCWSTR, 19> WinPrivSettingNames{
+	WINPRIV_EV_RELAUNCH_MODE, WINPRIV_EV_REG_OVERRIDE, WINPRIV_EV_MAC_OVERRIDE, WINPRIV_EV_BACKUP_RESTORE,
+	WINPRIV_EV_DISABLE_AMSI, WINPRIV_EV_BREAK_LOCKS, WINPRIV_EV_PRIVLIST, WINPRIV_EV_PARENT_PID,
+	WINPRIV_EV_HOST_OVERRIDE, WINPRIV_EV_ADMIN_IMPERSONATE, WINPRIV_EV_SERVER_EDITION, WINPRIV_EV_RECORD_CRYPTO,
+	WINPRIV_EV_SQL_CONNECT_SHOW, WINPRIV_EV_SQL_CONNECT_SEARCH, WINPRIV_EV_SQL_CONNECT_REPLACE,
+	WINPRIV_EV_MEDIUM_PLUS, WINPRIV_EV_CLM, WINPRIV_EV_MOCK_TIME, WINPRIV_EV_FILE_RULES,
+};
 
 //
 // Miscellaneous Environment Variable Helper Functions
@@ -89,7 +85,6 @@ inline BOOL VariableIsSet(const wchar_t* x, const int y)
 // Miscellaneous String Helper Functions
 //
 
-#ifdef __cplusplus
 inline std::wstring TrimString(const std::wstring& string, wchar_t ch)
 {
 	auto trimmed = string
@@ -100,13 +95,12 @@ inline std::wstring TrimString(const std::wstring& string, wchar_t ch)
 
 	return { trimmed.begin(), trimmed.end() };
 }
-#endif
 
-static __inline BOOL WinPrivUsesConsoleSubsystem(void)
+inline bool WinPrivUsesConsoleSubsystem()
 {
-	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)GetModuleHandleW(NULL);
-	if (pDosHeader == NULL || pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
-	PIMAGE_NT_HEADERS pNtHeaders = (PIMAGE_NT_HEADERS)((PBYTE)pDosHeader + pDosHeader->e_lfanew);
+	const auto pDosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(GetModuleHandleW(nullptr));
+	if (pDosHeader == nullptr || pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) return false;
+	const auto pNtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<PBYTE>(pDosHeader) + pDosHeader->e_lfanew);
 	return pNtHeaders->Signature == IMAGE_NT_SIGNATURE &&
 		pNtHeaders->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI;
 }
@@ -115,9 +109,11 @@ static __inline BOOL WinPrivUsesConsoleSubsystem(void)
 // vardiac variables but will also output to a message box
 // if not compiled on a console
 #define PrintMessage(format, ...) do { \
-		LPWSTR sString = (LPWSTR) calloc((size_t) (_scwprintf(format, __VA_ARGS__) + 1), sizeof(WCHAR)); \
-		if (sString == NULL) exit(0); \
-		_swprintf(sString, format, __VA_ARGS__); \
+		const int iLength = _scwprintf(format, __VA_ARGS__); \
+		if (iLength < 0) break; \
+		LPWSTR sString = (LPWSTR) calloc((size_t) iLength + 1, sizeof(WCHAR)); \
+		if (sString == NULL) break; \
+		_snwprintf_s(sString, (size_t) iLength + 1, _TRUNCATE, format, __VA_ARGS__); \
 		if (WinPrivUsesConsoleSubsystem()) wprintf(L"%s", sString); else \
 			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
         free(sString); \
@@ -128,7 +124,6 @@ static __inline BOOL WinPrivUsesConsoleSubsystem(void)
 // SmartPointer<>. Custom template for WinAPI resource cleanup.
 // Automatically invokes the provided cleanup callable in its destructor.
 //
-#ifdef __cplusplus
 template <typename T>
 class SmartPointer final
 {
@@ -178,4 +173,3 @@ private:
 	std::function<void(T)> m_Cleanup;
 	T m_Data;
 };
-#endif

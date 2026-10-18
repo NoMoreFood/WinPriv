@@ -22,7 +22,7 @@
       <RuntimeLibrary Condition="'$(Configuration)'!='Debug'">MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat Condition="'$(Configuration)'=='Debug'">ProgramDatabase</DebugInformationFormat>
       <DebugInformationFormat Condition="'$(Configuration)'!='Debug'">None</DebugInformationFormat>
-      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <PreprocessorDefinitions>STRICT;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;$(WinPrivHookLoadingMode);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>

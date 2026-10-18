@@ -3,20 +3,14 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
-#include <Windows.h>
-#include <winternl.h>
+#include "WinPrivLibrary.h"
 #include <algorithm>
 #include <cerrno>
 #include <limits>
 
-#include "WinPrivDetoursFork.h"
-#include "WinPrivShared.h"
-
 static LONGLONG iMockTimeOffset = 0;
-static auto TrueNtQuerySystemTime = reinterpret_cast<NTSTATUS(NTAPI*)(PLARGE_INTEGER)>(
-	GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemTime"));
-static auto TrueRtlGetSystemTimePrecise = reinterpret_cast<LONGLONG(NTAPI*)()>(
-	GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetSystemTimePrecise"));
+static auto TrueNtQuerySystemTime = LoadNtFunction<NTSTATUS(NTAPI*)(PLARGE_INTEGER)>("NtQuerySystemTime");
+static auto TrueRtlGetSystemTimePrecise = LoadNtFunction<LONGLONG(NTAPI*)()>("RtlGetSystemTimePrecise");
 static auto TrueNtQuerySystemInformation = &NtQuerySystemInformation;
 static auto TrueGetSystemTimeAsFileTime = &GetSystemTimeAsFileTime;
 static auto TrueGetSystemTimePreciseAsFileTime = &GetSystemTimePreciseAsFileTime;
@@ -160,51 +154,45 @@ static int WINAPI DetourGetTimeFormatEx(LPCWSTR sLocale, DWORD iFlags, const SYS
 }
 
 template <winpriv::detours::function_pointer Function>
-static void ApplyClockDetour(winpriv::detours::action requestedAction, Function& target,
+static void AttachClockDetour(Function& target,
 	Function& baseTarget, Function replacement, LPCSTR sName)
 {
 	// API-set imports can resolve to separate KernelBase implementations of the same clock.
-	if (requestedAction == winpriv::detours::action::attach)
-	{
-		baseTarget = reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), sName));
-		if (baseTarget == target) baseTarget = nullptr;
-	}
-	(void)winpriv::detours::apply(requestedAction, target, replacement);
-	if (baseTarget != nullptr) (void)winpriv::detours::apply(requestedAction, baseTarget, replacement);
+	baseTarget = reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), sName));
+	if (baseTarget == target) baseTarget = nullptr;
+	AttachDetour(target, replacement);
+	if (baseTarget != nullptr) AttachDetour(baseTarget, replacement);
 }
 
-void DllTimeAttachDetach(winpriv::detours::action requestedAction)
+void AttachTimeHooks()
 {
 	// The launcher resolves calendar arithmetic once; every descendant receives the same tick delta.
-	if (requestedAction == winpriv::detours::action::attach)
-	{
-		WCHAR sOffset[24]{};
-		const DWORD iLength = GetEnvironmentVariableW(WINPRIV_EV_MOCK_TIME, sOffset, ARRAYSIZE(sOffset));
-		WCHAR* pEnd = nullptr;
-		errno = 0;
-		const LONGLONG iOffset = _wcstoi64(sOffset, &pEnd, 10);
-		if (iLength == 0 || iLength >= ARRAYSIZE(sOffset) || *pEnd != L'\0' || errno == ERANGE ||
-			iOffset == (std::numeric_limits<LONGLONG>::min)()) return;
-		iMockTimeOffset = iOffset;
-	}
+	WCHAR sOffset[24]{};
+	const DWORD iLength = GetEnvironmentVariableW(WINPRIV_EV_MOCK_TIME, sOffset, ARRAYSIZE(sOffset));
+	WCHAR* pEnd = nullptr;
+	errno = 0;
+	const LONGLONG iOffset = _wcstoi64(sOffset, &pEnd, 10);
+	if (iLength == 0 || iLength >= ARRAYSIZE(sOffset) || *pEnd != L'\0' || errno == ERANGE ||
+		iOffset == (std::numeric_limits<LONGLONG>::min)()) return;
+	iMockTimeOffset = iOffset;
 	if (iMockTimeOffset == 0) return;
 
-	(void)winpriv::detours::apply(requestedAction, TrueNtQuerySystemTime, DetourNtQuerySystemTime);
+	AttachDetour(TrueNtQuerySystemTime, DetourNtQuerySystemTime);
 	if (TrueRtlGetSystemTimePrecise != nullptr)
-		(void)winpriv::detours::apply(requestedAction, TrueRtlGetSystemTimePrecise, DetourRtlGetSystemTimePrecise);
-	(void)winpriv::detours::apply(requestedAction, TrueNtQuerySystemInformation, DetourNtQuerySystemInformation);
-	ApplyClockDetour(requestedAction, TrueGetSystemTimeAsFileTime, TrueBaseGetSystemTimeAsFileTime,
+		AttachDetour(TrueRtlGetSystemTimePrecise, DetourRtlGetSystemTimePrecise);
+	AttachDetour(TrueNtQuerySystemInformation, DetourNtQuerySystemInformation);
+	AttachClockDetour(TrueGetSystemTimeAsFileTime, TrueBaseGetSystemTimeAsFileTime,
 		DetourGetSystemTimeAsFileTime, "GetSystemTimeAsFileTime");
-	ApplyClockDetour(requestedAction, TrueGetSystemTimePreciseAsFileTime, TrueBaseGetSystemTimePreciseAsFileTime,
+	AttachClockDetour(TrueGetSystemTimePreciseAsFileTime, TrueBaseGetSystemTimePreciseAsFileTime,
 		DetourGetSystemTimePreciseAsFileTime, "GetSystemTimePreciseAsFileTime");
-	ApplyClockDetour(requestedAction, TrueGetSystemTime, TrueBaseGetSystemTime, DetourGetSystemTime, "GetSystemTime");
-	ApplyClockDetour(requestedAction, TrueGetLocalTime, TrueBaseGetLocalTime, DetourGetLocalTime, "GetLocalTime");
+	AttachClockDetour(TrueGetSystemTime, TrueBaseGetSystemTime, DetourGetSystemTime, "GetSystemTime");
+	AttachClockDetour(TrueGetLocalTime, TrueBaseGetLocalTime, DetourGetLocalTime, "GetLocalTime");
 
 	// A null formatting input requests the current local date/time; explicit inputs remain conversions.
-	(void)winpriv::detours::apply(requestedAction, TrueGetDateFormatA, DetourGetDateFormatA);
-	(void)winpriv::detours::apply(requestedAction, TrueGetDateFormatW, DetourGetDateFormatW);
-	(void)winpriv::detours::apply(requestedAction, TrueGetDateFormatEx, DetourGetDateFormatEx);
-	(void)winpriv::detours::apply(requestedAction, TrueGetTimeFormatA, DetourGetTimeFormatA);
-	(void)winpriv::detours::apply(requestedAction, TrueGetTimeFormatW, DetourGetTimeFormatW);
-	(void)winpriv::detours::apply(requestedAction, TrueGetTimeFormatEx, DetourGetTimeFormatEx);
+	AttachDetour(TrueGetDateFormatA, DetourGetDateFormatA);
+	AttachDetour(TrueGetDateFormatW, DetourGetDateFormatW);
+	AttachDetour(TrueGetDateFormatEx, DetourGetDateFormatEx);
+	AttachDetour(TrueGetTimeFormatA, DetourGetTimeFormatA);
+	AttachDetour(TrueGetTimeFormatW, DetourGetTimeFormatW);
+	AttachDetour(TrueGetTimeFormatEx, DetourGetTimeFormatEx);
 }

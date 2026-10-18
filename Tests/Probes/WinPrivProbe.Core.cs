@@ -553,6 +553,79 @@ namespace WinPrivProbe
             return @"\\?\" + Path.GetFullPath(path);
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MEMORY_BASIC_INFORMATION
+        {
+            public IntPtr BaseAddress;
+            public IntPtr AllocationBase;
+            public uint AllocationProtect;
+            public UIntPtr RegionSize;
+            public uint State;
+            public uint Protect;
+            public uint Type;
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern UIntPtr VirtualQuery(IntPtr address, out MEMORY_BASIC_INFORMATION information,
+            UIntPtr size);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] bytes,
+            UIntPtr size, out UIntPtr read);
+
+        private static byte[] ReadMemory(ulong address, int size)
+        {
+            byte[] bytes = new byte[size];
+            UIntPtr read;
+            IntPtr pointer = IntPtr.Size == 4 ? new IntPtr(unchecked((int)address)) : new IntPtr((long)address);
+            return ReadProcessMemory(GetCurrentProcess(), pointer, bytes, new UIntPtr((uint)size), out read) &&
+                read.ToUInt64() == (ulong)size ? bytes : null;
+        }
+
+        private static List<Dictionary<string, object>> GetWinPrivMemoryImages()
+        {
+            // Inspect private image headers because the native module list only describes file-backed DLLs.
+            List<Dictionary<string, object>> images = new List<Dictionary<string, object>>();
+            ulong address = 0;
+            MEMORY_BASIC_INFORMATION information;
+            UIntPtr size = new UIntPtr((uint)Marshal.SizeOf(typeof(MEMORY_BASIC_INFORMATION)));
+            while (VirtualQuery(IntPtr.Size == 4 ? new IntPtr(unchecked((int)address)) : new IntPtr((long)address),
+                out information, size) != UIntPtr.Zero)
+            {
+                ulong baseAddress = IntPtr.Size == 4 ? unchecked((uint)information.BaseAddress.ToInt32()) :
+                    (ulong)information.BaseAddress.ToInt64();
+                ulong next = baseAddress + information.RegionSize.ToUInt64();
+                if (next <= address || (IntPtr.Size == 4 && next > uint.MaxValue)) break;
+                address = next;
+                if (information.State != 0x1000 || information.Type != 0x20000 || information.Protect != 2 ||
+                    information.BaseAddress != information.AllocationBase || information.RegionSize.ToUInt64() < 4096)
+                    continue;
+                byte[] header = ReadMemory(baseAddress, 4096);
+                if (header == null || BitConverter.ToUInt16(header, 0) != 0x5a4d) continue;
+                int nt = BitConverter.ToInt32(header, 0x3c);
+                if (nt < 64 || nt > header.Length - 264 || BitConverter.ToUInt32(header, nt) != 0x4550) continue;
+                ushort machine = BitConverter.ToUInt16(header, nt + 4);
+                ushort magic = BitConverter.ToUInt16(header, nt + 24);
+                if (magic != 0x10b && magic != 0x20b) continue;
+                uint imageSize = BitConverter.ToUInt32(header, nt + 80);
+                uint exports = BitConverter.ToUInt32(header, nt + (magic == 0x10b ? 120 : 136));
+                if (exports == 0 || exports > imageSize || imageSize - exports < 40) continue;
+                byte[] directory = ReadMemory(baseAddress + exports, 40);
+                if (directory == null) continue;
+                uint nameRva = BitConverter.ToUInt32(directory, 12);
+                if (nameRva > imageSize || imageSize - nameRva < 19) continue;
+                byte[] name = ReadMemory(baseAddress + nameRva, 19);
+                if (name == null || Encoding.ASCII.GetString(name).TrimEnd('\0') != "WinPrivLibrary.dll") continue;
+                images.Add(new Dictionary<string, object>
+                {
+                    { "baseAddress", "0x" + baseAddress.ToString("x", CultureInfo.InvariantCulture) },
+                    { "architecture", machine == 0x14c ? "x86" : (machine == 0x8664 ? "x64" : "ARM64") },
+                    { "size", imageSize }
+                });
+            }
+            return images;
+        }
+
         public static Dictionary<string, object> GetState(string[] remainingArguments, string[] environmentNames)
         {
             Dictionary<string, object> result = MethodResult(true, true, null);
@@ -596,7 +669,9 @@ namespace WinPrivProbe
             }
             result["loadedModules"] = loadedModules;
             result["winPrivLibraryModules"] = winPrivLibraryModules;
-            result["winPrivLibraryLoaded"] = winPrivLibraryModules.Count != 0;
+            List<Dictionary<string, object>> memoryImages = GetWinPrivMemoryImages();
+            result["winPrivMemoryImages"] = memoryImages;
+            result["winPrivLibraryLoaded"] = winPrivLibraryModules.Count != 0 || memoryImages.Count != 0;
             Dictionary<string, object> process = new Dictionary<string, object>();
             process["id"] = result["processId"];
             process["path"] = result["processPath"];
@@ -605,7 +680,8 @@ namespace WinPrivProbe
             process["is64Bit"] = result["is64BitProcess"];
             process["loadedModules"] = loadedModules;
             process["winPrivLibraryModules"] = winPrivLibraryModules;
-            process["winPrivLibraryLoaded"] = winPrivLibraryModules.Count != 0;
+            process["winPrivMemoryImages"] = memoryImages;
+            process["winPrivLibraryLoaded"] = result["winPrivLibraryLoaded"];
             result["process"] = process;
             result["environment"] = GetSelectedEnvironment(environmentNames);
             result["env"] = result["environment"];

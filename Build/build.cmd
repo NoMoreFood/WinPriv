@@ -102,7 +102,6 @@ FOR %%A IN (x86 x64 ARM64) DO (
     )
 )
 
-:: zip up executatables
 PUSHD "%STAGEDIR%"
 IF ERRORLEVEL 1 EXIT /B 1
 "%SEVENZIP%" a -tzip -mm=Deflate -mx=9 WinPriv.zip x86 x64 ARM64

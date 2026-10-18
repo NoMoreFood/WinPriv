@@ -4,7 +4,7 @@ BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
 
     function Assert-MockedClock {
-        param($Clock, [long]$Offset)
+        param($Clock, [long]$Offset, [long]$NativeBootTime)
         $Clock.ntStatus | Should -Be 0
         $Clock.timeOfDayStatus | Should -Be 0
         $Clock.timeBStatus | Should -Be 0
@@ -28,7 +28,8 @@ BeforeAll {
         }
         [Math]::Abs([long]$Clock.interruptTime - [long]$Clock.rawInterrupt) | Should -BeLessThan 1000000
         [Math]::Abs([long]$Clock.uptimeMilliseconds - [long]$Clock.rawInterrupt / 10000) | Should -BeLessThan 100
-        [Math]::Abs([long]$Clock.clocks.timeOfDay - [long]$Clock.bootTime - [long]$Clock.rawInterrupt) |
+        # Wall time can drift from interrupt time; compare the boot timestamp with an unhooked baseline.
+        [Math]::Abs([long]$Clock.bootTime - $Offset - $NativeBootTime) |
             Should -BeLessThan 10000000
         [Math]::Abs([long]$Clock.performance - [long]$Clock.nativePerformance) |
             Should -BeLessThan $Clock.performanceFrequency
@@ -42,7 +43,17 @@ BeforeAll {
 $architectureCases = Get-WinPrivArchitectureCases
 
 Describe 'WinPriv wall clock mocking (<Architecture>)' -Tag 'Safe' -ForEach $architectureCases {
-    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture }
+    BeforeAll {
+        $sandbox = New-WinPrivSandbox -Architecture $Architecture
+        $nativeOutput = Join-Path $sandbox.Artifacts 'native-clock.json'
+        $native = Invoke-WinPrivContainedProcess -FilePath (Get-WinPrivTestHost -Architecture $Architecture) `
+            -Sandbox $sandbox -TimeoutSeconds 30 -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive',
+                '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Probes\Invoke-WinPrivProbe.ps1'),
+                '-Operation', 'clock',
+                '-OutputPath', $nativeOutput)
+        Assert-WinPrivInvocationSucceeded $native
+        $nativeBootTime = (Get-Content -LiteralPath $nativeOutput -Raw | ConvertFrom-Json).result.bootTime
+    }
     AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
 
     It 'shifts native, Win32, CRT, and managed wall clocks while preserving elapsed clocks' {
@@ -56,13 +67,14 @@ Describe 'WinPriv wall clock mocking (<Architecture>)' -Tag 'Safe' -ForEach $arc
                     $result = Invoke-WinPrivProbe -Architecture $Architecture -Launcher $launcher `
                         -WinPrivArguments @('/MockTime', $case.Delta) -Operation clock -Sandbox $sandbox
                     Assert-WinPrivInvocationSucceeded $result
-                    Assert-MockedClock -Clock $result.ProbeResult.result -Offset $case.Ticks
+                    Assert-MockedClock -Clock $result.ProbeResult.result -Offset $case.Ticks `
+                        -NativeBootTime $nativeBootTime
                 }
             }
             $plain = Invoke-WinPrivProbe -Architecture $Architecture -Operation clock -Sandbox $sandbox `
                 -Environment @{ _WINPRIV_EV_MOCK_TIME_ = '864000000000' }
             Assert-WinPrivInvocationSucceeded $plain
-            Assert-MockedClock -Clock $plain.ProbeResult.result -Offset 0
+            Assert-MockedClock -Clock $plain.ProbeResult.result -Offset 0 -NativeBootTime $nativeBootTime
             return @{ Launchers = 2; Offsets = 3; InheritedOffsetCleared = $true }
         }
     }
@@ -106,14 +118,14 @@ Describe 'WinPriv wall clock mocking (<Architecture>)' -Tag 'Safe' -ForEach $arc
                     if ($case.ContainsKey('Days')) { $expected = $expected.AddDays($case.Days) }
                     $offset | Should -Be ($expected - $before).Ticks
                 }
-                Assert-MockedClock -Clock $clock -Offset $offset
+                Assert-MockedClock -Clock $clock -Offset $offset -NativeBootTime $nativeBootTime
             }
             $config = Join-Path $sandbox.Working 'mock-time.cfg'
             [IO.File]::WriteAllText($config, '/MockTime +1d', [Text.UTF8Encoding]::new($false))
             $last = Invoke-WinPrivProbe -Architecture $Architecture -Operation clock -Sandbox $sandbox `
                 -WinPrivArguments @('/LoadCommands', $config, '/mOcKtImE', '-2h')
             Assert-WinPrivInvocationSucceeded $last
-            Assert-MockedClock -Clock $last.ProbeResult.result -Offset -72000000000L
+            Assert-MockedClock -Clock $last.ProbeResult.result -Offset -72000000000L -NativeBootTime $nativeBootTime
             return @{ Deltas = $cases.Count; LastSwitchWins = $true }
         }
     }
@@ -147,7 +159,7 @@ Describe 'WinPriv wall clock mocking (<Architecture>)' -Tag 'Safe' -ForEach $arc
                 $child.success | Should -BeTrue
                 $clock = $child.result.childResult.result
                 [long]$clock.offset | Should -BeGreaterThan (365L * 864000000000L)
-                Assert-MockedClock -Clock $clock -Offset ([long]$clock.offset)
+                Assert-MockedClock -Clock $clock -Offset ([long]$clock.offset) -NativeBootTime $nativeBootTime
                 $child.result.parentState.mockTimeOffset | Should -Be $clock.offset
                 $result.ProbeResult.result.parentState.mockTimeOffset | Should -Be $clock.offset
             }

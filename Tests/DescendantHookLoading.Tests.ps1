@@ -95,7 +95,32 @@ Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <C
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x86'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x64'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $true },
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x64'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false },
     @{ Launcher = 'WinPrivCmd'; ParentArch = 'x86'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false },
-    @{ Launcher = 'WinPriv';    ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false }
+    @{ Launcher = 'WinPriv';    ParentArch = 'x64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'; ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'; UseCreateProcessA = $false },
+    @{
+        Launcher = 'WinPrivCmd'; UseCreateProcessA = $false
+        ParentArch = 'ARM64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'
+        ChildArch = 'x86'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'
+    },
+    @{
+        Launcher = 'WinPrivCmd'; UseCreateProcessA = $true
+        ParentArch = 'ARM64'; ParentExe = 'WinPrivHookDynamic.exe'; ParentMode = 'load-library'
+        ChildArch = 'x64'; ChildExe = 'WinPrivHookImport.exe'; ChildMode = 'static-import'
+    },
+    @{
+        Launcher = 'WinPrivCmd'; UseCreateProcessA = $false
+        ParentArch = 'x86'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'
+        ChildArch = 'ARM64'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'
+    },
+    @{
+        Launcher = 'WinPrivCmd'; UseCreateProcessA = $true
+        ParentArch = 'x64'; ParentExe = 'WinPrivHookDynamic.exe'; ParentMode = 'load-library'
+        ChildArch = 'ARM64'; ChildExe = 'WinPrivHookImport.exe'; ChildMode = 'static-import'
+    },
+    @{
+        Launcher = 'WinPrivCmd'; UseCreateProcessA = $false
+        ParentArch = 'ARM64'; ParentExe = 'WinPrivHookImport.exe'; ParentMode = 'static-import'
+        ChildArch = 'ARM64'; ChildExe = 'WinPrivHookDynamic.exe'; ChildMode = 'load-library'
+    }
 ) | Where-Object {
         $_.ParentArch -in $descendantArchitectures -and $_.ChildArch -in $descendantArchitectures
     }) {
@@ -114,7 +139,7 @@ Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <C
         Remove-WinPrivSandbox -Sandbox $sandbox
     }
 
-    It 'injects and intercepts across <ParentArch> (<ParentMode>) and <ChildArch> (<ChildMode>)' {
+    It 'preserves CREATE_SUSPENDED and hooks across <ParentArch> (<ParentMode>) and <ChildArch> (<ChildMode>)' {
         $parentFixture = Join-Path $sandbox.Launchers.$ParentArch.Root $ParentExe
         $childFixture = Join-Path $sandbox.Launchers.$ChildArch.Root $ChildExe
         $missingFixtures = @($parentFixture, $childFixture | Where-Object {
@@ -139,7 +164,8 @@ Describe 'WinPriv 2-Generation Descendant Cross-Architecture (<ParentArch> -> <C
                 $chainArgs += '--use-createprocess-a'
             }
             $chainArgs += @(
-                '--next', $childFixture, '--chain-test', '--mode', $ChildMode, '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
+                '--create-suspended', '--next', $childFixture, '--chain-test', '--mode', $ChildMode,
+                '--key', $subKey, '--value-name', $valueName, '--expected', $expected.ToString()
             )
 
             $result = Invoke-WinPriv -Architecture $ParentArch -Launcher $Launcher -Sandbox $sandbox -TimeoutSeconds 35 `

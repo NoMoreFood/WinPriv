@@ -230,7 +230,7 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
             -Capability 'mitigation.dynamic-code-optout-transactions' -AllowOptOut)) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-optout-transactions' -Architecture $Architecture -Body {
-            foreach ($scenario in @('attach-detach', 'abort', 'failed-commit', 'nested', 'preexisting', 'c-bridge')) {
+            foreach ($scenario in @('attach', 'abort', 'failed-commit', 'nested', 'preexisting', 'c-bridge')) {
                 $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
                     -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 `
                     -ArgumentList @('--dynamic-code-optout', $scenario)
@@ -243,11 +243,9 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 $payload.threadBefore | Should -Be $expectedPolicy -Because $scenario
                 if ($scenario -ne 'c-bridge') { $payload.threadDuring | Should -Be 1 -Because $scenario }
                 $payload.threadAfterScope | Should -Be $expectedPolicy -Because $scenario
-                $payload.threadAfterDetach | Should -Be $expectedPolicy -Because $scenario
                 $payload.attachError | Should -Be 0 -Because $scenario
                 $payload.trampolineValue | Should -Be 40 -Because $scenario
-                $payload.finalValue | Should -Be 40 -Because $scenario
-                $payload.originalPointer | Should -BeTrue -Because $scenario
+                $payload.originalPointer | Should -Be ($scenario -in @('abort', 'failed-commit')) -Because $scenario
                 if ($scenario -ne 'abort') {
                     $payload.threadAfterCommit | Should -Be $expectedPolicy -Because $scenario
                 }
@@ -258,9 +256,6 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 elseif ($scenario -ne 'abort') {
                     $payload.commitError | Should -Be 0 -Because $scenario
                     $payload.hookedValue | Should -Be 66 -Because $scenario
-                    $payload.threadDuringDetach | Should -Be 1 -Because $scenario
-                    $payload.detachError | Should -Be 0 -Because $scenario
-                    $payload.detachCommitError | Should -Be 0 -Because $scenario
                 }
                 if ($scenario -in @('abort', 'failed-commit')) {
                     $payload.hookedValue | Should -Be 40 -Because $scenario
@@ -351,15 +346,22 @@ Describe 'WinPriv transaction thread enumeration (<Architecture>)' -Tag 'Safe' -
         }
 
         Invoke-WinPrivCapability -Id $capability -Architecture $Architecture -Body {
-            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
-                -WorkingDirectory $sandbox.Working -TimeoutSeconds 30 -ArgumentList @('--thread-enumeration', $Scenario)
+            if ($Scenario -eq 'churn') {
+                $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 30 `
+                    -Arguments @('/FileRedirect', (Join-Path $sandbox.Working 'source'),
+                        (Join-Path $sandbox.Working 'destination'), $fixture, '--thread-enumeration', $Scenario)
+            }
+            else {
+                $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                    -WorkingDirectory $sandbox.Working -TimeoutSeconds 30 -ArgumentList @('--thread-enumeration', $Scenario)
+            }
             Assert-WinPrivInvocationSucceeded $result
             $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
             $payload.scenario | Should -Be $Scenario
             $payload.calls | Should -BeGreaterThan 0
             $payload.invalidValues | Should -Be 0
-            $payload.originalPointer | Should -BeTrue
-            $payload.finalValue | Should -Be 40
+            $payload.originalPointer | Should -Be ($Scenario -eq 'inaccessible')
+            $payload.finalValue | Should -Be $(if ($Scenario -eq 'inaccessible') { 40 } else { 66 })
             if ($Scenario -eq 'inaccessible') {
                 $payload.commitError | Should -Be 5
                 $payload.iterations | Should -Be 0
@@ -370,6 +372,64 @@ Describe 'WinPriv transaction thread enumeration (<Architecture>)' -Tag 'Safe' -
             }
             if ($Scenario -eq 'churn') { $payload.createdThreads | Should -BeGreaterThan 0 }
             return $payload
+        }
+    }
+}
+
+Describe 'WinPriv combined hook installation (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'combined-hooks' }
+    AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
+
+    It 'installs all feature hook groups in a single transaction' {
+        $options = @(
+            '/MacOverride', '00-11-22-33-44-55', '/MockTime', '+1h',
+            '/RegOverride', 'HKCU\Software', 'WinPrivTest', 'REG_DWORD', '1',
+            '/AmsiOff', '/ClmOff', '/HostOverride', 'winpriv.invalid', 'localhost',
+            '/FileRedirect', (Join-Path $sandbox.Working 'source'), (Join-Path $sandbox.Working 'destination'),
+            '/AdminImpersonate', '/ServerEdition', '/RecordCrypto', (Join-Path $sandbox.Root 'records'),
+            '/SqlConnectSearchReplace', 'ORIGINAL', 'REPLACED'
+        )
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        $marker = Join-Path $sandbox.Artifacts 'combined-hooks-started.txt'
+        $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 30 `
+            -Arguments ($options + @($fixture, '--startup-timestamp', $marker))
+        Assert-WinPrivInvocationSucceeded $result
+        $marker | Should -Exist
+    }
+}
+
+Describe 'WinPriv memory image exception handling (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'memory-exceptions' }
+    AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
+
+    It 'recovers from repeated hook exceptions on concurrent threads' {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        $fixture | Should -Exist
+        foreach ($pattern in @('[unterminated', '(unclosed', '[z-a]', '*invalid')) {
+            $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 30 `
+                -Arguments @('/SqlConnectSearchReplace', $pattern, 'replacement', $fixture, '--memory-exceptions')
+            Assert-WinPrivInvocationSucceeded $result
+            ($result.StdOut | ConvertFrom-Json).completed | Should -Be 100
+        }
+    }
+}
+
+Describe 'WinPriv detour rejection (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'rejected-detours' }
+    AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
+
+    It 'rejects invalid hooks without publishing pending hooks or changing code protections' {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'detour.rejected-hooks' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+        Invoke-WinPrivCapability -Id 'detour.rejected-hooks' -Architecture $Architecture -Body {
+            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--rejected-detours')
+            Assert-WinPrivInvocationSucceeded $result
+            ($result.StdOut | ConvertFrom-Json).rejectedCases | Should -Be $(if ($Architecture -eq 'ARM64') { 3 } else { 5 })
         }
     }
 }

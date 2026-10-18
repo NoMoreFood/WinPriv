@@ -304,10 +304,11 @@ Describe 'WinPriv configuration files (<Architecture>)' -Tag 'Safe' -ForEach $ar
         $config = [IO.Path]::ChangeExtension($launcher, '.cfg')
         [IO.File]::WriteAllText($config, '/DefinitelyNotAWinPrivSwitch', [Text.UTF8Encoding]::new($false))
 
-        # The relaunch marker pauses console exits; clear it in the child before returning its exit code.
+        # The relaunch marker pauses only the target's console exit; a nested console child must not wait for a key.
+        # Clear the marker in the target before returning its exit code.
         $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
             -Arguments @('/RelaunchComplete', $env:ComSpec, '/d', '/c',
-                'set _WINPRIV_RELAUNCH_PHASE_=0&exit /b 27') -TimeoutSeconds 20
+                '%ComSpec% /d /c exit 0&set _WINPRIV_RELAUNCH_PHASE_=0&exit /b 27') -TimeoutSeconds 20
         $result.TimedOut | Should -BeFalse
         $result.StartError | Should -BeNullOrEmpty
         $result.ExitCode | Should -Be 27
@@ -325,6 +326,18 @@ Describe 'WinPriv configuration files (<Architecture>)' -Tag 'Safe' -ForEach $ar
             Assert-WinPrivInvocationSucceeded $result
             $result.ProbeResult.result.showWindow | Should -Be 0
             return @{ Loads = @($first, $first, $second); ShowWindow = $result.ProbeResult.result.showWindow }
+        }
+    }
+
+    It 'rejects oversized hook settings from configuration files before launching the target' {
+        $config = Join-Path $sandbox.Root 'oversized.cfg'
+        foreach ($prefix in @('/RegOverride HKCU\Software WinPrivTest REG_SZ', '/SqlConnectSearchReplace find')) {
+            [IO.File]::WriteAllText($config, ($prefix + ' "' + ('a' * 33000) + '"'), [Text.UTF8Encoding]::new($false))
+            $result = Invoke-WinPrivProbe -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 10 `
+                -WinPrivArguments @('/LoadCommands', $config) -Operation exit -Arguments @{ exitCode = 37 }
+            Assert-WinPrivInvocationFailedCleanly $result
+            $result.ExitCode | Should -Not -Be 37
+            $result.StdOut | Should -Match 'Could not store process setting'
         }
     }
 

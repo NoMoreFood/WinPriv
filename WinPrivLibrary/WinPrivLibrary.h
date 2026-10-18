@@ -8,14 +8,15 @@
 #include "WinPrivShared.h"
 
 // Shared hook registration and native entry points.
-bool DllExtraAttachDetach(winpriv::detours::action requestedAction);
-bool DllFileAttachDetach(winpriv::detours::action requestedAction);
-bool DllHostAttachDetach(winpriv::detours::action requestedAction);
+bool AttachExtraHooks();
+bool AttachFileHooks();
+bool AttachHostHooks();
+void AttachTimeHooks();
 
 template <winpriv::detours::function_pointer Function>
-void ApplyDetour(winpriv::detours::action requestedAction, Function& target, Function replacement) noexcept
+void AttachDetour(Function& target, Function replacement) noexcept
 {
-	(void)winpriv::detours::apply(requestedAction, target, replacement);
+	(void)winpriv::detours::attach(target, replacement);
 }
 
 inline const auto RtlInitUnicodeStringEx = LoadNtFunction<NTSTATUS(NTAPI*)(PUNICODE_STRING, PCWSTR)>(
@@ -27,17 +28,7 @@ inline const auto RtlInitUnicodeStringEx = LoadNtFunction<NTSTATUS(NTAPI*)(PUNIC
 
 inline const auto NtQueryKey = LoadNtFunction<NTSTATUS(NTAPI*)(HANDLE, DWORD, PVOID, ULONG, PULONG)>("NtQueryKey");
 
-typedef enum _KEY_INFORMATION_CLASS {
-	KeyBasicInformation = 0,
-	KeyNodeInformation = 1,
-	KeyFullInformation = 2,
-	KeyNameInformation = 3,
-	KeyCachedInformation = 4,
-	KeyFlagsInformation = 5,
-	KeyVirtualizationInformation = 6,
-	KeyHandleTagsInformation = 7,
-	MaxKeyInfoClass = 8
-} KEY_INFORMATION_CLASS;
+constexpr DWORD KeyNameInformation = 3;
 
 typedef struct _KEY_NAME_INFORMATION {
 	ULONG NameLength;

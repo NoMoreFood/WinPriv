@@ -17,48 +17,34 @@
 
 std::map<std::wstring, std::wstring> GetPrivilegeList()
 {
-	// list of privileges to return
+	// get a handle to the policy object; the list is empty if it cannot be opened
 	std::map<std::wstring, std::wstring> tPrivilegeList;
-
-	// object attributes are reserved, so initialize to zeros.
-	LSA_OBJECT_ATTRIBUTES ObjectAttributes;
-	ZeroMemory(&ObjectAttributes, sizeof(ObjectAttributes));
-
-	// get a handle to the policy object.
-	NTSTATUS iResult = 0;
-	SmartPointer<LSA_HANDLE> policyHandle(LsaClose, nullptr);
-	if ((iResult = LsaOpenPolicy(nullptr, &ObjectAttributes,
-		POLICY_VIEW_LOCAL_INFORMATION, &policyHandle)) != STATUS_SUCCESS)
-	{
-		// return on error - priv list will be empty
+	LSA_OBJECT_ATTRIBUTES tAttributes{};
+	SmartPointer<LSA_HANDLE> hPolicy(LsaClose, nullptr);
+	if (LsaOpenPolicy(nullptr, &tAttributes, POLICY_VIEW_LOCAL_INFORMATION, &hPolicy) != STATUS_SUCCESS)
 		return tPrivilegeList;
-	}
 
-	// enumerate the privileges that are settable
-	SmartPointer<PPOLICY_PRIVILEGE_DEFINITION> buffer(LsaFreeMemory, nullptr);
-	LSA_ENUMERATION_HANDLE enumerationContext = 0;
-	ULONG countReturned = 0;
-	while (LsaEnumeratePrivileges(policyHandle, &enumerationContext,
-		(PVOID *)&buffer, INFINITE, &countReturned) == STATUS_SUCCESS)
+	// enumerate the settable privileges with their display names when available
+	SmartPointer<PPOLICY_PRIVILEGE_DEFINITION> pBuffer(LsaFreeMemory, nullptr);
+	LSA_ENUMERATION_HANDLE hEnumeration = 0;
+	ULONG iCount = 0;
+	NTSTATUS iResult = 0;
+	while ((iResult = LsaEnumeratePrivileges(hPolicy, &hEnumeration, reinterpret_cast<PVOID*>(&pBuffer),
+		INFINITE, &iCount)) == STATUS_SUCCESS || iResult == STATUS_MORE_ENTRIES)
 	{
-		for (ULONG iPrivIndex = 0; iPrivIndex < countReturned; iPrivIndex++)
+		for (ULONG iIndex = 0; iIndex < iCount; iIndex++)
 		{
-			const std::wstring sPrivilegeName(buffer[iPrivIndex].Name.Buffer, buffer[iPrivIndex].Name.Length / sizeof(WCHAR));
-			tPrivilegeList[sPrivilegeName] = sPrivilegeName;
+			const std::wstring sName(pBuffer[iIndex].Name.Buffer, pBuffer[iIndex].Name.Length / sizeof(WCHAR));
 			DWORD iSize = 0;
-			DWORD iIden = 0;
-
-			// return privilege display name -- call lookup once to get string size
-			// and then alloc the string on the next call to get the string
-			if (LookupPrivilegeDisplayName(nullptr, sPrivilegeName.c_str(), nullptr, &iSize, &iIden) == 0)
-			{
-				SmartPointer<LPWSTR> sDisplayName(free, static_cast<LPWSTR>(malloc(sizeof(WCHAR) * (++iSize))));
-				if (LookupPrivilegeDisplayName(nullptr, sPrivilegeName.c_str(), sDisplayName, &iSize, &iIden) != 0)
-				{
-					tPrivilegeList[sPrivilegeName] = static_cast<LPWSTR>(sDisplayName);
-				}
-			}
+			DWORD iLanguage = 0;
+			LookupPrivilegeDisplayName(nullptr, sName.c_str(), nullptr, &iSize, &iLanguage);
+			std::wstring sDisplayName(++iSize, L'\0');
+			if (LookupPrivilegeDisplayName(nullptr, sName.c_str(), sDisplayName.data(), &iSize, &iLanguage))
+				sDisplayName.resize(iSize);
+			else sDisplayName = sName;
+			tPrivilegeList[sName] = sDisplayName;
 		}
+		pBuffer.Cleanup();
 	}
 
 	return tPrivilegeList;
@@ -295,10 +281,9 @@ Optional Switches
 
 /ExtractLibrary
 
-   This option extracts the embedded x86, x64, and ARM64 libraries to the
-   directory containing the WinPriv executable. The libraries are normally
-   extracted to the user's temporary directory. If all three libraries are
-   beside the executable, WinPriv uses those copies instead.
+   Exports the embedded x86, x64, and ARM64 library images to the directory
+   containing the WinPriv executable. Normal launches load the embedded
+   libraries directly into memory.
 
 /WindowStyle <Style>
 

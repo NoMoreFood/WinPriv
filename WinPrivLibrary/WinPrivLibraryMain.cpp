@@ -4,69 +4,28 @@
 //
 
 #include "WinPrivLibrary.h"
-#include <bcrypt.h>
-#include <sddl.h>
+#include "WinPrivMemoryLoader.h"
 #include <array>
-#include <cwchar>
 #include <vector>
-
-#pragma comment(lib,"ntdll.lib")
-#pragma comment(lib,"bcrypt.lib")
-#pragma comment(lib,"advapi32.lib")
 
 namespace winpriv::library
 {
-	std::array<CHAR, MAX_PATH + 1> detourLibrary{};
-	std::array<HANDLE, 4> detourBundleLocks{};
-
-	using WidePath = std::array<WCHAR, MAX_PATH + 16>;
-	using BundlePaths = std::array<WidePath, 3>;
-	constexpr std::array<LPCWSTR, 3> bundleSuffixes{
-		L"-32.dll", L"-64.dll", L"-arm64.dll" };
-	constexpr std::array<LPCWSTR, 3> cachedBundleNames{
-		L"WinPrivLibrary-32.dll", L"WinPrivLibrary-64.dll",
-		L"WinPrivLibrary-arm64.dll" };
-	constexpr size_t cacheNonceCharacterCount = 32;
+	const memory::LibraryBundle* libraryBundle = nullptr;
 
 	auto trueCreateProcessA = &CreateProcessA;
 	auto trueCreateProcessW = &CreateProcessW;
-
-	constexpr GUID winPrivPayloadGuid{
-		0x3e72189e, 0xf3b2, 0x48a9,
-		{ 0x8b, 0xd1, 0xa2, 0xfa, 0x98, 0x4f, 0x74, 0x31 } };
-	// The GUID versions this schema. Its data is one NUL-terminated UTF-16
-	// value per name below, in the same fixed order.
-	constexpr std::array<LPCWSTR, 19> winPrivSettingNames{
-		WINPRIV_EV_RELAUNCH_MODE,
-		WINPRIV_EV_REG_OVERRIDE,
-		WINPRIV_EV_MAC_OVERRIDE,
-		WINPRIV_EV_BACKUP_RESTORE,
-		WINPRIV_EV_DISABLE_AMSI,
-		WINPRIV_EV_BREAK_LOCKS,
-		WINPRIV_EV_PRIVLIST,
-		WINPRIV_EV_PARENT_PID,
-		WINPRIV_EV_HOST_OVERRIDE,
-		WINPRIV_EV_ADMIN_IMPERSONATE,
-		WINPRIV_EV_SERVER_EDITION,
-		WINPRIV_EV_RECORD_CRYPTO,
-		WINPRIV_EV_SQL_CONNECT_SHOW,
-		WINPRIV_EV_SQL_CONNECT_SEARCH,
-		WINPRIV_EV_SQL_CONNECT_REPLACE,
-		WINPRIV_EV_MEDIUM_PLUS,
-		WINPRIV_EV_CLM,
-		WINPRIV_EV_MOCK_TIME,
-		WINPRIV_EV_FILE_RULES,
-	};
 
 	bool CaptureWinPrivPayload(std::vector<WCHAR>& payload) noexcept
 	{
 		try
 		{
+			// Only the launcher's direct target pauses its console at exit; later descendants exit normally.
 			constexpr size_t maximumCharacters = MAXDWORD / sizeof(WCHAR);
-			for (LPCWSTR name : winPrivSettingNames)
+			const bool launcher = VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId());
+			for (LPCWSTR name : WinPrivSettingNames)
 			{
 				SetLastError(NO_ERROR);
-				const DWORD required =
+				const DWORD required = !launcher && wcscmp(name, WINPRIV_EV_RELAUNCH_MODE) == 0 ? 0 :
 					GetEnvironmentVariableW(name, nullptr, 0);
 				if (required == 0)
 				{
@@ -84,7 +43,7 @@ namespace winpriv::library
 					continue;
 				}
 
-				if (required > maximumCharacters - payload.size())
+				if (required > _MAX_ENV || required > maximumCharacters - payload.size())
 				{
 					SetLastError(ERROR_BAD_ENVIRONMENT);
 					return false;
@@ -119,13 +78,13 @@ namespace winpriv::library
 			return false;
 		}
 
-		std::array<LPCWSTR, winPrivSettingNames.size()> values{};
+		std::array<LPCWSTR, WinPrivSettingNames.size()> values{};
 		LPCWSTR cursor = static_cast<LPCWSTR>(payload);
 		size_t remaining = payloadSize / sizeof(WCHAR);
 		for (LPCWSTR& value : values)
 		{
 			const WCHAR* terminator = wmemchr(cursor, L'\0', remaining);
-			if (terminator == nullptr)
+			if (terminator == nullptr || terminator - cursor >= _MAX_ENV)
 			{
 				SetLastError(ERROR_INVALID_DATA);
 				return false;
@@ -141,15 +100,15 @@ namespace winpriv::library
 			return false;
 		}
 
-		for (size_t index = 0; index < winPrivSettingNames.size(); ++index)
+		for (size_t index = 0; index < WinPrivSettingNames.size(); ++index)
 		{
-			if (_wputenv_s(winPrivSettingNames[index], values[index]) != 0)
+			if (_wputenv_s(WinPrivSettingNames[index], values[index]) != 0)
 			{
 				SetLastError(ERROR_BAD_ENVIRONMENT);
 				return false;
 			}
 			if (*values[index] == L'\0' &&
-				!SetEnvironmentVariableW(winPrivSettingNames[index], L""))
+				!SetEnvironmentVariableW(WinPrivSettingNames[index], L""))
 			{
 				return false;
 			}
@@ -157,526 +116,15 @@ namespace winpriv::library
 		return true;
 	}
 
-	bool ApplyInjectedWinPrivPayload() noexcept
-	{
-		DWORD payloadSize = 0;
-		PVOID payload = DetourFindPayload(
-			&winPrivPayloadGuid, &payloadSize);
-		if (payload == nullptr)
-		{
-			if (GetLastError() != ERROR_MOD_NOT_FOUND)
-			{
-				return false;
-			}
-			SetLastError(NO_ERROR);
-			return true;
-		}
-
-		const bool applied = ApplyWinPrivPayload(payload, payloadSize);
-		const DWORD applyError = GetLastError();
-		if (!DetourFreePayload(payload))
-		{
-			return false;
-		}
-		SetLastError(applied ? NO_ERROR : applyError);
-		return applied;
-	}
-
-	bool CopyAsciiPath(LPCWSTR source)
-	{
-		size_t index = 0;
-		for (; source[index] != L'\0'; ++index)
-		{
-			if (index + 1 >= detourLibrary.size() || source[index] > 0x7f)
-			{
-				return false;
-			}
-			detourLibrary[index] = static_cast<CHAR>(source[index]);
-		}
-		detourLibrary[index] = '\0';
-		return true;
-	}
-
-	bool SameFile(LPCWSTR firstPath, LPCWSTR secondPath)
-	{
-		constexpr DWORD sharing =
-			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-		const HANDLE first = CreateFileW(firstPath, 0, sharing, nullptr,
-			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (first == INVALID_HANDLE_VALUE)
-		{
-			return false;
-		}
-		const HANDLE second = CreateFileW(secondPath, 0, sharing, nullptr,
-			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (second == INVALID_HANDLE_VALUE)
-		{
-			CloseHandle(first);
-			return false;
-		}
-
-		BY_HANDLE_FILE_INFORMATION firstInformation{};
-		BY_HANDLE_FILE_INFORMATION secondInformation{};
-		const bool result =
-			GetFileInformationByHandle(first, &firstInformation) &&
-			GetFileInformationByHandle(second, &secondInformation) &&
-			firstInformation.dwVolumeSerialNumber ==
-				secondInformation.dwVolumeSerialNumber &&
-			firstInformation.nFileIndexHigh == secondInformation.nFileIndexHigh &&
-			firstInformation.nFileIndexLow == secondInformation.nFileIndexLow;
-		CloseHandle(second);
-		CloseHandle(first);
-		return result;
-	}
-
-	void CloseHandles(std::array<HANDLE, 3>& handles)
-	{
-		for (HANDLE& handle : handles)
-		{
-			if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(handle);
-				handle = nullptr;
-			}
-		}
-	}
-
-	void CloseDetourBundleLocks()
-	{
-		for (HANDLE& handle : detourBundleLocks)
-		{
-			if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
-			{
-				CloseHandle(handle);
-				handle = nullptr;
-			}
-		}
-	}
-
-	bool BuildBundlePaths(
-		LPCWSTR modulePath, BundlePaths& paths, size_t& currentIndex)
-	{
-		const size_t moduleLength = wcslen(modulePath);
-		currentIndex = bundleSuffixes.size();
-		size_t prefixLength = 0;
-		for (size_t index = 0; index < bundleSuffixes.size(); ++index)
-		{
-			const size_t suffixLength = wcslen(bundleSuffixes[index]);
-			if (moduleLength >= suffixLength &&
-				_wcsicmp(modulePath + moduleLength - suffixLength,
-					bundleSuffixes[index]) == 0)
-			{
-				currentIndex = index;
-				prefixLength = moduleLength - suffixLength;
-				break;
-			}
-		}
-		if (currentIndex == bundleSuffixes.size())
-		{
-			SetLastError(ERROR_BAD_PATHNAME);
-			return false;
-		}
-
-		for (size_t index = 0; index < paths.size(); ++index)
-		{
-			const size_t suffixLength = wcslen(bundleSuffixes[index]);
-			if (prefixLength + suffixLength >= paths[index].size())
-			{
-				SetLastError(ERROR_INSUFFICIENT_BUFFER);
-				return false;
-			}
-			wmemcpy(paths[index].data(), modulePath, prefixLength);
-			wcscpy_s(paths[index].data() + prefixLength,
-				paths[index].size() - prefixLength, bundleSuffixes[index]);
-		}
-		return true;
-	}
-
-	bool OpenBundle(
-		const BundlePaths& paths, DWORD sharing,
-		std::array<HANDLE, 3>& handles, bool rejectReparsePoints = false)
-	{
-		handles.fill(nullptr);
-		for (size_t index = 0; index < handles.size(); ++index)
-		{
-			handles[index] = CreateFileW(
-				paths[index].data(), GENERIC_READ, sharing, nullptr,
-				OPEN_EXISTING,
-				rejectReparsePoints
-					? FILE_FLAG_OPEN_REPARSE_POINT
-					: FILE_ATTRIBUTE_NORMAL,
-				nullptr);
-			if (handles[index] == INVALID_HANDLE_VALUE)
-			{
-				const DWORD error = GetLastError();
-				CloseHandles(handles);
-				SetLastError(error);
-				return false;
-			}
-			if (rejectReparsePoints)
-			{
-				FILE_ATTRIBUTE_TAG_INFO tagInformation{};
-				if (!GetFileInformationByHandleEx(
-						handles[index], FileAttributeTagInfo,
-						&tagInformation, sizeof(tagInformation)) ||
-					(tagInformation.FileAttributes &
-						FILE_ATTRIBUTE_REPARSE_POINT) != 0)
-				{
-					CloseHandles(handles);
-					SetLastError(ERROR_INVALID_DATA);
-					return false;
-				}
-			}
-		}
-		return true;
-	}
-
-	bool BuildCacheFilePaths(
-		LPCWSTR directory, BundlePaths& paths)
-	{
-		for (size_t index = 0; index < paths.size(); ++index)
-		{
-			if (swprintf_s(paths[index].data(), paths[index].size(),
-				L"%ls\\%ls", directory, cachedBundleNames[index]) < 0)
-			{
-				SetLastError(ERROR_INSUFFICIENT_BUFFER);
-				return false;
-			}
-		}
-		return true;
-	}
-
-	bool CreateUniqueCacheDirectory(WidePath& directory, BundlePaths& paths)
-	{
-		const DWORD windowsLength = GetSystemWindowsDirectoryW(
-			directory.data(), static_cast<UINT>(directory.size()));
-		if (windowsLength == 0 || windowsLength >= directory.size() ||
-			wcscat_s(directory.data(), directory.size(),
-				L"\\Temp\\WinPriv-") != 0)
-		{
-			SetLastError(ERROR_INSUFFICIENT_BUFFER);
-			return false;
-		}
-		const size_t prefixLength = wcslen(directory.data());
-		if (prefixLength + cacheNonceCharacterCount + 1 > directory.size())
-		{
-			SetLastError(ERROR_INSUFFICIENT_BUFFER);
-			return false;
-		}
-
-		PSECURITY_DESCRIPTOR descriptor = nullptr;
-		constexpr LPCWSTR sddl =
-			L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
-			L"(A;OICI;FA;;;OW)(A;OICI;GRGX;;;BU)";
-		if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-				sddl, SDDL_REVISION_1, &descriptor, nullptr))
-		{
-			return false;
-		}
-
-		SECURITY_ATTRIBUTES attributes{
-			.nLength = sizeof(attributes),
-			.lpSecurityDescriptor = descriptor,
-			.bInheritHandle = FALSE,
-		};
-		constexpr WCHAR hex[] = L"0123456789abcdef";
-		std::array<BYTE, 16> nonce{};
-		for (DWORD attempt = 0; attempt < 64; ++attempt)
-		{
-			if (!BCRYPT_SUCCESS(BCryptGenRandom(
-					nullptr, nonce.data(), static_cast<ULONG>(nonce.size()),
-					BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
-			{
-				LocalFree(descriptor);
-				SetLastError(ERROR_GEN_FAILURE);
-				return false;
-			}
-			size_t length = prefixLength;
-			for (BYTE byte : nonce)
-			{
-				directory[length++] = hex[byte >> 4];
-				directory[length++] = hex[byte & 0xf];
-			}
-			directory[length] = L'\0';
-
-			if (CreateDirectoryW(directory.data(), &attributes))
-			{
-				LocalFree(descriptor);
-				if (!BuildCacheFilePaths(directory.data(), paths))
-				{
-					RemoveDirectoryW(directory.data());
-					return false;
-				}
-				return true;
-			}
-			const DWORD error = GetLastError();
-			if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS)
-			{
-				LocalFree(descriptor);
-				SetLastError(error);
-				return false;
-			}
-		}
-		LocalFree(descriptor);
-		SetLastError(ERROR_ALREADY_EXISTS);
-		return false;
-	}
-
-	bool LockCache(LPCWSTR directory, const BundlePaths& paths)
-	{
-		HANDLE directoryHandle = CreateFileW(
-			directory, FILE_READ_ATTRIBUTES,
-			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-			FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-		if (directoryHandle == INVALID_HANDLE_VALUE)
-		{
-			return false;
-		}
-
-		FILE_ATTRIBUTE_TAG_INFO tagInformation{};
-		if (!GetFileInformationByHandleEx(
-				directoryHandle, FileAttributeTagInfo,
-				&tagInformation, sizeof(tagInformation)) ||
-			(tagInformation.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
-		{
-			CloseHandle(directoryHandle);
-			SetLastError(ERROR_INVALID_DATA);
-			return false;
-		}
-
-		std::array<HANDLE, 3> handles{};
-		if (!OpenBundle(paths, FILE_SHARE_READ, handles, true))
-		{
-			CloseHandle(directoryHandle);
-			return false;
-		}
-
-		detourBundleLocks[0] = directoryHandle;
-		for (size_t index = 0; index < handles.size(); ++index)
-		{
-			detourBundleLocks[index + 1] = handles[index];
-		}
-		return true;
-	}
-
-	void DeleteCache(LPCWSTR directory, const BundlePaths& paths)
-	{
-		for (const auto& path : paths)
-		{
-			DeleteFileW(path.data());
-		}
-		RemoveDirectoryW(directory);
-	}
-
-	bool CacheDetourBundle(LPCWSTR modulePath)
-	{
-		BundlePaths sourcePaths{};
-		size_t currentIndex = 0;
-		if (!BuildBundlePaths(modulePath, sourcePaths, currentIndex))
-		{
-			return false;
-		}
-
-		std::array<HANDLE, 3> sourceHandles{};
-		if (!OpenBundle(sourcePaths, FILE_SHARE_READ, sourceHandles))
-		{
-			return false;
-		}
-
-		WidePath cacheDirectory{};
-		BundlePaths cachePaths{};
-		if (!CreateUniqueCacheDirectory(cacheDirectory, cachePaths))
-		{
-			CloseHandles(sourceHandles);
-			return false;
-		}
-
-		bool copied = true;
-		for (size_t index = 0; index < cachePaths.size(); ++index)
-		{
-			if (!CopyFileW(
-					sourcePaths[index].data(), cachePaths[index].data(), TRUE))
-			{
-				copied = false;
-				break;
-			}
-		}
-		CloseHandles(sourceHandles);
-		if (!copied || !LockCache(cacheDirectory.data(), cachePaths))
-		{
-			const DWORD error = GetLastError();
-			DeleteCache(cacheDirectory.data(), cachePaths);
-			SetLastError(error);
-			return false;
-		}
-
-		if (!CopyAsciiPath(cachePaths[currentIndex].data()))
-		{
-			CloseDetourBundleLocks();
-			SetLastError(ERROR_NO_UNICODE_TRANSLATION);
-			return false;
-		}
-		return true;
-	}
-
-	bool IsHexCharacter(WCHAR value)
-	{
-		return (value >= L'0' && value <= L'9') ||
-			(value >= L'a' && value <= L'f') ||
-			(value >= L'A' && value <= L'F');
-	}
-
-	bool ParseCachePath(
-		LPCWSTR modulePath, WidePath& directory,
-		BundlePaths& paths, size_t& currentIndex)
-	{
-		const DWORD windowsLength = GetSystemWindowsDirectoryW(
-			directory.data(), static_cast<UINT>(directory.size()));
-		if (windowsLength == 0 || windowsLength >= directory.size() ||
-			wcscat_s(directory.data(), directory.size(),
-				L"\\Temp\\WinPriv-") != 0)
-		{
-			return false;
-		}
-		const size_t prefixLength = wcslen(directory.data());
-		if (prefixLength + cacheNonceCharacterCount + 1 > directory.size())
-		{
-			return false;
-		}
-		const size_t directoryLength = prefixLength + cacheNonceCharacterCount;
-		if (wcslen(modulePath) <= directoryLength + 1)
-		{
-			return false;
-		}
-		if (_wcsnicmp(modulePath, directory.data(), prefixLength) != 0)
-		{
-			return false;
-		}
-		for (size_t index = 0; index < cacheNonceCharacterCount; ++index)
-		{
-			if (!IsHexCharacter(modulePath[prefixLength + index]))
-			{
-				return false;
-			}
-			directory[prefixLength + index] =
-				modulePath[prefixLength + index];
-		}
-		if (modulePath[directoryLength] != L'\\')
-		{
-			return false;
-		}
-		directory[directoryLength] = L'\0';
-
-		currentIndex = cachedBundleNames.size();
-		for (size_t index = 0; index < cachedBundleNames.size(); ++index)
-		{
-			if (_wcsicmp(
-					modulePath + directoryLength + 1,
-					cachedBundleNames[index]) == 0)
-			{
-				currentIndex = index;
-				break;
-			}
-		}
-		return currentIndex != cachedBundleNames.size() &&
-			BuildCacheFilePaths(directory.data(), paths);
-	}
-
-	bool LockDetourBundle(LPCWSTR modulePath)
-	{
-		WidePath directory{};
-		BundlePaths paths{};
-		size_t currentIndex = 0;
-		if (!ParseCachePath(modulePath, directory, paths, currentIndex))
-		{
-			std::array<HANDLE, 3> handles{};
-			if (!BuildBundlePaths(modulePath, paths, currentIndex) ||
-				!OpenBundle(paths, FILE_SHARE_READ, handles)) return false;
-			for (size_t index = 0; index < handles.size(); ++index)
-			{
-				detourBundleLocks[index + 1] = handles[index];
-			}
-			return true;
-		}
-		if (!SameFile(modulePath, paths[currentIndex].data()) ||
-			!LockCache(directory.data(), paths))
-		{
-			SetLastError(ERROR_INVALID_DATA);
-			return false;
-		}
-		return true;
-	}
-
-	bool SetDetourLibraryPath(HINSTANCE instance)
-	{
-		std::array<WCHAR, MAX_PATH + 1> path{};
-		const DWORD pathLength = GetModuleFileNameW(
-			instance, path.data(), static_cast<DWORD>(path.size()));
-		if (pathLength == 0 || pathLength >= path.size())
-		{
-			return false;
-		}
-
-		if (CopyAsciiPath(path.data()))
-		{
-			return LockDetourBundle(path.data());
-		}
-
-		WCHAR* separator = wcsrchr(path.data(), L'\\');
-		if (separator == nullptr || separator == path.data() ||
-			!CopyAsciiPath(separator + 1))
-		{
-			SetLastError(ERROR_NO_UNICODE_TRANSLATION);
-			return false;
-		}
-		LPCWSTR fileName = separator + 1;
-
-		// Keep the architecture suffix in the long ASCII filename. The helper
-		// replaces that suffix when it must inject another architecture.
-		*separator = L'\0';
-		std::array<WCHAR, MAX_PATH + 1> shortDirectory{};
-		const DWORD shortLength = GetShortPathNameW(
-			path.data(), shortDirectory.data(),
-			static_cast<DWORD>(shortDirectory.size()));
-		if (shortLength != 0 && shortLength < shortDirectory.size())
-		{
-			const size_t directoryLength = wcslen(shortDirectory.data());
-			const size_t fileNameLength = wcslen(fileName);
-			if (directoryLength + fileNameLength + 1 < shortDirectory.size())
-			{
-				shortDirectory[directoryLength] = L'\\';
-				wcscpy_s(shortDirectory.data() + directoryLength + 1,
-					shortDirectory.size() - directoryLength - 1, fileName);
-				*separator = L'\\';
-				if (CopyAsciiPath(shortDirectory.data()) &&
-					SameFile(path.data(), shortDirectory.data()))
-				{
-					return LockDetourBundle(path.data());
-				}
-				*separator = L'\0';
-			}
-		}
-
-		*separator = L'\\';
-		return CacheDetourBundle(path.data());
-	}
-
-	BOOL CompleteChildInjection(BOOL created, DWORD creationFlags, LPPROCESS_INFORMATION process)
+	BOOL CompleteChildInjection(BOOL created, DWORD creationFlags, LPPROCESS_INFORMATION process,
+		const std::vector<WCHAR>& payload)
 	{
 		if (!created) return FALSE;
+
+		// Initialize the child's hooks before allowing its primary thread to execute.
 		DWORD error = NO_ERROR;
-		for (HANDLE handle : detourBundleLocks)
-		{
-			if (handle == nullptr || handle == INVALID_HANDLE_VALUE) continue;
-			HANDLE childHandle = nullptr;
-			// Hold the bundle in the child even before its DLL initialization runs.
-			if (!DuplicateHandle(GetCurrentProcess(), handle, process->hProcess,
-				&childHandle, 0, FALSE, DUPLICATE_SAME_ACCESS))
-			{
-				error = GetLastError();
-				break;
-			}
-		}
+		if (!memory::InjectLibrary(process->hProcess, libraryBundle, payload.data(),
+			static_cast<DWORD>(payload.size() * sizeof(WCHAR)))) error = GetLastError();
 		if (error == NO_ERROR && !(creationFlags & CREATE_SUSPENDED) && ResumeThread(process->hThread) == MAXDWORD)
 			error = GetLastError();
 		if (error == NO_ERROR) return TRUE;
@@ -689,90 +137,74 @@ namespace winpriv::library
 		return FALSE;
 	}
 
-	BOOL WINAPI HookCreateProcessA(_In_opt_ LPCSTR lpApplicationName, _Inout_opt_ LPSTR lpCommandLine,
-		_In_opt_ LPSECURITY_ATTRIBUTES lpProcessAttributes, _In_opt_ LPSECURITY_ATTRIBUTES lpThreadAttributes,
-		_In_ BOOL bInheritHandles, _In_ DWORD dwCreationFlags, _In_opt_ LPVOID lpEnvironment,
-		_In_opt_ LPCSTR lpCurrentDirectory, _In_ LPSTARTUPINFOA lpStartupInfo,
-		_Out_ LPPROCESS_INFORMATION lpProcessInformation)
+	BOOL WINAPI HookCreateProcessA(LPCSTR applicationName, LPSTR commandLine,
+		LPSECURITY_ATTRIBUTES processAttributes, LPSECURITY_ATTRIBUTES threadAttributes, BOOL inheritHandles,
+		DWORD creationFlags, LPVOID environment, LPCSTR currentDirectory, LPSTARTUPINFOA startupInfo,
+		LPPROCESS_INFORMATION processInformation)
 	{
 		std::vector<WCHAR> payload;
-		if (!CaptureWinPrivPayload(payload))
-		{
-			return FALSE;
-		}
-		return CompleteChildInjection(DetourCreateProcessWithDllExA(lpApplicationName, lpCommandLine, lpProcessAttributes,
-			lpThreadAttributes, bInheritHandles, dwCreationFlags | CREATE_SUSPENDED, lpEnvironment, lpCurrentDirectory,
-			lpStartupInfo, lpProcessInformation, detourLibrary.data(), &winPrivPayloadGuid,
-			payload.data(), static_cast<DWORD>(payload.size() * sizeof(WCHAR)), trueCreateProcessA),
-			dwCreationFlags, lpProcessInformation);
+		if (!CaptureWinPrivPayload(payload)) return FALSE;
+		return CompleteChildInjection(trueCreateProcessA(applicationName, commandLine, processAttributes,
+			threadAttributes, inheritHandles, creationFlags | CREATE_SUSPENDED, environment, currentDirectory,
+			startupInfo, processInformation), creationFlags, processInformation, payload);
 	}
 
-	BOOL WINAPI HookCreateProcessW(_In_opt_ LPCWSTR lpApplicationName, _Inout_opt_ LPWSTR lpCommandLine,
-		_In_opt_ LPSECURITY_ATTRIBUTES lpProcessAttributes, _In_opt_ LPSECURITY_ATTRIBUTES lpThreadAttributes,
-		_In_ BOOL bInheritHandles, _In_ DWORD dwCreationFlags, _In_opt_ LPVOID lpEnvironment,
-		_In_opt_ LPCWSTR lpCurrentDirectory, _In_ LPSTARTUPINFOW lpStartupInfo,
-		_Out_ LPPROCESS_INFORMATION lpProcessInformation)
+	BOOL WINAPI HookCreateProcessW(LPCWSTR applicationName, LPWSTR commandLine,
+		LPSECURITY_ATTRIBUTES processAttributes, LPSECURITY_ATTRIBUTES threadAttributes, BOOL inheritHandles,
+		DWORD creationFlags, LPVOID environment, LPCWSTR currentDirectory, LPSTARTUPINFOW startupInfo,
+		LPPROCESS_INFORMATION processInformation)
 	{
 		std::vector<WCHAR> payload;
-		if (!CaptureWinPrivPayload(payload))
-		{
-			return FALSE;
-		}
-		return CompleteChildInjection(DetourCreateProcessWithDllExW(lpApplicationName, lpCommandLine, lpProcessAttributes,
-			lpThreadAttributes, bInheritHandles, dwCreationFlags | CREATE_SUSPENDED, lpEnvironment, lpCurrentDirectory,
-			lpStartupInfo, lpProcessInformation, detourLibrary.data(), &winPrivPayloadGuid,
-			payload.data(), static_cast<DWORD>(payload.size() * sizeof(WCHAR)), trueCreateProcessW),
-			dwCreationFlags, lpProcessInformation);
+		if (!CaptureWinPrivPayload(payload)) return FALSE;
+		return CompleteChildInjection(trueCreateProcessW(applicationName, commandLine, processAttributes,
+			threadAttributes, inheritHandles, creationFlags | CREATE_SUSPENDED, environment, currentDirectory,
+			startupInfo, processInformation), creationFlags, processInformation, payload);
 	}
 }
 
-EXTERN_C BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved)
+EXTERN_C BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
 	using namespace winpriv::library;
+	if (reason != DLL_PROCESS_ATTACH) return TRUE;
 
-	if (dwReason == DLL_PROCESS_ATTACH)
+	// Keep an immutable copy of every architecture's raw image for subsequent child launches.
+	const auto context = static_cast<winpriv::memory::Initialization*>(reserved);
+	if (context == nullptr || context->image != reinterpret_cast<ULONG_PTR>(instance)) return FALSE;
+	try
 	{
-		if (DetourIsHelperProcess()) return TRUE;
-
-		// Restore inherited settings and hold the injected library bundle open.
-		(void)DetourRestoreAfterWith();
-		if (!ApplyInjectedWinPrivPayload() || !SetDetourLibraryPath(hinst)) return FALSE;
-
-		// Install feature and child-process hooks in one transaction.
-		winpriv::detours::transaction transaction;
-		if (!transaction || !DllExtraAttachDetach(winpriv::detours::action::attach))
+		libraryBundle = reinterpret_cast<const winpriv::memory::LibraryBundle*>(static_cast<ULONG_PTR>(context->bundle));
+		if (context->settingsSize != 0 && !ApplyWinPrivPayload(
+			reinterpret_cast<LPCVOID>(static_cast<ULONG_PTR>(context->settings)), context->settingsSize))
 		{
-			CloseDetourBundleLocks();
+			context->error = GetLastError();
 			return FALSE;
 		}
-		(void)transaction.apply(winpriv::detours::action::attach, trueCreateProcessA, HookCreateProcessA);
-		(void)transaction.apply(winpriv::detours::action::attach, trueCreateProcessW, HookCreateProcessW);
-		const LONG result = transaction.commit();
-		if (result != NO_ERROR) CloseDetourBundleLocks();
-		return result == NO_ERROR;
-	}
 
-	if (dwReason == DLL_PROCESS_DETACH)
-	{
-		if (reserved != nullptr) return TRUE;
+		// The private CRT has no loader shutdown callback to flush buffered diagnostic output.
+		setvbuf(stdout, nullptr, _IONBF, 0);
 
-		// Remove hooks before releasing the library bundle during explicit unload.
+		// Install feature and child-process hooks in one transaction; the image remains loaded until process exit.
 		winpriv::detours::transaction transaction;
 		if (!transaction)
 		{
-			CloseDetourBundleLocks();
+			context->error = transaction.commit();
 			return FALSE;
 		}
-
-		DllExtraAttachDetach(winpriv::detours::action::detach);
-		(void)transaction.apply(winpriv::detours::action::detach, trueCreateProcessA, HookCreateProcessA);
-		(void)transaction.apply(winpriv::detours::action::detach, trueCreateProcessW, HookCreateProcessW);
-		const LONG result = transaction.commit();
-		CloseDetourBundleLocks();
-		return result == NO_ERROR;
+		SetLastError(NO_ERROR);
+		if (!AttachExtraHooks())
+		{
+			const DWORD error = GetLastError();
+			context->error = error == NO_ERROR ? ERROR_DLL_INIT_FAILED : error;
+			return FALSE;
+		}
+		(void)transaction.attach(trueCreateProcessA, HookCreateProcessA);
+		(void)transaction.attach(trueCreateProcessW, HookCreateProcessW);
+		context->error = transaction.commit();
+		return context->error == NO_ERROR;
 	}
-
-	return TRUE;
+	catch (...)
+	{
+		context->error = ERROR_NOT_ENOUGH_MEMORY;
+		return FALSE;
+	}
 }
-
-

@@ -217,10 +217,18 @@ static NTSTATUS WithFilePath(POBJECT_ATTRIBUTES attributes, ULONG options,
 
 static NTSTATUS NTAPI DetourNtClose(HANDLE handle)
 {
-	// Serialize removal with close so a reused handle cannot inherit another file's logical path.
-	std::lock_guard lock(fileHandleLock);
+	// Forget the path before closing so a reused handle cannot inherit it; slow closes run without the lock.
+	std::unique_lock lock(fileHandleLock);
+	auto tracked = fileHandlePaths.extract(handle);
+	lock.unlock();
 	const NTSTATUS status = TrueNtClose(handle);
-	if (status >= 0) fileHandlePaths.erase(handle);
+
+	// A handle that stays open, such as one protected from close, keeps its path unless the value was reused.
+	if (status < 0 && !tracked.empty())
+	{
+		lock.lock();
+		fileHandlePaths.insert(std::move(tracked));
+	}
 	return status;
 }
 
@@ -369,12 +377,12 @@ static NTSTATUS NTAPI DetourNtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK
 //  |    | |___ |___    \__/ |    |___ | \|
 //
 
+// Compile the path formats before hooks can run concurrently on application threads.
+static const std::wregex tRegexLocal(LR"(\\\?\?\\(.*))", std::wregex::optimize);
+static const std::wregex tRegexUnc(LR"(\\\?\?\\UNC\\([^\\]+?)\\([^\\]+?)\\(.*))", std::wregex::optimize);
+
 static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 {
-	// valid path formats
-	static const std::wregex tRegexLocal(LR"(\\\?\?\\(.*))", std::wregex::optimize);
-	static const std::wregex tRegexUnc(LR"(\\\?\?\\UNC\\([^\\]+?)\\([^\\]+?)\\(.*))", std::wregex::optimize);
-
 	std::wstring sComputerName;
 	std::wstring sPath;
 
@@ -491,13 +499,12 @@ EXTERN_C NTSTATUS NTAPI DetourNtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MAS
 }
 
 // Install file hooks together so opening, attributes, and mutation share the same rules.
-bool DllFileAttachDetach(winpriv::detours::action requestedAction)
+bool AttachFileHooks()
 {
-	const bool attaching = requestedAction == winpriv::detours::action::attach;
 	const bool rulesEnabled = VariableNotEmpty(WINPRIV_EV_FILE_RULES);
 
 	// Load the ordered rules once when the library attaches.
-	if (rulesEnabled && attaching)
+	if (rulesEnabled)
 	{
 		try
 		{
@@ -522,19 +529,19 @@ bool DllFileAttachDetach(winpriv::detours::action requestedAction)
 	// Enable the hooks required by the selected file options.
 	if (rulesEnabled || VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1) || VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
 	{
-		ApplyDetour(requestedAction, TrueNtOpenFile, DetourNtOpenFile);
-		ApplyDetour(requestedAction, TrueNtCreateFile, DetourNtCreateFile);
+		AttachDetour(TrueNtOpenFile, DetourNtOpenFile);
+		AttachDetour(TrueNtCreateFile, DetourNtCreateFile);
 	}
 	if (rulesEnabled)
 	{
-		ApplyDetour(requestedAction, TrueNtQueryAttributesFile, DetourNtQueryAttributesFile);
-		ApplyDetour(requestedAction, TrueNtQueryFullAttributesFile, DetourNtQueryFullAttributesFile);
-		ApplyDetour(requestedAction, TrueNtDeleteFile, DetourNtDeleteFile);
-		ApplyDetour(requestedAction, TrueNtSetInformationFile, DetourNtSetInformationFile);
-		ApplyDetour(requestedAction, TrueNtClose, DetourNtClose);
-		ApplyDetour(requestedAction, TrueNtDuplicateObject, DetourNtDuplicateObject);
+		AttachDetour(TrueNtQueryAttributesFile, DetourNtQueryAttributesFile);
+		AttachDetour(TrueNtQueryFullAttributesFile, DetourNtQueryFullAttributesFile);
+		AttachDetour(TrueNtDeleteFile, DetourNtDeleteFile);
+		AttachDetour(TrueNtSetInformationFile, DetourNtSetInformationFile);
+		AttachDetour(TrueNtClose, DetourNtClose);
+		AttachDetour(TrueNtDuplicateObject, DetourNtDuplicateObject);
 		if (TrueNtQueryInformationByName != nullptr)
-			ApplyDetour(requestedAction, TrueNtQueryInformationByName, DetourNtQueryInformationByName);
+			AttachDetour(TrueNtQueryInformationByName, DetourNtQueryInformationByName);
 	}
 	return true;
 }

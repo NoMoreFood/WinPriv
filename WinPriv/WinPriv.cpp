@@ -6,14 +6,13 @@
 #define _WINSOCKAPI_
 
 #include <Windows.h>
-#include <rpc.h>
 #include <ShlObj.h>
 #include <WS2tcpip.h>
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstdio>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -25,358 +24,194 @@
 
 #include "WinPrivShared.h"
 #include "WinPriv.h"
-
-#pragma comment(lib,"rpcrt4.lib")
+#include "../WinPrivLibrary/WinPrivMemoryLoader.h"
 
 extern int LaunchNewLogon(int iArgc, wchar_t* aArgv[]);
 extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
-extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username = {}, bool bWait = true, const std::vector<std::wstring>& vProcessesToKill = {});
+extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait,
+	const std::vector<std::wstring>& vProcessesToKill);
 extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
-static void DeleteTemporaryLibrary(const std::wstring& sPath)
+// Embedded injection libraries in bundle order with their extracted file names.
+constexpr std::array<std::pair<DWORD, LPCWSTR>, 3> vLibraryResources{ {
+	{ IDR_RT_RCDATA_X86, L"WinPrivLibrary-32.dll" },
+	{ IDR_RT_RCDATA_X64, L"WinPrivLibrary-64.dll" },
+	{ IDR_RT_RCDATA_ARM64, L"WinPrivLibrary-arm64.dll" } } };
+
+winpriv::memory::LibraryImage LoadLibraryResource(const DWORD iResourceId)
 {
-	// Emulated DLLs can remain locked briefly after FreeLibrary returns.
-	const ULONGLONG iDeadline = GetTickCount64() + 1000;
-	for (;;)
-	{
-		if (DeleteFile(sPath.c_str())) return;
-		const DWORD iError = GetLastError();
-		if ((iError != ERROR_ACCESS_DENIED && iError != ERROR_SHARING_VIOLATION) ||
-			GetTickCount64() >= iDeadline) return;
-		Sleep(20);
-	}
-}
-
-bool WriteResourceToFile(const std::wstring& sOutputDirectory, const DWORD iResourceId)
-{
-	// locate the resource that has the embedded library
-	const HRSRC hRes = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
-	if (hRes == nullptr)
-	{
-		PrintMessage(L"ERROR: Could not locate internal resource data.\n");
-		return false;
-	}
-
-	// load the resource that has the embedded detours library
-	const HGLOBAL hResourceLoadedX86 = LoadResource(nullptr, hRes);
-	if (hResourceLoadedX86 == nullptr)
-	{
-		PrintMessage(L"ERROR: Could not load internal resource data.\n");
-		return false;
-	}
-	const LPVOID pResourceData = LockResource(hResourceLoadedX86);
-	if (pResourceData == nullptr)
-	{
-		PrintMessage(L"ERROR: Could not access internal resource data.\n");
-		return false;
-	}
-
-	// create the library files 
-	SmartPointer<HANDLE> hTempFile(CloseHandle, CreateFile(sOutputDirectory.c_str(), GENERIC_WRITE,
-		0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
-	if (hTempFile == INVALID_HANDLE_VALUE)
-	{
-		PrintMessage(L"ERROR: Problem creating library file.\n");
-		return false;
-	}
-
-	// write the resource into the temporary file
-	const DWORD wSizeRes = SizeofResource(nullptr, hRes);
-	DWORD wBytesWritten = 0;
-	if (WriteFile(hTempFile, pResourceData, wSizeRes, &wBytesWritten, nullptr) == 0 || wBytesWritten != wSizeRes)
-	{
-		PrintMessage(L"ERROR: Problem writing library file.\n");
-		return false;
-	}
-
-	return true;
-}
-
-std::wstring GetRunningExecutable()
-{
-	// attempt to get the directory to the path to this executable
-	std::wstring sThisExecutable;
-	sThisExecutable.resize(MAX_PATH + 1);
-	const DWORD iResult = GetModuleFileName(nullptr, sThisExecutable.data(), MAX_PATH + 1);
-	if (iResult == 0 || iResult >= MAX_PATH + 1)
-	{
-		PrintMessage(L"ERROR: Error fetching currently executable path.\n");
-		std::exit(EXIT_FAILURE);
-	}
-
-	sThisExecutable.resize(sThisExecutable.find(L'\0'));
-	return sThisExecutable;
-}
-
-enum class LibraryArchitecture
-{
-	X86,
-	X64,
-	Arm64
-};
-
-std::wstring GetLocalLibraryPath(const LibraryArchitecture eArchitecture)
-{
-	const std::wstring sThisExecutable = GetRunningExecutable();
-
-	// trim of final path element
-	const std::wstring sBasePath = sThisExecutable.substr(0, sThisExecutable.find_last_of(L'\\'));
-
-	switch (eArchitecture)
-	{
-	case LibraryArchitecture::X86:
-		return sBasePath + L"\\WinPrivLibrary-32.dll";
-	case LibraryArchitecture::X64:
-		return sBasePath + L"\\WinPrivLibrary-64.dll";
-	case LibraryArchitecture::Arm64:
-		return sBasePath + L"\\WinPrivLibrary-arm64.dll";
-	}
-
-	return L"";
+	// Locate an embedded library image; failures return an empty image.
+	const HRSRC hResource = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
+	const HGLOBAL hLoaded = hResource == nullptr ? nullptr : LoadResource(nullptr, hResource);
+	const LPCVOID pData = hLoaded == nullptr ? nullptr : LockResource(hLoaded);
+	return { pData, pData == nullptr ? 0 : SizeofResource(nullptr, hResource) };
 }
 
 int RunProgram(int iArgc, wchar_t* aArgv[])
 {
 	// get list of all privileges for general use later
-	std::map<std::wstring, std::wstring> vPrivMaps = GetPrivilegeList();
+	const std::map<std::wstring, std::wstring> vPrivMaps = GetPrivilegeList();
 
-	// list of privs populated by command line args that will be enabled
+	// Validate settings against the private CRT's limit before passing them to injected processes.
+	const auto SetSetting = [](LPCWSTR sName, LPCWSTR sValue)
+	{
+		const DWORD iError = wcsnlen(sValue, _MAX_ENV) == _MAX_ENV ? ERROR_BAD_ENVIRONMENT :
+			SetEnvironmentVariableW(sName, sValue) ? NO_ERROR : GetLastError();
+		if (iError == NO_ERROR) return true;
+		PrintMessage(L"ERROR: Could not store process setting %s (error %lu).\n", sName, iError);
+		return false;
+	};
+
+	// reset settings inherited by subprocesses and identify this launcher as their parent
+	for (const LPCWSTR sName : WinPrivSettingNames)
+		if (!SetSetting(sName, L"")) return __LINE__;
+	if (!SetSetting(WINPRIV_EV_PARENT_PID, std::to_wstring(GetCurrentProcessId()).c_str())) return __LINE__;
+
+	// settings populated by command line arguments
 	std::vector<std::wstring> vPrivsToEnable;
-
-	// initialize settings that will be inherited by subprocesses
-	SetEnvironmentVariable(WINPRIV_EV_PRIVLIST, L"");
-	SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, L"");
-	SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, L"");
-	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, L"");
-	SetEnvironmentVariable(WINPRIV_EV_FILE_RULES, L"");
-	SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_CLM, L"");
-	SetEnvironmentVariable(WINPRIV_EV_MOCK_TIME, L"");
-	SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, L"");
-	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SHOW, L"");
-	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SEARCH, L"");
-	SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_REPLACE, L"");
-	SetEnvironmentVariable(WINPRIV_EV_MEDIUM_PLUS, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"0");
-	SetEnvironmentVariable(WINPRIV_EV_PARENT_PID, std::to_wstring(GetCurrentProcessId()).c_str());
-
-	// registry override parameters populated by command line args
+	std::vector<std::wstring> vProcessesToKill;
 	std::wstring sRegistryOverride;
-
-	// file and directory rules populated by command line args
 	std::wstring sFileRules;
-
-	// host override parameters populated by command line args
 	std::wstring sHostOverride;
-
-	// target executable and options provided by command line args
 	std::wstring sProcessParams;
 	std::wstring sProcess;
-
-	// whether or not to provide execution time
 	bool bDisplayExecutionTime = false;
-
-	// show mode if selected
+	bool bUseShellExecute = false;
 	WORD iShowWindow = SW_NORMAL;
 
-	// show mode if selected
-	bool bUseShellExecute = false;
-
-	// whether or not to kill any processes
-	std::vector<std::wstring> vProcessesToKill;
-
-	// helper to load arguments from a cfg file and return them as a command-line string
-	bool bCfgLoadFailed = false;
-	auto LoadCfgFile = [&bCfgLoadFailed](const std::wstring& sCfgPath) -> std::wstring
+	// load arguments from a cfg file as a command-line string
+	const auto LoadCfgFile = [](const std::wstring& sCfgPath) -> std::optional<std::wstring>
 	{
 		std::ifstream oFileStream(sCfgPath);
-		if (!oFileStream.is_open())
-		{
-			PrintMessage(L"ERROR: Could not open cfg file: %s\n", sCfgPath.c_str());
-			bCfgLoadFailed = true;
-			return {};
-		}
 		std::ostringstream oStringStream;
-		oStringStream << oFileStream.rdbuf();
-		if (oFileStream.bad() || oStringStream.bad())
+		if (oFileStream.is_open()) oStringStream << oFileStream.rdbuf();
+
+		// strip a UTF-8 BOM so the first switch is not mistaken for the target executable
+		std::string sNarrow = oStringStream.str();
+		if (sNarrow.starts_with("\xEF\xBB\xBF")) sNarrow.erase(0, 3);
+		const int iNarrowLen = static_cast<int>(sNarrow.size());
+		const int iWideLen = MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), iNarrowLen, nullptr, 0);
+		std::wstring sWide(iWideLen, L'\0');
+		MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), iNarrowLen, sWide.data(), iWideLen);
+
+		// newlines separate tokens for CommandLineToArgvW, and environment variables are expanded
+		std::ranges::replace_if(sWide, [](wchar_t c) { return c == L'\r' || c == L'\n'; }, L' ');
+		std::wstring sExpanded(ExpandEnvironmentStringsW(sWide.c_str(), nullptr, 0), L'\0');
+		if (!oFileStream.is_open() || oFileStream.bad() || oStringStream.bad() || sExpanded.empty() ||
+			ExpandEnvironmentStringsW(sWide.c_str(), sExpanded.data(), static_cast<DWORD>(sExpanded.size())) == 0)
 		{
 			PrintMessage(L"ERROR: Could not read cfg file: %s\n", sCfgPath.c_str());
-			bCfgLoadFailed = true;
-			return {};
+			return std::nullopt;
 		}
-		std::string sNarrow = oStringStream.str();
-		if (sNarrow.starts_with("\xEF\xBB\xBF"))
-		{
-			// A UTF-8 BOM otherwise becomes U+FEFF at the start of the first
-			// switch, causing it to be mistaken for the target executable.
-			sNarrow.erase(0, 3);
-		}
-		const int iWideLen = MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), nullptr, 0);
-		std::wstring sWide(iWideLen, L'\0');
-		MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), static_cast<int>(sNarrow.size()), sWide.data(), iWideLen);
-
-		// replace newlines with spaces so CommandLineToArgvW treats them as token separators
-		std::ranges::replace_if(sWide, [](wchar_t c) { return c == L'\r' || c == L'\n'; }, L' ');
-
-		// expand environment variables in the config content
-		const DWORD iExpandedLen = ExpandEnvironmentStringsW(sWide.c_str(), nullptr, 0);
-		std::wstring sExpanded(iExpandedLen, L'\0');
-		ExpandEnvironmentStringsW(sWide.c_str(), sExpanded.data(), iExpandedLen);
 		sExpanded.resize(sExpanded.find(L'\0'));
 		return sExpanded;
 	};
 
-	// Bound dynamic command-file expansion and remember each resulting command
-	// line. The state check catches direct and indirect cycles without rejecting
-	// a finite sequence that intentionally loads the same file more than once.
+	// remember expanded command lines to reject cycles while allowing a file to be loaded repeatedly
 	constexpr size_t iMaxCommandFileExpansions = 64;
 	size_t iCommandFileExpansions = 0;
 	std::set<std::wstring> vExpandedCommandLines;
-	// CommandLineToArgvW uses LocalAlloc. Keep only dynamically parsed argument
-	// arrays here; the original CRT-owned argv must not be released by us.
+
+	// parsed argument arrays are owned here; the original CRT-owned argv must not be released
 	std::unique_ptr<void, decltype(&LocalFree)> pOwnedArgv(nullptr, &LocalFree);
+	const auto ReplaceArgs = [&](const std::wstring& sCommandLine)
+	{
+		LPWSTR* pParsedArgv = CommandLineToArgvW(sCommandLine.c_str(), &iArgc);
+		if (pParsedArgv == nullptr)
+		{
+			PrintMessage(L"ERROR: Could not parse arguments loaded from cfg file.\n");
+			return false;
+		}
+		pOwnedArgv.reset(pParsedArgv);
+		aArgv = pParsedArgv;
+		return true;
+	};
 
 	// read command line from cfg file if it exists
-	const std::wstring sExecutable = GetRunningExecutable();
+	std::wstring sExecutable(MAX_PATH + 1, L'\0');
+	const DWORD iExecutableLength = GetModuleFileName(nullptr, sExecutable.data(), MAX_PATH + 1);
+	if (iExecutableLength == 0 || iExecutableLength > MAX_PATH)
+	{
+		PrintMessage(L"ERROR: Could not determine the executable path.\n");
+		return __LINE__;
+	}
+	sExecutable.resize(iExecutableLength);
+
+	// Credential and elevation relaunches must execute this image regardless of argv[0] or the search path.
+	aArgv[0] = sExecutable.data();
 	const std::wstring sCfgPath = std::filesystem::path(sExecutable).replace_extension(L".cfg").wstring();
-	// Internal relaunches already carry expanded arguments and must retain their phase marker.
+
+	// internal relaunches already carry expanded arguments and must retain their phase marker
 	const bool bRelaunched = iArgc > 1 && (_wcsicmp(aArgv[1], L"/RelaunchElevated") == 0 ||
 		_wcsicmp(aArgv[1], L"/RelaunchComplete") == 0);
 	if (!bRelaunched && GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
-		const std::wstring sCfgArgs = LoadCfgFile(sCfgPath);
-		if (bCfgLoadFailed) return __LINE__;
-		const std::wstring sCfgCommandLine = L"\"" + sExecutable + L"\" " + sCfgArgs;
-		LPWSTR* pParsedArgv = CommandLineToArgvW(sCfgCommandLine.c_str(), &iArgc);
-		if (pParsedArgv == nullptr)
-		{
-			PrintMessage(L"ERROR: Could not parse arguments loaded from cfg file.\n");
-			return __LINE__;
-		}
-		pOwnedArgv.reset(pParsedArgv);
-		aArgv = pParsedArgv;
+		const std::optional<std::wstring> sCfgArgs = LoadCfgFile(sCfgPath);
+		if (!sCfgArgs || !ReplaceArgs(L"\"" + sExecutable + L"\" " + *sCfgArgs)) return __LINE__;
 	}
 
 	// enumerate arguments
 	for (int iArg = 1; iArg < iArgc; iArg++)
 	{
-		// convert to a std string for ease
-		std::wstring sArg(aArgv[iArg]);
-
-		// as soon as we see one parameter that does not start with
-		// a slash, then assume we are processing the command to run
-		if (sArg.c_str()[0] != L'/')
+		const std::wstring sArg(aArgv[iArg]);
+		const auto IsSwitch = [&sArg](LPCWSTR sName) { return _wcsicmp(sArg.c_str(), sName) == 0; };
+		const auto JoinArgs = [&](int iFirst, int iLast)
 		{
-			if (bUseShellExecute)
-			{
-				sProcess = aArgv[iArg++];
-			}
+			return ArgvToCommandLine(iFirst, iLast, std::vector<LPWSTR>(aArgv, aArgv + iArgc));
+		};
+		const auto HasArgs = [&](int iCount)
+		{
+			if (iArg + iCount < iArgc) return true;
+			PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+			return false;
+		};
 
-			sProcessParams = ArgvToCommandLine(iArg, iArgc - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+		// the first argument without a leading slash begins the target command
+		if (!sArg.starts_with(L'/'))
+		{
+			if (bUseShellExecute) sProcess = aArgv[iArg++];
+			sProcessParams = JoinArgs(iArg, iArgc - 1);
 			break;
 		}
 
-		// this switch is only called by winpriv to instructed itself to relaunch
-		// itself as an elevated process. this is done after establishing a new
-		// logon following new privs have been granted
-		else if (_wcsicmp(sArg.c_str(), L"/RelaunchElevated") == 0)
+		// internal: relaunch elevated after a new logon has acquired the requested privileges
+		else if (IsSwitch(L"/RelaunchElevated"))
 		{
-			// launch as elevated
 			return LaunchElevated(iArgc, aArgv);
 		}
 
-		// this switch instructs winpriv to launch the sub-process using the plus variant
-		// of the impersonated user token's current mandatory integrity level
-		else if (_wcsicmp(sArg.c_str(), L"/MediumPlus") == 0)
+		// internal: mark the privileged relaunch so it cannot recurse and console targets pause at exit
+		else if (IsSwitch(L"/RelaunchComplete"))
 		{
-			SetEnvironmentVariable(WINPRIV_EV_MEDIUM_PLUS, L"1");
+			if (!SetSetting(WINPRIV_EV_RELAUNCH_MODE, L"1")) return __LINE__;
 		}
 
-		// this switch instructs winpriv to launch the target process as the
-		// current console user when running as SYSTEM account
-		else if (_wcsicmp(sArg.c_str(), L"/RunAsConsoleUser") == 0)
+		// use the plus variant of the session token's integrity level for run-as targets
+		else if (IsSwitch(L"/MediumPlus"))
 		{
-			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			return LaunchAsUser(sProcessParams, {}, true, vProcessesToKill);
+			if (!SetSetting(WINPRIV_EV_MEDIUM_PLUS, L"1")) return __LINE__;
 		}
 
-		// this switch instructs winpriv to launch the target process as the
-		// current console user without waiting for it to complete
-		else if (_wcsicmp(sArg.c_str(), L"/RunAsConsoleUserNoWait") == 0)
+		// launch the remaining command in the console user's or a named user's session
+		else if (IsSwitch(L"/RunAsConsoleUser") || IsSwitch(L"/RunAsConsoleUserNoWait") ||
+			IsSwitch(L"/RunAsUser") || IsSwitch(L"/RunAsUserNoWait"))
 		{
-			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			return LaunchAsUser(sProcessParams, {}, false, vProcessesToKill);
+			const bool bNamedUser = IsSwitch(L"/RunAsUser") || IsSwitch(L"/RunAsUserNoWait");
+			const bool bWait = !IsSwitch(L"/RunAsConsoleUserNoWait") && !IsSwitch(L"/RunAsUserNoWait");
+			if (bNamedUser && !HasArgs(1)) return __LINE__;
+			const std::wstring sUser = bNamedUser ? aArgv[++iArg] : L"";
+			sProcessParams = JoinArgs(iArg + 1, iArgc - 1);
+			if (bNamedUser) wprintf(L"INFO: Launching process as user %s: %s\n", sUser.c_str(), sProcessParams.c_str());
+			return LaunchAsUser(sProcessParams, sUser, bWait, vProcessesToKill);
 		}
 
-		// this switch instructs winpriv to launch the target process as the
-		// specified user when running as SYSTEM account
-		else if (_wcsicmp(sArg.c_str(), L"/RunAsUser") == 0)
+		// insert arguments from an additional cfg file at this position
+		else if (IsSwitch(L"/LoadCommands"))
 		{
-			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			std::wstring sUser(aArgv[++iArg]);
-			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			wprintf(L"INFO: Launching process as user: %s\n", sProcessParams.c_str());
-			return LaunchAsUser(sProcessParams, sUser, true, vProcessesToKill);
-		}
-
-		// this switch instructs winpriv to launch the target process as the
-		// specified user without waiting for it to complete
-		else if (_wcsicmp(sArg.c_str(), L"/RunAsUserNoWait") == 0)
-		{
-			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			std::wstring sUser(aArgv[++iArg]);
-			sProcessParams = ArgvToCommandLine(iArg + 1, iArgc - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
-			wprintf(L"INFO: Launching process as user: %s\n", sProcessParams.c_str());
-			return LaunchAsUser(sProcessParams, sUser, false, vProcessesToKill);
-		}
-
-		// this switch is only called by winpriv to instruct itself that is has
-		// been launched with a new, privileged logon and it now should be able
-		// to launch the target process with the newly acquired privileges.
-		// this is used to control whether an exit prompt appears in command line
-		// programs and to prevent infinite relaunching if the new privileges can
-		// not be enabled
-		else if (_wcsicmp(sArg.c_str(), L"/RelaunchComplete") == 0)
-		{
-			// update relaunch phase to prevent recursion
-			SetEnvironmentVariable(WINPRIV_EV_RELAUNCH_MODE, L"1");
-		}
-
-		// this instructs winpriv to load additional arguments from the specified cfg file
-		else if (_wcsicmp(sArg.c_str(), L"/LoadCommands") == 0)
-		{
-			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
+			if (!HasArgs(1)) return __LINE__;
 			const int iFirstCfgArg = iArg;
-			const std::wstring sProcessedArgs = ArgvToCommandLine(1, iArg - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			const std::wstring sProcessedArgs = JoinArgs(1, iArg - 1);
 			const std::wstring sExtraCfgPath(aArgv[++iArg]);
 			if (GetFileAttributes(sExtraCfgPath.c_str()) == INVALID_FILE_ATTRIBUTES)
 			{
@@ -385,286 +220,165 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			}
 
 			// preserve processed arguments for relaunch while replacing this command-file switch
-			const std::wstring sCfgArgs = LoadCfgFile(sExtraCfgPath);
-			if (bCfgLoadFailed) return __LINE__;
-			const std::wstring sRemainingArgs = ArgvToCommandLine(iArg + 1, iArgc - 1,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+			const std::optional<std::wstring> sCfgArgs = LoadCfgFile(sExtraCfgPath);
+			if (!sCfgArgs) return __LINE__;
 			std::wstring sExpandedCommandLine = L"\"" + sExecutable + L"\"";
-			if (!sProcessedArgs.empty()) sExpandedCommandLine += L" " + sProcessedArgs;
-			if (!sCfgArgs.empty()) sExpandedCommandLine += L" " + sCfgArgs;
-			if (!sRemainingArgs.empty()) sExpandedCommandLine += L" " + sRemainingArgs;
-
+			for (const std::wstring& sPart : { sProcessedArgs, *sCfgArgs, JoinArgs(iArg + 1, iArgc - 1) })
+				if (!sPart.empty()) sExpandedCommandLine += L" " + sPart;
 			if (++iCommandFileExpansions > iMaxCommandFileExpansions ||
 				!vExpandedCommandLines.insert(sExpandedCommandLine).second)
 			{
 				PrintMessage(L"ERROR: Recursive or excessively nested /LoadCommands expansion detected.\n");
 				return __LINE__;
 			}
-
-			LPWSTR* pParsedArgv = CommandLineToArgvW(sExpandedCommandLine.c_str(), &iArgc);
-			if (pParsedArgv == nullptr)
-			{
-				PrintMessage(L"ERROR: Could not parse arguments loaded from cfg file.\n");
-				return __LINE__;
-			}
-			pOwnedArgv.reset(pParsedArgv);
-			aArgv = pParsedArgv;
+			if (!ReplaceArgs(sExpandedCommandLine)) return __LINE__;
 			iArg = iFirstCfgArg - 1;
 		}
 
-		// this instructs winpriv to attempt to enable a user-provided list of privs
-		else if (_wcsicmp(sArg.c_str(), L"/WithPrivs") == 0)
+		// enable a comma-delimited list of privileges
+		else if (IsSwitch(L"/WithPrivs"))
 		{
-			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// tokenize the comma-delimited string and add the privs to the priv vector
-			std::wstring sPrivString(aArgv[++iArg]);
-			auto tokens = sPrivString 
-				| std::views::split(L',')
-				| std::views::transform([](auto&& rng) {
-					return std::wstring(std::ranges::begin(rng), std::ranges::end(rng));
-				});
-			
-			for (auto&& token : tokens)
-			{
-				vPrivsToEnable.push_back(token);
-			}
+			if (!HasArgs(1)) return __LINE__;
+			for (const auto sPriv : std::wstring_view(aArgv[++iArg]) | std::views::split(L','))
+				vPrivsToEnable.emplace_back(sPriv.begin(), sPriv.end());
 		}
 
-		// this instructs winpriv to kill any processes with the specified name
-		else if (_wcsicmp(sArg.c_str(), L"/KillProcess") == 0)
+		// enable every privilege defined on the system
+		else if (IsSwitch(L"/WithAllPrivs"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// add to a list or processes to kill
-			vProcessesToKill.push_back(aArgv[iArg + 1]);
-			iArg += iArgsRequired;
+			for (const std::wstring& sPriv : vPrivMaps | std::views::keys) vPrivsToEnable.push_back(sPriv);
 		}
 
-		// this instructs winpriv to write out any temporary dlls into the following directory
-		else if (_wcsicmp(sArg.c_str(), L"/ExtractLibrary") == 0)
+		// kill processes with the specified name before launch
+		else if (IsSwitch(L"/KillProcess"))
 		{
-			if (WriteResourceToFile(GetLocalLibraryPath(LibraryArchitecture::X86), IDR_RT_RCDATA_X86) == false ||
-				WriteResourceToFile(GetLocalLibraryPath(LibraryArchitecture::X64), IDR_RT_RCDATA_X64) == false ||
-				WriteResourceToFile(GetLocalLibraryPath(LibraryArchitecture::Arm64), IDR_RT_RCDATA_ARM64) == false)
-			{
-				PrintMessage(L"ERROR: Failed to extract libraries.\n");
-				return __LINE__;
-			}
+			if (!HasArgs(1)) return __LINE__;
+			vProcessesToKill.push_back(aArgv[++iArg]);
+		}
 
+		// write the embedded libraries beside this executable
+		else if (IsSwitch(L"/ExtractLibrary"))
+		{
+			for (const auto& [iResourceId, sFileName] : vLibraryResources)
+			{
+				const winpriv::memory::LibraryImage tImage = LoadLibraryResource(iResourceId);
+				const std::wstring sPath = std::filesystem::path(sExecutable).replace_filename(sFileName).wstring();
+				SmartPointer<HANDLE> hFile(CloseHandle, tImage.data == nullptr ? INVALID_HANDLE_VALUE : CreateFile(
+					sPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+				DWORD iWritten = 0;
+				if (hFile == INVALID_HANDLE_VALUE || !WriteFile(hFile, tImage.data, tImage.size, &iWritten, nullptr) ||
+					iWritten != tImage.size)
+				{
+					PrintMessage(L"ERROR: Failed to extract libraries.\n");
+					return __LINE__;
+				}
+			}
 			return 0;
 		}
 
-		// instructs winpriv to attempt to enable all privs on the system
-		else if (_wcsicmp(sArg.c_str(), L"/WithAllPrivs") == 0)
+		// display the system's privilege names and descriptions
+		else if (IsSwitch(L"/ListPrivileges") || IsSwitch(L"/ListPrivs"))
 		{
-			for (std::pair<std::wstring, std::wstring> tPriv : vPrivMaps)
-			{
-				// add privs to list of privs we are going to set
-				vPrivsToEnable.push_back(tPriv.first);
-			}
-		}
-
-		// instructs winpriv to create a list of privs and display it to the user
-		else if (_wcsicmp(sArg.c_str(), L"/ListPrivileges") == 0 ||
-			_wcsicmp(sArg.c_str(), L"/ListPrivs") == 0)
-		{
-			// calculate column display size
 			size_t iColumnSize = 0;
-			for (std::pair<std::wstring, std::wstring> tPriv : vPrivMaps)
-			{
-				iColumnSize = max(iColumnSize, tPriv.first.length());
-			}
-
-			// format the output into columns
+			for (const std::wstring& sPriv : vPrivMaps | std::views::keys)
+				iColumnSize = (std::max)(iColumnSize, sPriv.length());
+			const int iWidth = static_cast<int>(iColumnSize) + 1;
 			std::wstringstream ss;
-			ss << std::setiosflags(std::ios::left);
-			ss << std::setw(iColumnSize + 1ULL) << L"Privilege Constant" << L" " << L"Privilege Description\n";
-			ss << std::setw(iColumnSize + 1ULL) << L"==================" << L" " << L"=====================\n";
-			for (std::pair<std::wstring, std::wstring> tPriv : vPrivMaps)
-			{
-				ss << std::setw(iColumnSize + 1ULL) << tPriv.first.c_str() << L" " << tPriv.second.c_str() << L"\n";
-			}
-
+			ss << std::left << std::setw(iWidth) << L"Privilege Constant" << L" Privilege Description\n";
+			ss << std::setw(iWidth) << L"==================" << L" =====================\n";
+			for (const auto& [sName, sDescription] : vPrivMaps)
+				ss << std::setw(iWidth) << sName << L" " << sDescription << L"\n";
 			PrintMessage(L"%s", ss.str().c_str());
 			return 0;
 		}
 
-		// instructs winpriv to impersonate the mac address on the system
-		else if (_wcsicmp(sArg.c_str(), L"/MacOverride") == 0)
+		// override the MAC address reported to the target, removing colon or dash separators
+		else if (IsSwitch(L"/MacOverride"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// format the mac address to a consistent format by removing colons or dashes
-			std::wstring sMacAddr(aArgv[iArg + 1]);
-			std::erase_if(sMacAddr, [](const wchar_t c) { return c == ':' || c == '-'; });
-			SetEnvironmentVariable(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str());
-			iArg += iArgsRequired;
+			if (!HasArgs(1)) return __LINE__;
+			std::wstring sMacAddr(aArgv[++iArg]);
+			std::erase_if(sMacAddr, [](const wchar_t c) { return c == L':' || c == L'-'; });
+			if (!SetSetting(WINPRIV_EV_MAC_OVERRIDE, sMacAddr.c_str())) return __LINE__;
 		}
 
 		// redirect a file path and its descendants
-		else if (_wcsicmp(sArg.c_str(), L"/FileRedirect") == 0)
+		else if (IsSwitch(L"/FileRedirect"))
 		{
-			constexpr int iArgsRequired = 2;
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
+			if (!HasArgs(2)) return __LINE__;
 
 			// Resolve paths before launching so descendants retain the same rules after changing directories.
-			std::vector<std::wstring> vPaths(2);
-			for (int iPath = 0; iPath < iArgsRequired; ++iPath)
+			std::wstring sSource = ResolveFileRulePath(aArgv[iArg + 1]);
+			std::wstring sDestination = ResolveFileRulePath(aArgv[iArg + 2]);
+			if (sSource.empty() || sDestination.empty())
 			{
-				vPaths[iPath] = ResolveFileRulePath(aArgv[iArg + iPath + 1]);
-				if (vPaths[iPath].empty())
-				{
-					PrintMessage(L"ERROR: Invalid file path specified for: %s\n", sArg.c_str());
-					return __LINE__;
-				}
-			}
-			sFileRules += ArgvToCommandLine(0, 1, { vPaths[0].data(), vPaths[1].data() }) + L" ";
-			iArg += iArgsRequired;
-		}
-
-		// instructs winpriv to override all registry queries for a specific key
-		else if (_wcsicmp(sArg.c_str(), L"/RegOverride") == 0)
-		{
-			constexpr int iArgsRequired = 4;
-
-			// four additional parameters are required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
+				PrintMessage(L"ERROR: Invalid file path specified for: %s\n", sArg.c_str());
 				return __LINE__;
 			}
-
-			// append the registry key override data which should be four params:
-			// <key name> <value name> <value type> <value data>
-			// currently no error checking is being done for the proper structure
-			sRegistryOverride += ArgvToCommandLine(iArg + 1, iArg + iArgsRequired,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" ";
-			iArg += iArgsRequired;
+			sFileRules += ArgvToCommandLine(0, 1, { sSource.data(), sDestination.data() }) + L" ";
+			iArg += 2;
 		}
 
-		// instructs winpriv to report all accesses of the specified registry key or
-		// any subkeys as being not found to the target process
-		else if (_wcsicmp(sArg.c_str(), L"/RegBlock") == 0)
+		// override a registry value: <key name> <value name> <value type> <value data>
+		else if (IsSwitch(L"/RegOverride"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// this capability is implemented by the registry override code
-			// block by indicating a winpriv proprietary type called REG_BLOCK
-			sRegistryOverride += ArgvToCommandLine(iArg + 1, iArg + iArgsRequired,
-				std::vector<LPWSTR>({ aArgv, aArgv + iArgc })) + L" N/A REG_BLOCK N/A ";
-			iArg += iArgsRequired;
+			if (!HasArgs(4)) return __LINE__;
+			sRegistryOverride += JoinArgs(iArg + 1, iArg + 4) + L" ";
+			iArg += 4;
 		}
 
-
-		// instructs winpriv to report all accesses of the specified registry key or
-		// any subkeys as being not found to the target process
-		else if (_wcsicmp(sArg.c_str(), L"/WindowStyle") == 0)
+		// report every value under a registry key and its subkeys as not found
+		else if (IsSwitch(L"/RegBlock"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// decode the parameter into a windowstyle parameter
-			std::wstring sWindowStyle(aArgv[iArg + 1]);
-			if (_wcsicmp(sWindowStyle.c_str(), L"NoActive") == 0) iShowWindow = SW_SHOWNOACTIVATE;
-			if (_wcsicmp(sWindowStyle.c_str(), L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
-			if (_wcsicmp(sWindowStyle.c_str(), L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
-			if (_wcsicmp(sWindowStyle.c_str(), L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
-			if (_wcsicmp(sWindowStyle.c_str(), L"Hidden") == 0) iShowWindow = SW_HIDE;
-			iArg += iArgsRequired;
+			if (!HasArgs(1)) return __LINE__;
+			++iArg;
+			sRegistryOverride += JoinArgs(iArg, iArg) + L" N/A REG_BLOCK N/A ";
 		}
 
-		// instructs winpriv to override the fips setting on the system
-		else if (_wcsicmp(sArg.c_str(), L"/FipsOn") == 0 || _wcsicmp(sArg.c_str(), L"/FipsOff") == 0)
+		// request the target's initial window state
+		else if (IsSwitch(L"/WindowStyle"))
 		{
-			// implement the fips override using the registry override capability
+			if (!HasArgs(1)) return __LINE__;
+			const LPCWSTR sWindowStyle = aArgv[++iArg];
+			if (_wcsicmp(sWindowStyle, L"NoActive") == 0) iShowWindow = SW_SHOWNOACTIVATE;
+			if (_wcsicmp(sWindowStyle, L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
+			if (_wcsicmp(sWindowStyle, L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
+			if (_wcsicmp(sWindowStyle, L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
+			if (_wcsicmp(sWindowStyle, L"Hidden") == 0) iShowWindow = SW_HIDE;
+		}
+
+		// override the FIPS setting through the registry override capability
+		else if (IsSwitch(L"/FipsOn") || IsSwitch(L"/FipsOff"))
+		{
 			sRegistryOverride += L"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\FipsAlgorithmPolicy ";
-			sRegistryOverride += L"Enabled ";
-			sRegistryOverride += L"REG_DWORD ";
-			sRegistryOverride += (_wcsicmp(sArg.c_str(), L"/FipsOn") == 0) ? L"1 " : L"0 ";
+			sRegistryOverride += L"Enabled REG_DWORD ";
+			sRegistryOverride += IsSwitch(L"/FipsOn") ? L"1 " : L"0 ";
 		}
 
-		// instructs winpriv to block access to popular group policy areas
-		else if (_wcsicmp(sArg.c_str(), L"/PolicyBlock") == 0)
+		// block access to the common group policy registry areas
+		else if (IsSwitch(L"/PolicyBlock"))
 		{
-			sRegistryOverride += L"HKCU\\SOFTWARE\\Policies ";
-			sRegistryOverride += L"N/A REG_BLOCK N/A ";
-
-			sRegistryOverride += L"HKLM\\SOFTWARE\\Policies ";
-			sRegistryOverride += L"N/A REG_BLOCK N/A ";
-
-			sRegistryOverride += L"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies ";
-			sRegistryOverride += L"N/A REG_BLOCK N/A ";
-
-			sRegistryOverride += L"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies ";
-			sRegistryOverride += L"N/A REG_BLOCK N/A ";
+			for (const LPCWSTR sKey : { L"HKCU\\SOFTWARE\\Policies", L"HKLM\\SOFTWARE\\Policies",
+				L"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies",
+				L"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies" })
+				sRegistryOverride += std::wstring(sKey) + L" N/A REG_BLOCK N/A ";
 		}
 
-		// instructs winpriv to use normal amsi scanning
-		else if (_wcsicmp(sArg.c_str(), L"/AmsiOn") == 0)
+		// control amsi scanning
+		else if (IsSwitch(L"/AmsiOn") || IsSwitch(L"/AmsiOff"))
 		{
-			SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"0");
+			if (!SetSetting(WINPRIV_EV_DISABLE_AMSI, IsSwitch(L"/AmsiOff") ? L"1" : L"0")) return __LINE__;
 		}
 
-		// instructs winpriv to disable amsi scanning
-		else if (_wcsicmp(sArg.c_str(), L"/AmsiOff") == 0)
+		// control powershell constrained language mode
+		else if (IsSwitch(L"/ClmOn") || IsSwitch(L"/ClmOff"))
 		{
-			SetEnvironmentVariable(WINPRIV_EV_DISABLE_AMSI, L"1");
+			if (!SetSetting(WINPRIV_EV_CLM, IsSwitch(L"/ClmOn") ? L"1" : L"0")) return __LINE__;
 		}
 
-		// instructs winpriv to control powershell constrained language mode
-		else if (_wcsicmp(sArg.c_str(), L"/ClmOn") == 0 || _wcsicmp(sArg.c_str(), L"/ClmOff") == 0)
+		// override host name lookups: <host name to override> <host override value>
+		else if (IsSwitch(L"/HostOverride"))
 		{
-			SetEnvironmentVariable(WINPRIV_EV_CLM, _wcsicmp(sArg.c_str(), L"/ClmOn") == 0 ? L"1" : L"0");
-		}
-
-		// instructs winpriv to override all host name lookups
-		else if (_wcsicmp(sArg.c_str(), L"/HostOverride") == 0)
-		{
-			constexpr int iArgsRequired = 2;
-
-			// two additional parameters are required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
+			if (!HasArgs(2)) return __LINE__;
 
 			// Validate names while retaining the replacement's DNS identity and absolute spelling.
 			const std::wstring sTargetHost = NormalizeHostName(aArgv[iArg + 1]);
@@ -680,218 +394,123 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 
 			// Verify that the replacement resolves without pinning its addresses in child processes.
 			WSADATA tWSAData;
-			const int iStartupResult = WSAStartup(MAKEWORD(2, 2), &tWSAData);
-			if (iStartupResult != 0)
-			{
-				PrintMessage(L"ERROR: Could not initialize host resolution (error %d).\n", iStartupResult);
-				return __LINE__;
-			}
-			SmartPointer<LPWSADATA> oWinsockCleanup([](LPWSADATA) { WSACleanup(); }, &tWSAData);
+			int iResolveError = WSAStartup(MAKEWORD(2, 2), &tWSAData);
+			SmartPointer<LPWSADATA> oWinsockCleanup([](LPWSADATA) { WSACleanup(); },
+				iResolveError == 0 ? &tWSAData : nullptr);
 			PADDRINFOW tResult = nullptr;
-			const int iGetAddrInfoResult = GetAddrInfoW(sReplacementHost.c_str(), nullptr, nullptr, &tResult);
+			if (iResolveError == 0) iResolveError = GetAddrInfoW(sReplacementHost.c_str(), nullptr, nullptr, &tResult);
 			SmartPointer<PADDRINFOW> oAddressCleanup(FreeAddrInfoW, tResult);
-			if (iGetAddrInfoResult != 0)
+			if (iResolveError != 0)
 			{
 				PrintMessage(L"ERROR: Could not resolve replacement host: %s (error %d).\n",
-					aArgv[iArg + 2], iGetAddrInfoResult);
+					aArgv[iArg + 2], iResolveError);
 				return __LINE__;
 			}
-
-			// append the host override data which should be two params:
-			// <host name to override> <host override value>
 			sHostOverride += sTargetHost + L" " + sReplacementHost + L" ";
-			iArg += iArgsRequired;
+			iArg += 2;
 		}
 
-		// instruct winpriv to enable backup and restore privileges and send in
-		// extra flags to file open/create command to exercise the privileges
-		else if (_wcsicmp(sArg.c_str(), L"/BypassFileSecurity") == 0)
+		// enable backup and restore privileges and request backup intent when opening files
+		else if (IsSwitch(L"/BypassFileSecurity"))
 		{
-			vPrivsToEnable.push_back(SE_RESTORE_NAME);
-			vPrivsToEnable.push_back(SE_BACKUP_NAME);
-			vPrivsToEnable.push_back(SE_TAKE_OWNERSHIP_NAME);
-			vPrivsToEnable.push_back(SE_CHANGE_NOTIFY_NAME);
-			SetEnvironmentVariable(WINPRIV_EV_BACKUP_RESTORE, L"1");
+			vPrivsToEnable.insert(vPrivsToEnable.end(),
+				{ SE_RESTORE_NAME, SE_BACKUP_NAME, SE_TAKE_OWNERSHIP_NAME, SE_CHANGE_NOTIFY_NAME });
+			if (!SetSetting(WINPRIV_EV_BACKUP_RESTORE, L"1")) return __LINE__;
 		}
 
-		// instruct winpriv to break remote file locks if a file operation
-		// cannot complete due to a remote file lock
-		else if (_wcsicmp(sArg.c_str(), L"/BreakRemoteLocks") == 0)
+		// break remote file locks when a file operation fails because of one
+		else if (IsSwitch(L"/BreakRemoteLocks"))
 		{
-			SetEnvironmentVariable(WINPRIV_EV_BREAK_LOCKS, L"1");
+			if (!SetSetting(WINPRIV_EV_BREAK_LOCKS, L"1")) return __LINE__;
 		}
 
-		// instruct winpriv to tell the target process that the current user is
-		// an admin regardless of security tokens or group memberships
-		else if (_wcsicmp(sArg.c_str(), L"/AdminImpersonate") == 0)
+		// report administrator membership regardless of security tokens or group memberships
+		else if (IsSwitch(L"/AdminImpersonate"))
 		{
-			SetEnvironmentVariable(L"__COMPAT_LAYER", L"RunAsInvoker");
-			SetEnvironmentVariable(WINPRIV_EV_ADMIN_IMPERSONATE, L"1");
+			if (!SetSetting(L"__COMPAT_LAYER", L"RunAsInvoker") ||
+				!SetSetting(WINPRIV_EV_ADMIN_IMPERSONATE, L"1")) return __LINE__;
 		}
 
-		// instruct winpriv to tell the target process that the current
-		// operating system is a server operating system
-		else if (_wcsicmp(sArg.c_str(), L"/ServerEdition") == 0)
+		// report a server operating system
+		else if (IsSwitch(L"/ServerEdition"))
 		{
-			SetEnvironmentVariable(WINPRIV_EV_SERVER_EDITION, L"1");
+			if (!SetSetting(WINPRIV_EV_SERVER_EDITION, L"1")) return __LINE__;
 		}
 
-		// instructs winpriv to record encrypt/decrypt operations
-		else if (_wcsicmp(sArg.c_str(), L"/RecordCrypto") == 0)
+		// record encrypt/decrypt operations to a directory, or display them when 'SHOW' is specified
+		else if (IsSwitch(L"/RecordCrypto"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// if not 'SHOW' then ensure the passed directory exists
-			std::wstring sRecordCrypto(aArgv[iArg + 1]);
+			if (!HasArgs(1)) return __LINE__;
+			std::wstring sRecordCrypto = aArgv[++iArg];
 			if (_wcsicmp(sRecordCrypto.c_str(), L"SHOW") != 0)
 			{
-				if (CreateDirectory(sRecordCrypto.c_str(), nullptr) == FALSE)
+				// Keep the selected directory stable when the target or a descendant changes its working directory.
+				std::error_code tError;
+				const auto tDirectory = std::filesystem::absolute(sRecordCrypto, tError);
+				if (sRecordCrypto.empty() || tError || (!std::filesystem::create_directory(tDirectory, tError) &&
+					!std::filesystem::is_directory(tDirectory, tError)))
 				{
-					const DWORD iCreateError = GetLastError();
-					const DWORD iAttributes = GetFileAttributes(sRecordCrypto.c_str());
-					if (iCreateError != ERROR_ALREADY_EXISTS || iAttributes == INVALID_FILE_ATTRIBUTES ||
-						(iAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
-					{
-						PrintMessage(L"ERROR: Could not create the specified directory for /RecordCrypto\n");
-						return __LINE__;
-					}
+					PrintMessage(L"ERROR: Could not create the specified directory for /RecordCrypto\n");
+					return __LINE__;
 				}
+				sRecordCrypto = tDirectory.wstring();
 			}
-
-			// store the crypto variable in the environment variable to pass to child
-			SetEnvironmentVariable(WINPRIV_EV_RECORD_CRYPTO, sRecordCrypto.c_str());
-			iArg += iArgsRequired;
+			if (!SetSetting(WINPRIV_EV_RECORD_CRYPTO, sRecordCrypto.c_str())) return __LINE__;
 		}
 
-		// instructs winpriv to show or replace sql connection information
-		else if (_wcsicmp(sArg.c_str(), L"/SqlConnectShow") == 0)
+		// show sql connection information
+		else if (IsSwitch(L"/SqlConnectShow"))
 		{
-			// store the sql connect info in the environment variable to pass to child
-			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SHOW, L"1");
+			if (!SetSetting(WINPRIV_EV_SQL_CONNECT_SHOW, L"1")) return __LINE__;
 		}
 
-		// instructs winpriv to show or replace sql connection information
-		else if (_wcsicmp(sArg.c_str(), L"/SqlConnectSearchReplace") == 0)
+		// search and replace sql connection information
+		else if (IsSwitch(L"/SqlConnectSearchReplace"))
 		{
-			constexpr int iArgsRequired = 2;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			// store the sql connect info in the environment variable to pass to child
-			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_SEARCH, aArgv[iArg + 1]);
-			SetEnvironmentVariable(WINPRIV_EV_SQL_CONNECT_REPLACE, aArgv[iArg + 2]);
-			iArg += iArgsRequired;
+			if (!HasArgs(2)) return __LINE__;
+			if (!SetSetting(WINPRIV_EV_SQL_CONNECT_SEARCH, aArgv[++iArg]) ||
+				!SetSetting(WINPRIV_EV_SQL_CONNECT_REPLACE, aArgv[++iArg])) return __LINE__;
 		}
 
-		// instruct winpriv to use the shell execute command to launch the app
-		else if (_wcsicmp(sArg.c_str(), L"/UseShellExecute") == 0)
+		// launch the target with ShellExecuteEx
+		else if (IsSwitch(L"/UseShellExecute"))
 		{
 			bUseShellExecute = true;
 		}
 
-		// grants or revokes a single LSA account right / privilege for a named user account
-		// on the local machine — equivalent to ntrights.exe +r/-r functionality
-		else if (_wcsicmp(sArg.c_str(), L"/GrantRight") == 0 || _wcsicmp(sArg.c_str(), L"/RevokeRight") == 0)
+		// grant or revoke an LSA account right or privilege: <right> <user>
+		else if (IsSwitch(L"/GrantRight") || IsSwitch(L"/RevokeRight"))
 		{
-			const bool bGrant = _wcsicmp(sArg.c_str(), L"/GrantRight") == 0;
-
-			// two additional parameters are required: <right> <user>
-			if (iArg + 2 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			std::wstring sRight(aArgv[++iArg]);
-			std::wstring sUser(aArgv[++iArg]);
-
-			return ModifyAccountRights(sUser, { sRight }, bGrant) ? 0 : __LINE__;
+			if (!HasArgs(2)) return __LINE__;
+			return ModifyAccountRights(aArgv[iArg + 2], { aArgv[iArg + 1] }, IsSwitch(L"/GrantRight")) ? 0 : __LINE__;
 		}
 
-		// removes all deny-logon rights from a named user account so that nothing
-		// explicitly blocks the account from network, interactive, RDP, batch, or
-		// service logons on the local machine
-		else if (_wcsicmp(sArg.c_str(), L"/ClearDenyRights") == 0)
+		// remove deny-logon rights from a named account, or from every account when none is specified
+		else if (IsSwitch(L"/ClearDenyRights"))
 		{
-			// if no username is specified, clear deny rights for all accounts
-			if (iArg + 1 >= iArgc)
-			{
-				return ClearDenyRights(L"") ? 0 : __LINE__;
-			}
-
-			std::wstring sUser(aArgv[++iArg]);
-
-			return ClearDenyRights(sUser) ? 0 : __LINE__;
+			return ClearDenyRights(iArg + 1 < iArgc ? aArgv[iArg + 1] : L"") ? 0 : __LINE__;
 		}
 
-		// grants all non-deny rights and privileges to a named user account
-		else if (_wcsicmp(sArg.c_str(), L"/GrantAllRights") == 0)
+		// grant all non-deny rights and privileges to a named account
+		else if (IsSwitch(L"/GrantAllRights"))
 		{
-			// one additional parameter is required: <user>
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			std::wstring sUser(aArgv[++iArg]);
-
-			return GrantAllRights(sUser) ? 0 : __LINE__;
+			if (!HasArgs(1)) return __LINE__;
+			return GrantAllRights(aArgv[iArg + 1]) ? 0 : __LINE__;
 		}
 
-		// instructs winpriv to display a message box with the specified message
-		else if (_wcsicmp(sArg.c_str(), L"/ShowMessage") == 0)
+		// display a message box; a yes/no prompt cancels execution if No is clicked
+		else if (IsSwitch(L"/ShowMessage") || IsSwitch(L"/AskMessage"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			MessageBox(nullptr, aArgv[++iArg], L"Message", MB_OK);
+			if (!HasArgs(1)) return __LINE__;
+			const bool bAsk = IsSwitch(L"/AskMessage");
+			const int iResult = MessageBox(nullptr, aArgv[++iArg], L"Message", bAsk ? MB_YESNO : MB_OK);
+			if (bAsk && iResult != IDYES) return __LINE__;
 		}
 
-		// instructs winpriv to display a yes/no message box; cancels execution if No is clicked
-		else if (_wcsicmp(sArg.c_str(), L"/AskMessage") == 0)
+		// apply a fixed wall clock offset to the target and its descendants
+		else if (IsSwitch(L"/MockTime"))
 		{
-			constexpr int iArgsRequired = 1;
-
-			// one additional parameter is required
-			if (iArg + iArgsRequired >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
-
-			if (MessageBox(nullptr, aArgv[++iArg], L"Message", MB_YESNO) != IDYES)
-			{
-				return __LINE__;
-			}
-		}
-
-		// Apply a fixed wall clock offset to the target and its descendants.
-		else if (_wcsicmp(sArg.c_str(), L"/MockTime") == 0)
-		{
-			if (iArg + 1 >= iArgc)
-			{
-				PrintMessage(L"ERROR: Not enough parameters specified for: %s\n", sArg.c_str());
-				return __LINE__;
-			}
+			if (!HasArgs(1)) return __LINE__;
 			FILETIME tTime{};
 			GetSystemTimeAsFileTime(&tTime);
 			const LONGLONG iCurrentTime = static_cast<LONGLONG>(tTime.dwHighDateTime) << 32 | tTime.dwLowDateTime;
@@ -902,18 +521,17 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 					aArgv[iArg]);
 				return __LINE__;
 			}
-			if (!SetEnvironmentVariable(WINPRIV_EV_MOCK_TIME, std::to_wstring(iOffset).c_str())) return __LINE__;
+			if (!SetSetting(WINPRIV_EV_MOCK_TIME, std::to_wstring(iOffset).c_str())) return __LINE__;
 		}
 
-		// instruct winpriv to display process execution time
-		else if (_wcsicmp(sArg.c_str(), L"/MeasureTime") == 0)
+		// display process execution time
+		else if (IsSwitch(L"/MeasureTime"))
 		{
 			bDisplayExecutionTime = true;
 		}
 
-		// instructs to display help by break from the loop with causes no
-		// target process to be defined
-		else if (_wcsicmp(sArg.c_str(), L"/Help") == 0 || _wcsicmp(sArg.c_str(), L"/?") == 0)
+		// display help by leaving the target undefined
+		else if (IsSwitch(L"/Help") || IsSwitch(L"/?"))
 		{
 			break;
 		}
@@ -927,8 +545,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	}
 
 	// display help if no target was specified
-	if ((bUseShellExecute && sProcess.empty()) ||
-		(!bUseShellExecute && sProcessParams.empty()))
+	if ((bUseShellExecute ? sProcess : sProcessParams).empty())
 	{
 		PrintMessage(L"%s", GetWinPrivHelp().c_str());
 		return 0;
@@ -942,50 +559,28 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		sRegistryOverride += VariableIsSet(WINPRIV_EV_CLM, 1) ? L"4 " : L"0 ";
 	}
 
-	// setup the registry override and block values to pass to child processes
-	sRegistryOverride = TrimString(sRegistryOverride, L' ');
-	SetEnvironmentVariable(WINPRIV_EV_REG_OVERRIDE, sRegistryOverride.c_str());
+	// pass the registry, file, and host rules to child processes
+	if (!SetSetting(WINPRIV_EV_REG_OVERRIDE, TrimString(sRegistryOverride, L' ').c_str()) ||
+		!SetSetting(WINPRIV_EV_FILE_RULES, TrimString(sFileRules, L' ').c_str()) ||
+		!SetSetting(WINPRIV_EV_HOST_OVERRIDE, TrimString(sHostOverride, L' ').c_str())) return __LINE__;
 
-	// pass the complete ordered file rules to child processes
-	if (!SetEnvironmentVariableW(WINPRIV_EV_FILE_RULES, TrimString(sFileRules, L' ').c_str()))
-	{
-		PrintMessage(L"ERROR: Could not store file rules (error %lu).\n", GetLastError());
-		return __LINE__;
-	}
-
-	// setup the host override values to pass to child processes
-	sHostOverride = TrimString(sHostOverride, L' ');
-	if (!SetEnvironmentVariable(WINPRIV_EV_HOST_OVERRIDE, sHostOverride.c_str()))
-	{
-		PrintMessage(L"ERROR: Could not store host overrides (error %lu).\n", GetLastError());
-		return __LINE__;
-	}
-
-	// sort privs, remove duplicate privs, and reconstruct into a list of privs
-	// that can be set as an environment variable and passed to a child process
+	// sort privs, remove duplicate privs, and pass the validated list to child processes
 	std::ranges::sort(vPrivsToEnable);
 	vPrivsToEnable.erase(std::ranges::unique(vPrivsToEnable).begin(), vPrivsToEnable.end());
 	std::wstring sPrivsToSetList;
-	for (std::wstring sPrivToSet : vPrivsToEnable)
+	for (const std::wstring& sPrivToSet : vPrivsToEnable)
 	{
 		if (!vPrivMaps.contains(sPrivToSet))
 		{
 			PrintMessage(L"ERROR: Invalid privilege specified: %s\n", sPrivToSet.c_str());
 			return __LINE__;
 		}
-
-		// create a new list to be passed to subprocesses
 		sPrivsToSetList += sPrivToSet + L",";
 	}
-
-	// setup priv list environment variable to pass to child processes
-	sPrivsToSetList = TrimString(sPrivsToSetList, L',');
-	SetEnvironmentVariable(WINPRIV_EV_PRIVLIST, sPrivsToSetList.c_str());
-
-	// attempt to enable all privileges specified
-	std::vector<std::wstring> vFailedPrivs = EnablePrivs(vPrivsToEnable);
+	if (!SetSetting(WINPRIV_EV_PRIVLIST, TrimString(sPrivsToSetList, L',').c_str())) return __LINE__;
 
 	// grant any privileges that cannot be enabled
+	std::vector<std::wstring> vFailedPrivs = EnablePrivs(vPrivsToEnable);
 	if (!vFailedPrivs.empty())
 	{
 		// ensure we did not get here by means of relaunching as elevated
@@ -1004,10 +599,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			return __LINE__;
 		}
 
-		// relaunch under a new logon token to acquire the new privs
-		int iRet = LaunchNewLogon(iArgc, aArgv);
-
-		// restore original privs and return
+		// relaunch under a new logon token to acquire the new privs, then restore original privs
+		const int iRet = LaunchNewLogon(iArgc, aArgv);
 		if (AlterCurrentUserPrivs(vAddedPrivs, FALSE) == FALSE && iRet == 0) return __LINE__;
 		return iRet;
 	}
@@ -1022,193 +615,62 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		return ERROR_DYNAMIC_CODE_BLOCKED;
 	}
 
-	// user the standard temp directory
-	std::wstring sTempDirectory;
-	sTempDirectory.resize(MAX_PATH + 1);
-	if (GetTempPath(MAX_PATH, sTempDirectory.data()) == 0)
-	{
-		return __LINE__;
-	}
-	sTempDirectory.resize(sTempDirectory.find(L'\0'));
-
-	// ensure temp directory actually exists
-	if (GetFileAttributes(sTempDirectory.c_str()) == INVALID_FILE_ATTRIBUTES &&
-		CreateDirectory(sTempDirectory.c_str(), nullptr) == 0)
-	{
-		PrintMessage(L"ERROR: Could not create temporary directory for library files.\n");
-		return __LINE__;
-	}
-
-	// fetch the default library paths
-	bool bCleanupLibrary = false;
-	std::wstring sTempLibraryX86 = GetLocalLibraryPath(LibraryArchitecture::X86);
-	std::wstring sTempLibraryX64 = GetLocalLibraryPath(LibraryArchitecture::X64);
-	std::wstring sTempLibraryArm64 = GetLocalLibraryPath(LibraryArchitecture::Arm64);
-
-	if (GetFileAttributes(sTempLibraryX86.c_str()) == INVALID_FILE_ATTRIBUTES ||
-		GetFileAttributes(sTempLibraryX64.c_str()) == INVALID_FILE_ATTRIBUTES ||
-		GetFileAttributes(sTempLibraryArm64.c_str()) == INVALID_FILE_ATTRIBUTES)
-	{
-		// generate a uuid string to create the temporary file
-		bCleanupLibrary = true;
-		RPC_WSTR sUUID;
-		UUID tUUID;
-		const RPC_STATUS iUuidResult = UuidCreate(&tUUID);
-		if ((iUuidResult != RPC_S_OK && iUuidResult != RPC_S_UUID_LOCAL_ONLY) ||
-			UuidToString(&tUUID, &sUUID) != RPC_S_OK)
-		{
-			PrintMessage(L"ERROR: Could not generate name for temporary file.\n");
-			return __LINE__;
-		}
-
-		// generate the files names to use for library names
-		sTempLibraryX86 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-32.dll";
-		sTempLibraryX64 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-64.dll";
-		sTempLibraryArm64 = sTempDirectory + L"\\" + reinterpret_cast<LPWSTR>(sUUID) + L"-arm64.dll";
-
-		// cleanup the guid structure
-		RpcStringFree(&sUUID);
-
-		// create the library files
-		if (WriteResourceToFile(sTempLibraryX86, IDR_RT_RCDATA_X86) == false ||
-			WriteResourceToFile(sTempLibraryX64, IDR_RT_RCDATA_X64) == false ||
-			WriteResourceToFile(sTempLibraryArm64, IDR_RT_RCDATA_ARM64) == false)
-		{
-			DeleteTemporaryLibrary(sTempLibraryX86);
-			DeleteTemporaryLibrary(sTempLibraryX64);
-			DeleteTemporaryLibrary(sTempLibraryArm64);
-			PrintMessage(L"ERROR: Problem creating temporary library file.\n");
-			return __LINE__;
-		}
-	}
-
 	// kill any processes requested
-	for (std::wstring& sProcessName : vProcessesToKill)
-	{
-		KillProcess(sProcessName);
-	}
+	for (const std::wstring& sProcessName : vProcessesToKill) KillProcess(sProcessName);
 
-	STARTUPINFO o_StartInfo{
-		.cb = sizeof(STARTUPINFO)
-	};
-	
-	PROCESS_INFORMATION o_ProcessInfo{};
-
-	// apply window creation parameters
-	if (iShowWindow != SW_NORMAL)
+	// Load the embedded library directly and retain all architecture images for descendant processes.
+	std::array<winpriv::memory::LibraryImage, 3> vImages{};
+	for (size_t iIndex = 0; iIndex < vImages.size(); ++iIndex)
+		vImages[iIndex] = LoadLibraryResource(vLibraryResources[iIndex].first);
+	std::vector<BYTE> vBundle;
+	if (!winpriv::memory::CreateBundle(vImages, vBundle) ||
+		!winpriv::memory::LoadBundle(reinterpret_cast<const winpriv::memory::LibraryBundle*>(vBundle.data())))
 	{
-		o_StartInfo.dwFlags |= STARTF_USESHOWWINDOW;
-		o_StartInfo.wShowWindow = iShowWindow;
-	}
-
-	// setup shell execute structure if requested
-	SHELLEXECUTEINFOW o_ShellExecute;
-	if (bUseShellExecute)
-	{
-		o_ShellExecute = {
-			.cbSize = sizeof(SHELLEXECUTEINFOW),
-			.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
-			.lpFile = sProcess.c_str(),
-			.lpParameters = sProcessParams.c_str(),
-			.nShow = iShowWindow
-		};
-	}
-
-	// Load the injection library matching this launcher. Its CreateProcess hook
-	// propagates the matching library into target processes.
-#if defined(_M_ARM64)
-	const std::wstring& sCurrentLibrary = sTempLibraryArm64;
-#elif defined(_WIN64)
-	const std::wstring& sCurrentLibrary = sTempLibraryX64;
-#else
-	const std::wstring& sCurrentLibrary = sTempLibraryX86;
-#endif
-	SmartPointer<HMODULE> hLibrary(FreeLibrary, LoadLibrary(sCurrentLibrary.c_str()));
-	if (!hLibrary)
-	{
-		const DWORD iLoadError = GetLastError();
-		PrintMessage(L"ERROR: Could not load injection library: %s (error %lu)\n",
-			sCurrentLibrary.c_str(), iLoadError);
-		if (bCleanupLibrary)
-		{
-			DeleteTemporaryLibrary(sTempLibraryX86);
-			DeleteTemporaryLibrary(sTempLibraryX64);
-			DeleteTemporaryLibrary(sTempLibraryArm64);
-		}
+		PrintMessage(L"ERROR: Could not load injection library (error %lu).\n", GetLastError());
 		return __LINE__;
 	}
 
-	// create process and detour
-	ULONGLONG iTimeStart = GetTickCount64();
-	if ((bUseShellExecute && ShellExecuteEx(&o_ShellExecute) == FALSE) ||
-		(!bUseShellExecute && CreateProcess(nullptr, sProcessParams.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
-			&o_StartInfo, &o_ProcessInfo) == 0))
+	// create process with the requested window state and launch method
+	STARTUPINFO o_StartInfo{ .cb = sizeof(STARTUPINFO),
+		.dwFlags = iShowWindow == SW_NORMAL ? 0UL : STARTF_USESHOWWINDOW, .wShowWindow = iShowWindow };
+	SHELLEXECUTEINFOW o_ShellExecute{ .cbSize = sizeof(SHELLEXECUTEINFOW), .fMask = SEE_MASK_NOCLOSEPROCESS |
+		SEE_MASK_NOASYNC, .lpFile = sProcess.c_str(), .lpParameters = sProcessParams.c_str(), .nShow = iShowWindow };
+	PROCESS_INFORMATION o_ProcessInfo{};
+	const ULONGLONG iTimeStart = GetTickCount64();
+	if (bUseShellExecute ? !ShellExecuteEx(&o_ShellExecute) : !CreateProcess(nullptr, sProcessParams.data(),
+		nullptr, nullptr, FALSE, 0, nullptr, nullptr, &o_StartInfo, &o_ProcessInfo))
 	{
 		const DWORD iLaunchError = GetLastError();
 		PrintMessage(L"ERROR: Problem starting target executable: %s (error %lu)\n",
-			sProcessParams.c_str(), iLaunchError);
-		if (bCleanupLibrary)
-		{
-			hLibrary.Cleanup();
-			DeleteTemporaryLibrary(sTempLibraryX86);
-			DeleteTemporaryLibrary(sTempLibraryX64);
-			DeleteTemporaryLibrary(sTempLibraryArm64);
-		}
+			(bUseShellExecute ? sProcess : sProcessParams).c_str(), iLaunchError);
 		return __LINE__;
 	}
-	if (bUseShellExecute && o_ShellExecute.hProcess == nullptr)
+	if (bUseShellExecute) o_ProcessInfo.hProcess = o_ShellExecute.hProcess;
+	if (o_ProcessInfo.hProcess == nullptr)
 	{
 		PrintMessage(L"ERROR: ShellExecute did not return a target process handle.\n");
-		if (bCleanupLibrary)
-		{
-			hLibrary.Cleanup();
-			DeleteTemporaryLibrary(sTempLibraryX86);
-			DeleteTemporaryLibrary(sTempLibraryX64);
-			DeleteTemporaryLibrary(sTempLibraryArm64);
-		}
 		return __LINE__;
 	}
 
-	// copy process info out of shell execute for waiting
-	if (bUseShellExecute) o_ProcessInfo.hProcess = o_ShellExecute.hProcess;
-
-	// wrap process handles in SmartPointers for automatic cleanup
+	// wait for our process to complete
 	SmartPointer<HANDLE> hProcess(CloseHandle, o_ProcessInfo.hProcess);
 	SmartPointer<HANDLE> hThread(CloseHandle, o_ProcessInfo.hThread);
-
-	// wait for our process to complete
 	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
 	{
 		PrintMessage(L"ERROR: Problem waiting for process to complete.");
-		if (bCleanupLibrary)
-		{
-			hLibrary.Cleanup();
-			DeleteTemporaryLibrary(sTempLibraryX86);
-			DeleteTemporaryLibrary(sTempLibraryX64);
-			DeleteTemporaryLibrary(sTempLibraryArm64);
-		}
 		return __LINE__;
 	}
 
 	// display execution time if requested
 	if (bDisplayExecutionTime)
 	{
-		ULONGLONG iTimeStop = GetTickCount64();
-		PrintMessage(L"Execution Time In Seconds: %.3f", ((double)(iTimeStop - iTimeStart)) / 1000.0);
+		const double fSeconds = static_cast<double>(GetTickCount64() - iTimeStart) / 1000.0;
+		PrintMessage(L"Execution Time In Seconds: %.3f\n", fSeconds);
 	}
 
 	// fetch process exit code
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(hProcess, &iExitCode);
-
-	// cleanup
-	if (bCleanupLibrary)
-	{
-		hLibrary.Cleanup();
-		DeleteTemporaryLibrary(sTempLibraryX86);
-		DeleteTemporaryLibrary(sTempLibraryX64);
-		DeleteTemporaryLibrary(sTempLibraryArm64);
-	}
 	return iExitCode;
 }
 

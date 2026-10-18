@@ -1,5 +1,7 @@
 #include <windows.h>
+#include <sqlext.h>
 
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -354,6 +357,7 @@ namespace
         DWORD expectedValue = 0;
         bool expectedSpecified = false;
         bool useCreateProcessA = false;
+        bool createSuspended = false;
         std::wstring nextExe;
         std::vector<std::wstring> nextArgs;
 
@@ -379,6 +383,10 @@ namespace
             else if (wcscmp(arguments[i], L"--use-createprocess-a") == 0)
             {
                 useCreateProcessA = true;
+            }
+            else if (wcscmp(arguments[i], L"--create-suspended") == 0)
+            {
+                createSuspended = true;
             }
             else if (wcscmp(arguments[i], L"--next") == 0 && i + 1 < argumentCount)
             {
@@ -432,6 +440,7 @@ namespace
 
             PROCESS_INFORMATION processInfo{};
             DWORD childExitCode = MAXDWORD;
+            const DWORD creationFlags = createSuspended ? CREATE_SUSPENDED : 0;
 
             if (useCreateProcessA)
             {
@@ -453,7 +462,8 @@ namespace
                 std::vector<char> cmdBuffer(commandLineA.begin(), commandLineA.end());
                 cmdBuffer.push_back('\0');
 
-                if (!CreateProcessA(nextExeA.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startupInfoA, &processInfo))
+                if (!CreateProcessA(nextExeA.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE,
+                    creationFlags, nullptr, nullptr, &startupInfoA, &processInfo))
                 {
                     return Fail(L"CreateProcessA", GetLastError());
                 }
@@ -477,12 +487,22 @@ namespace
                 std::vector<wchar_t> cmdBuffer(commandLineW.begin(), commandLineW.end());
                 cmdBuffer.push_back(L'\0');
 
-                if (!CreateProcessW(nextExe.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startupInfoW, &processInfo))
+                if (!CreateProcessW(nextExe.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE,
+                    creationFlags, nullptr, nullptr, &startupInfoW, &processInfo))
                 {
                     return Fail(L"CreateProcessW", GetLastError());
                 }
             }
 
+            // The primary thread must retain the caller's suspension until the caller resumes it.
+            if (createSuspended && ResumeThread(processInfo.hThread) != 1)
+            {
+                TerminateProcess(processInfo.hProcess, ERROR_INVALID_STATE);
+                WaitForSingleObject(processInfo.hProcess, INFINITE);
+                CloseHandle(processInfo.hThread);
+                CloseHandle(processInfo.hProcess);
+                return Fail(L"suspend-count", ERROR_INVALID_STATE);
+            }
             WaitForSingleObject(processInfo.hProcess, INFINITE);
             if (!GetExitCodeProcess(processInfo.hProcess, &childExitCode))
             {
@@ -636,6 +656,17 @@ __declspec(noinline) DWORD WINAPI MitigationReplacement(const DWORD value)
     return value * 5 + 11;
 }
 
+template <size_t Index>
+__declspec(noinline) DWORD WINAPI ThreadOriginal(const DWORD value)
+{
+    return value * 3 + 7 + static_cast<DWORD>(Index);
+}
+
+constexpr auto ThreadOriginals = []<size_t... Indices>(std::index_sequence<Indices...>)
+{
+    return std::array{ &ThreadOriginal<Indices>... };
+}(std::make_index_sequence<32>{});
+
 struct DetourThreadState final
 {
     std::atomic<bool> stop = false;
@@ -649,11 +680,12 @@ struct DetourThreadState final
 DWORD WINAPI DetourCallWorker(LPVOID parameter)
 {
     auto& state = *static_cast<DetourThreadState*>(parameter);
-    auto volatile call = &MitigationOriginal;
     while (!state.stop.load())
     {
+        const size_t index = state.calls.load() % ThreadOriginals.size();
+        auto volatile call = ThreadOriginals[index];
         const DWORD value = call(11);
-        if (value != 40 && value != 66) ++state.invalidValues;
+        if (value != 40 + index && value != 66) ++state.invalidValues;
         if (++state.calls % 256 == 0) Sleep(0);
     }
     return NO_ERROR;
@@ -666,11 +698,12 @@ DWORD WINAPI DetourChurnWorker(LPVOID parameter)
     {
         std::unique_ptr<void, decltype(&CloseHandle)> child(CreateThread(nullptr, 0, [](LPVOID context) -> DWORD {
             auto& shared = *static_cast<DetourThreadState*>(context);
-            auto volatile call = &MitigationOriginal;
             for (DWORD iteration = 0; iteration < 256; ++iteration)
             {
+                const size_t index = iteration % ThreadOriginals.size();
+                auto volatile call = ThreadOriginals[index];
                 const DWORD value = call(11);
-                if (value != 40 && value != 66) ++shared.invalidValues;
+                if (value != 40 + index && value != 66) ++shared.invalidValues;
                 ++shared.calls;
             }
             return NO_ERROR;
@@ -747,7 +780,7 @@ int TestThreadEnumeration(const wchar_t* scenario)
     };
     const auto fail = [&](const wchar_t* stage, LONG error) { stopWorkers(); return Fail(stage, error); };
 
-    // Keep peers executing the patched function throughout attachment and detachment.
+    // Keep peers executing the patched function throughout hook publication.
     for (DWORD index = 0; index < 4; ++index)
     {
         workers.emplace_back(CreateThread(nullptr, 0, DetourCallWorker, &state, 0, nullptr), CloseHandle);
@@ -776,33 +809,80 @@ int TestThreadEnumeration(const wchar_t* scenario)
         if (denied || error != ERROR_ACCESS_DENIED) return fail(L"thread-access", ERROR_INVALID_DATA);
     }
 
-    auto target = &MitigationOriginal;
-    auto volatile call = &MitigationOriginal;
+    auto targets = ThreadOriginals;
     LONG commitError = NO_ERROR;
     DWORD iterations = 0;
-    for (; iterations < 32; ++iterations)
+    for (; iterations < targets.size(); ++iterations)
     {
-        for (const auto action : { winpriv::detours::action::attach, winpriv::detours::action::detach })
+        winpriv::detours::transaction transaction;
+        const LONG apply = transaction.attach(targets[iterations], MitigationReplacement);
+        commitError = transaction.commit();
+        if (apply != NO_ERROR || commitError != NO_ERROR)
         {
-            winpriv::detours::transaction transaction;
-            const LONG apply = transaction.apply(action, target, MitigationReplacement);
-            commitError = transaction.commit();
-            if (apply != NO_ERROR || commitError != NO_ERROR)
-            {
-                if (commitError == NO_ERROR) commitError = apply;
-                break;
-            }
-            const DWORD expected = action == winpriv::detours::action::attach ? 66 : 40;
-            if (call(11) != expected || target(11) != 40) ++state.invalidValues;
+            if (commitError == NO_ERROR) commitError = apply;
+            break;
         }
-        if (commitError != NO_ERROR) break;
+        auto volatile call = ThreadOriginals[iterations];
+        if (call(11) != 66 || targets[iterations](11) != 40 + iterations) ++state.invalidValues;
     }
+    auto volatile call = ThreadOriginals[0];
     const LONG joined = stopWorkers();
     if (joined != NO_ERROR) return Fail(L"join-workers", joined);
     std::wprintf(L"{\"schemaVersion\":1,\"scenario\":\"%ls\",\"iterations\":%lu,\"commitError\":%ld,"
         L"\"calls\":%lu,\"createdThreads\":%lu,\"invalidValues\":%lu,\"originalPointer\":%ls,\"finalValue\":%lu}\n",
         scenario, iterations, commitError, state.calls.load(), state.createdThreads.load(), state.invalidValues.load(),
-        target == &MitigationOriginal ? L"true" : L"false", call(11));
+        targets[0] == ThreadOriginals[0] ? L"true" : L"false", call(11));
+    return 0;
+}
+
+int TestRejectedDetours()
+{
+    // A rejected operation must abort every staged hook and preserve the original code and pointer.
+    DWORD cases = 0;
+    for (DWORD invalid = 0; invalid < 3; ++invalid)
+    {
+        auto target = &MitigationOriginal;
+        winpriv::detours::transaction transaction;
+        const LONG attached = transaction.attach(target, MitigationReplacement);
+        PVOID missing = nullptr;
+        const LONG rejected = invalid == 0 ? DetourAttach(nullptr, reinterpret_cast<PVOID>(MitigationReplacement)) :
+            invalid == 1 ? DetourAttach(reinterpret_cast<PVOID*>(&target), nullptr) :
+            DetourAttach(&missing, reinterpret_cast<PVOID>(MitigationReplacement));
+        const LONG committed = transaction.commit();
+        auto volatile call = &MitigationOriginal;
+        if (attached != NO_ERROR || rejected != (invalid == 1 ? ERROR_INVALID_PARAMETER : ERROR_INVALID_HANDLE) ||
+            committed != rejected || target != &MitigationOriginal || call(11) != 40)
+            return Fail(L"invalid-transaction", ERROR_INVALID_DATA);
+        ++cases;
+    }
+#if defined(_M_IX86) || defined(_M_X64)
+    // LOOP has no longer displacement form; reserved opcodes also cannot produce a valid trampoline.
+    for (const auto& code : { std::array<BYTE, 8>{ 0xe2, 0x00, 0xb8, 42, 0, 0, 0, 0xc3 },
+        std::array<BYTE, 8>{ 0x0f, 0x04, 0x90, 0x90, 0x90, 0x90, 0x90, 0xc3 } })
+    {
+        const auto release = [](PVOID memory) { VirtualFree(memory, 0, MEM_RELEASE); };
+        std::unique_ptr<void, decltype(release)> memory(
+            VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE), release);
+        if (!memory) return Fail(L"VirtualAlloc", GetLastError());
+        memcpy(memory.get(), code.data(), code.size());
+        DWORD previous = 0;
+        if (!VirtualProtect(memory.get(), 4096, PAGE_EXECUTE_READ, &previous) ||
+            !FlushInstructionCache(GetCurrentProcess(), memory.get(), code.size()))
+            return Fail(L"prepare-code", GetLastError());
+        PVOID target = memory.get();
+        winpriv::detours::transaction transaction;
+        const LONG rejected = DetourAttach(&target, reinterpret_cast<PVOID>(MitigationReplacement));
+        const LONG committed = transaction.commit();
+        MEMORY_BASIC_INFORMATION information{};
+        if (rejected != ERROR_INVALID_BLOCK || committed != rejected || target != memory.get() ||
+            memcmp(memory.get(), code.data(), code.size()) != 0 ||
+            VirtualQuery(memory.get(), &information, sizeof(information)) != sizeof(information) ||
+            information.Protect != PAGE_EXECUTE_READ)
+            return Fail(L"unsupported-relocation", ERROR_INVALID_DATA);
+        ++cases;
+    }
+#endif
+    std::wprintf(L"{\"schemaVersion\":1,\"rejectedCases\":%lu}\n", cases);
     return 0;
 }
 
@@ -819,7 +899,7 @@ int TestDynamicCodeAllocation()
     auto target = &MitigationOriginal;
     winpriv::detours::transaction transaction;
     if (!transaction) return Fail(L"DetourTransactionBegin", transaction.commit());
-    const LONG attach = transaction.apply(winpriv::detours::action::attach, target, MitigationReplacement);
+    const LONG attach = transaction.attach(target, MitigationReplacement);
     const LONG commit = transaction.commit();
     std::wprintf(L"{\"schemaVersion\":1,\"mitigation\":\"dynamic-code\",\"enforced\":true,"
         L"\"attachError\":%ld,\"commitError\":%ld,\"originalPointer\":%ls,\"value\":%lu}\n",
@@ -834,7 +914,7 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
     const bool nested = wcscmp(scenario, L"nested") == 0;
     const bool preexisting = wcscmp(scenario, L"preexisting") == 0;
     const bool bridge = wcscmp(scenario, L"c-bridge") == 0;
-    if (!abort && !failedCommit && !nested && !preexisting && !bridge && wcscmp(scenario, L"attach-detach") != 0)
+    if (!abort && !failedCommit && !nested && !preexisting && !bridge && wcscmp(scenario, L"attach") != 0)
         return Fail(L"optout-scenario", ERROR_INVALID_PARAMETER);
 
     PROCESS_MITIGATION_DYNAMIC_CODE_POLICY policy{};
@@ -898,11 +978,11 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
         if (!transaction) return Fail(L"DetourTransactionBegin", transaction.commit());
         if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy, &threadDuring, sizeof(threadDuring)))
             return Fail(L"GetThreadInformation", GetLastError());
-        attach = transaction.apply(winpriv::detours::action::attach, target, MitigationReplacement);
+        attach = transaction.attach(target, MitigationReplacement);
         if (failedCommit)
         {
             decltype(target) missing = nullptr;
-            invalidApply = transaction.apply(winpriv::detours::action::attach, missing, MitigationReplacement);
+            invalidApply = transaction.attach(missing, MitigationReplacement);
         }
         if (!abort)
         {
@@ -917,36 +997,17 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
         return Fail(L"GetThreadInformation", GetLastError());
     const DWORD hookedValue = call(11);
     const DWORD trampolineValue = target(11);
-    LONG detach = ERROR_INVALID_OPERATION;
-    LONG detachCommit = ERROR_INVALID_OPERATION;
-    DWORD threadDuringDetach = MAXDWORD;
-    if (!abort && !failedCommit && attach == NO_ERROR && commit == NO_ERROR)
-    {
-        winpriv::detours::transaction transaction;
-        if (!transaction) return Fail(L"detach-transaction", transaction.commit());
-        if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-            &threadDuringDetach, sizeof(threadDuringDetach)))
-            return Fail(L"GetThreadInformation", GetLastError());
-        detach = transaction.apply(winpriv::detours::action::detach, target, MitigationReplacement);
-        detachCommit = transaction.commit();
-    }
-    DWORD threadAfterDetach = MAXDWORD;
-    if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-        &threadAfterDetach, sizeof(threadAfterDetach)) ||
-        !GetProcessMitigationPolicy(GetCurrentProcess(), ProcessDynamicCodePolicy, &policy, sizeof(policy)))
+    if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessDynamicCodePolicy, &policy, sizeof(policy)))
         return Fail(L"query-final-policy", GetLastError());
     std::wprintf(L"{\"schemaVersion\":1,\"scenario\":\"%ls\",\"processDynamicCode\":%lu,\"allowThreadOptOut\":%lu,"
         L"\"threadBefore\":%lu,\"threadDuring\":%lu,\"threadAfterNested\":%lu,\"threadAfterCommit\":%lu,"
-        L"\"threadAfterScope\":%lu,\"threadDuringDetach\":%lu,\"threadAfterDetach\":%lu,"
-        L"\"attachError\":%ld,\"commitError\":%ld,\"invalidApplyError\":%ld,\"nestedActive\":%ls,"
-        L"\"threadAfterInvalid\":%lu,\"invalidPointerUnchanged\":%ls,"
-        L"\"nestedCommitError\":%ld,\"detachError\":%ld,\"detachCommitError\":%ld,"
-        L"\"hookedValue\":%lu,\"trampolineValue\":%lu,\"finalValue\":%lu,\"originalPointer\":%ls}\n",
+        L"\"threadAfterScope\":%lu,\"attachError\":%ld,\"commitError\":%ld,\"invalidApplyError\":%ld,"
+        L"\"nestedActive\":%ls,\"threadAfterInvalid\":%lu,\"invalidPointerUnchanged\":%ls,\"nestedCommitError\":%ld,"
+        L"\"hookedValue\":%lu,\"trampolineValue\":%lu,\"originalPointer\":%ls}\n",
         scenario, static_cast<DWORD>(policy.ProhibitDynamicCode), static_cast<DWORD>(policy.AllowThreadOptOut),
-        threadBefore, threadDuring, threadAfterNested, threadAfterCommit, threadAfterScope, threadDuringDetach,
-        threadAfterDetach, attach, commit, invalidApply, nestedActive ? L"true" : L"false",
-        threadAfterInvalid, invalidTarget == nullptr ? L"true" : L"false", nestedCommit,
-        detach, detachCommit, hookedValue, trampolineValue, call(11),
+        threadBefore, threadDuring, threadAfterNested, threadAfterCommit, threadAfterScope,
+        attach, commit, invalidApply, nestedActive ? L"true" : L"false", threadAfterInvalid,
+        invalidTarget == nullptr ? L"true" : L"false", nestedCommit, hookedValue, trampolineValue,
         target == &MitigationOriginal ? L"true" : L"false");
     return 0;
 }
@@ -954,6 +1015,58 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
 
 int wmain(const int argumentCount, wchar_t* arguments[])
 {
+#if defined(WINPRIV_LOADING_MODE_DYNAMIC)
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--rejected-detours") == 0) return TestRejectedDetours();
+#endif
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--memory-exceptions") == 0)
+    {
+        // Exercise repeated C++ unwinding inside the hooks while unrelated application exceptions still work.
+        HMODULE odbc = LoadLibraryW(L"odbc32.dll");
+        if (odbc == nullptr) return Fail(L"load-odbc", GetLastError());
+        const auto allocate = reinterpret_cast<decltype(&SQLAllocHandle)>(GetProcAddress(odbc, "SQLAllocHandle"));
+        const auto release = reinterpret_cast<decltype(&SQLFreeHandle)>(GetProcAddress(odbc, "SQLFreeHandle"));
+        const auto setEnvironment = reinterpret_cast<decltype(&SQLSetEnvAttr)>(GetProcAddress(odbc, "SQLSetEnvAttr"));
+        const auto connect = reinterpret_cast<decltype(&SQLDriverConnectW)>(GetProcAddress(odbc, "SQLDriverConnectW"));
+        if (!allocate || !release || !setEnvironment || !connect) return Fail(L"odbc-exports", ERROR_PROC_NOT_FOUND);
+        std::atomic<int> completed = 0;
+        std::vector<std::thread> threads;
+        for (int thread = 0; thread < 4; ++thread)
+        {
+            threads.emplace_back([&]
+            {
+                SQLHENV environment = nullptr;
+                SQLHDBC connection = nullptr;
+                if (!SQL_SUCCEEDED(allocate(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &environment))) return;
+                if (SQL_SUCCEEDED(setEnvironment(environment, SQL_ATTR_ODBC_VERSION,
+                    reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0)) &&
+                    SQL_SUCCEEDED(allocate(SQL_HANDLE_DBC, environment, &connection)))
+                {
+                    for (int iteration = 0; iteration < 25; ++iteration)
+                    {
+                        WCHAR text[] = L"Driver={WinPrivMissing};Server=ORIGINAL;";
+                        if (connect(connection, nullptr, text, SQL_NTS, nullptr, 0, nullptr,
+                            SQL_DRIVER_NOPROMPT) != SQL_ERROR) break;
+                        try
+                        {
+                            try { throw iteration; }
+                            catch (...) { throw; }
+                        }
+                        catch (int value)
+                        {
+                            if (value == iteration) ++completed;
+                        }
+                    }
+                    release(SQL_HANDLE_DBC, connection);
+                }
+                release(SQL_HANDLE_ENV, environment);
+            });
+        }
+        for (auto& thread : threads) thread.join();
+        FreeLibrary(odbc);
+        std::wprintf(L"{\"completed\":%d}\n", completed.load());
+        return completed == 100 ? 0 : Fail(L"exception-recovery", ERROR_INVALID_STATE);
+    }
+
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
     if (argumentCount == 3 && wcscmp(arguments[1], L"--dynamic-code-capability") == 0)
     {

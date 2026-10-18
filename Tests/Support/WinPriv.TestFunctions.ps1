@@ -328,7 +328,8 @@ function Invoke-WinPrivFreshUserProbe {
         $Principal,
         [string[]] $WinPrivArguments,
         [string] $Operation,
-        [hashtable] $Arguments = @{}
+        [hashtable] $Arguments = @{},
+        [switch] $BatchLogon
     )
 
     if (-not ('WinPrivTests.LogonRunner' -as [type])) {
@@ -355,6 +356,26 @@ function Invoke-WinPrivFreshUserProbe {
     $probePath = Join-Path $probeDirectory (Split-Path -Leaf $sourceProbePath)
     if (-not (Test-Path -LiteralPath $probePath -PathType Leaf)) {
         throw "The sandboxed fresh-user probe was not copied to '$probePath'."
+    }
+
+    # Compile outside the injected process so membership overrides do not affect the compiler's setup.
+    $assemblyPath = Join-Path $probeDirectory 'WinPrivProbe.dll'
+    if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+        $compileScript = @'
+$ErrorActionPreference = 'Stop'
+$directory = $env:WINPRIV_PROBE_BUILD_DIRECTORY
+$sources = [string[]]@(Get-ChildItem -LiteralPath $directory -Filter 'WinPrivProbe.*.cs' |
+    Sort-Object Name | ForEach-Object { $_.FullName })
+Add-Type -Path $sources -OutputAssembly (Join-Path $directory 'WinPrivProbe.dll')
+'@
+        $encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($compileScript))
+        $compile = Invoke-WinPrivContainedProcess -FilePath $hostPath -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript
+        ) -Environment @{ WINPRIV_PROBE_BUILD_DIRECTORY = $probeDirectory } -Sandbox $Sandbox -CreateNoWindow
+        if ($compile.TimedOut -or $compile.StartError -or $compile.ExitCode -ne 0 -or
+            -not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
+            throw "Could not compile the fresh-user probe: $($compile.StartError) $($compile.StdErr)"
+        }
     }
     $argumentsJson = $Arguments | ConvertTo-Json -Depth 20 -Compress
     $argumentsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($argumentsJson))
@@ -392,7 +413,7 @@ function Invoke-WinPrivFreshUserProbe {
     })
     $run = [WinPrivTests.LogonRunner]::Run(
         $Principal.MachineName, $Principal.Name, $Principal.Password, $launcher,
-        $argumentsToLauncher, $Sandbox.Working, $processEnvironmentStrings, 60000
+        $argumentsToLauncher, $Sandbox.Working, $processEnvironmentStrings, 60000, [bool]$BatchLogon
     )
     $probe = $null
     if (Test-Path -LiteralPath $output) {

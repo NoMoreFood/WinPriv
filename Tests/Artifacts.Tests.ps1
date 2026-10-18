@@ -114,36 +114,62 @@ Describe 'WinPriv embedded payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-
         }
     }
 
-    It 'reuses the architecture-matching adjacent library without a temporary extraction' {
-        Invoke-WinPrivCapability -Id 'artifact.adjacent-library-reuse' -Architecture $Architecture -Body {
-            $extract = Invoke-WinPriv -Architecture $Architecture -Arguments @('/ExtractLibrary') `
-                -Launcher WinPrivCmd -Sandbox $sandbox -TimeoutSeconds 30
-            Assert-WinPrivInvocationSucceeded $extract
+    It 'loads the embedded image independently of adjacent DLL files' {
+        Invoke-WinPrivCapability -Id 'artifact.embedded-library-loading' -Architecture $Architecture -Body {
             $expectedName = switch ($Architecture) {
                 'x86' { 'WinPrivLibrary-32.dll' }
                 'x64' { 'WinPrivLibrary-64.dll' }
                 'ARM64' { 'WinPrivLibrary-arm64.dll' }
             }
             $expectedPath = [IO.Path]::GetFullPath((Join-Path $sandbox.Launchers.$Architecture.Root $expectedName))
+            [IO.File]::WriteAllText($expectedPath, 'This adjacent file is not an injection library.')
             $probe = Invoke-WinPrivProbe -Architecture $Architecture -Operation state -Arguments @{} `
                 -Sandbox $sandbox -Environment @{ TEMP = $sandbox.Temp; TMP = $sandbox.Temp } -TimeoutSeconds 20
             Assert-WinPrivInvocationSucceeded $probe
-            @($probe.ProbeResult.result.winPrivLibraryModules | ForEach-Object { [IO.Path]::GetFullPath([string]$_) }) |
-                Should -Contain $expectedPath
+            @($probe.ProbeResult.result.winPrivLibraryModules) | Should -HaveCount 0
+            @($probe.ProbeResult.result.winPrivMemoryImages) | Should -HaveCount 1
+            $probe.ProbeResult.result.winPrivMemoryImages[0].architecture | Should -Be $Architecture
             @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File -ErrorAction SilentlyContinue) |
                 Should -HaveCount 0
             return @{ LibraryPath = $expectedPath }
         }
     }
 
-    It 'removes temporary resource DLLs after a normal injected launch' {
-        Invoke-WinPrivCapability -Id 'artifact.temp-library-cleanup' -Architecture $Architecture -Body {
-            $result = Invoke-WinPrivProbe -Architecture $Architecture -Operation state -Arguments @{} `
-                -Sandbox $sandbox -Environment @{ TEMP = $sandbox.Temp; TMP = $sandbox.Temp } -TimeoutSeconds 20
-            Assert-WinPrivInvocationSucceeded $result
-            @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File -ErrorAction SilentlyContinue) |
-                Should -HaveCount 0
-            return @{ Temp = $sandbox.Temp }
+    It 'loads hooks without creating temporary DLLs during the process lifetime' {
+        Invoke-WinPrivCapability -Id 'artifact.memory-library-loading' -Architecture $Architecture -Body {
+            $standalone = Join-Path $sandbox.Working 'standalone'
+            New-Item -ItemType Directory -Path $standalone | Out-Null
+            $launcher = Join-Path $standalone 'WinPrivCmd.exe'
+            Copy-Item -LiteralPath $sandbox.Launchers.$Architecture.WinPrivCmd -Destination $launcher
+            $watcher = [IO.FileSystemWatcher]::new($sandbox.Temp, '*.dll')
+            $watcher.IncludeSubdirectories = $true
+            $source = 'WinPrivMemoryLoading-' + [Guid]::NewGuid().ToString('N')
+            try {
+                Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier $source | Out-Null
+                $watcher.EnableRaisingEvents = $true
+                # A native target avoids temporary assemblies created by the PowerShell probe compiler.
+                $result = Invoke-WinPrivContainedProcess -FilePath $launcher `
+                    -ArgumentList @($launcher, '/ListPrivileges') `
+                    -Sandbox $sandbox -Environment @{ TEMP = $sandbox.Temp; TMP = $sandbox.Temp } -TimeoutSeconds 20
+                Assert-WinPrivInvocationSucceeded $result
+                Start-Sleep -Milliseconds 100
+                @(Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.SourceEventArgs.FullPath }) | Should -BeNullOrEmpty
+                @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File -Recurse) | Should -HaveCount 0
+                $unusableTemp = Join-Path $sandbox.Working 'temp-file'
+                [IO.File]::WriteAllText($unusableTemp, 'This path is a file, not a temporary directory.')
+                $result = Invoke-WinPrivContainedProcess -FilePath $launcher `
+                    -ArgumentList @($launcher, '/ListPrivileges') -Sandbox $sandbox `
+                    -Environment @{ TEMP = $unusableTemp; TMP = $unusableTemp } -TimeoutSeconds 20
+                Assert-WinPrivInvocationSucceeded $result
+                @(Get-ChildItem -LiteralPath $standalone -File).Name | Should -Be @('WinPrivCmd.exe')
+                return @{ Temp = $sandbox.Temp; ExitCode = $result.ExitCode }
+            }
+            finally {
+                $watcher.Dispose()
+                Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
+                Remove-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
+            }
         }
     }
 }

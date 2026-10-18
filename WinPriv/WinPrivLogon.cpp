@@ -34,7 +34,11 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 
 	// get the current working directory to pass to the child process
 	WCHAR sCurrentDir[MAX_PATH + 1];
-	(void) _wgetcwd(sCurrentDir, _countof(sCurrentDir));
+	if (_wgetcwd(sCurrentDir, _countof(sCurrentDir)) == nullptr)
+	{
+		PrintMessage(L"ERROR: Problem obtaining current directory.\n");
+		return __LINE__;
+	}
 
 	// re-execute the process to run elevated with designated initializers
 	SHELLEXECUTEINFO tShellExecInfo{
@@ -43,6 +47,7 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 		.lpVerb = L"runas",
 		.lpFile = aArgv[0],
 		.lpParameters = sCommand.c_str(),
+		.lpDirectory = sCurrentDir,
 		.nShow = SW_SHOWNORMAL
 	};
 	
@@ -123,7 +128,11 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	constexpr DWORD iUserNameShort = _countof(sUserNameShort);
 	WCHAR sDomainName[CREDUI_MAX_DOMAIN_TARGET_LENGTH + 1] = L"";
 	constexpr DWORD iDomainName = _countof(sDomainName);
-	CredUIParseUserName(sUserName, sUserNameShort, iUserNameShort, sDomainName, iDomainName);
+	if (CredUIParseUserName(sUserName, sUserNameShort, iUserNameShort, sDomainName, iDomainName) != NO_ERROR)
+	{
+		PrintMessage(L"ERROR: Could not parse the credential account name.\n");
+		return __LINE__;
+	}
 
 	STARTUPINFO o_StartInfo{
 		.cb = sizeof(STARTUPINFO),
@@ -210,11 +219,6 @@ static std::wstring GetSessionUserSidString(const DWORD sessionId)
 	return GetSidStringForUser(std::wstring(pDomainName) + L"\\" + std::wstring(pUserName));
 }
 
-static bool IsValidUserSession(const std::wstring& sidString)
-{
-	return !sidString.empty() && sidString != SYSTEM_SID_STRING;
-}
-
 static DWORD FindTargetSession(const std::wstring& username)
 {
 	// Enumerate all sessions on the system
@@ -233,68 +237,41 @@ static DWORD FindTargetSession(const std::wstring& username)
 		return INVALID_SESSION;
 	}
 
-	// Get console session ID for priority matching
-	const DWORD consoleSessionId = username.empty() ? WTSGetActiveConsoleSessionId() : INVALID_SESSION;
-	DWORD firstActiveSession = INVALID_SESSION;
-	DWORD firstDisconnectedSession = INVALID_SESSION;
-
 	// Iterate sessions to find best match
+	const DWORD consoleSessionId = username.empty() ? WTSGetActiveConsoleSessionId() : INVALID_SESSION;
+	DWORD fallbackSessionId = INVALID_SESSION;
 	for (DWORD i = 0; i < sessionCount; ++i)
 	{
 		const DWORD sessionId = pSessionInfo[i].SessionId;
 		const WTS_CONNECTSTATE_CLASS state = pSessionInfo[i].State;
 		const std::wstring sessionSidString = GetSessionUserSidString(sessionId);
-
 		if (username.empty())
 		{
-			// Skip invalid or SYSTEM sessions
-			if (!IsValidUserSession(sessionSidString))
-			{
-				continue;
-			}
-			// Prefer console session if valid
-			if (sessionId == consoleSessionId && state == WTSActive)
-			{
-				return consoleSessionId;
-			}
-			// Track first active session
-			if (state == WTSActive && firstActiveSession == INVALID_SESSION)
-			{
-				firstActiveSession = sessionId;
-			}
-			// Track first disconnected session as fallback
-			if (state == WTSDisconnected && firstDisconnectedSession == INVALID_SESSION)
-			{
-				firstDisconnectedSession = sessionId;
-			}
+			// Prefer the active console session, then the first other active non-SYSTEM user session
+			if (state != WTSActive || sessionSidString.empty() || sessionSidString == SYSTEM_SID_STRING) continue;
+			if (sessionId == consoleSessionId) return sessionId;
+			if (fallbackSessionId == INVALID_SESSION) fallbackSessionId = sessionId;
 		}
-		else
+		else if (sessionSidString == targetSidString)
 		{
-			// Match by SID for specified username (active or disconnected)
-			if (sessionSidString == targetSidString && (state == WTSActive || (state == WTSDisconnected && firstDisconnectedSession == INVALID_SESSION)))
-			{
-				if (state == WTSActive) return sessionId; else firstDisconnectedSession = sessionId;
-			}
+			// Prefer an active session for the named user, then the first disconnected one
+			if (state == WTSActive) return sessionId;
+			if (state == WTSDisconnected && fallbackSessionId == INVALID_SESSION) fallbackSessionId = sessionId;
 		}
 	}
-
-	// Return an active session; named lookups may fall back to a disconnected one
-	return (firstActiveSession != INVALID_SESSION) ? firstActiveSession : (username.empty() ? INVALID_SESSION : firstDisconnectedSession);
+	return fallbackSessionId;
 }
 
 int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait, const std::vector<std::wstring>& vProcessesToKill)
 {
+	// Reject a missing target before selecting a session or terminating any processes.
+	if (commandLine.empty()) return ERROR_INVALID_PARAMETER;
+
 	// Find appropriate session for target user
 	const DWORD targetSessionId = FindTargetSession(username);
 	if (targetSessionId == INVALID_SESSION)
 	{
 		return __LINE__;
-	}
-
-	// kill any requested processes in the target session before launching
-	for (const std::wstring& sProcessName : vProcessesToKill)
-	{
-		KillProcess(sProcessName, targetSessionId);
 	}
 
 	// Get user token and create environment block
@@ -307,6 +284,21 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 		!CreateEnvironmentBlock(&pEnvironment, hPrimaryToken, FALSE))
 	{
 		return __LINE__;
+	}
+
+	// Session IDs can be reused; verify the acquired token still belongs to the requested account.
+	if (!username.empty())
+	{
+		alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> buffer{};
+		DWORD bytes = 0;
+		SmartPointer<LPWSTR> tokenSid(LocalFree, nullptr);
+		if (!GetTokenInformation(hPrimaryToken, TokenUser, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes) ||
+			!ConvertSidToStringSidW(reinterpret_cast<PTOKEN_USER>(buffer.data())->User.Sid, &tokenSid) ||
+			GetSidStringForUser(username) != std::wstring(tokenSid))
+		{
+			PrintMessage(L"ERROR: The session token does not match the requested user.\n");
+			return __LINE__;
+		}
 	}
 
 	// if requested, set the token integrity level to the "plus" variant of the current level
@@ -331,10 +323,8 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 	}
 
 	// Configure process to run on interactive desktop
-	STARTUPINFOW si = { sizeof(si) };
-	si.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
-	si.dwFlags = STARTF_USESHOWWINDOW;
-	si.wShowWindow = SW_SHOW;
+	STARTUPINFOW si{ .cb = sizeof(si), .lpDesktop = const_cast<LPWSTR>(L"winsta0\\default"),
+		.dwFlags = STARTF_USESHOWWINDOW, .wShowWindow = SW_SHOW };
 
 	// Launch process as the target user
 	PROCESS_INFORMATION pi = {};
@@ -359,9 +349,16 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 				if (!sBatchCommand.empty()) sBatchCommand += L' ';
 				sBatchCommand += L"\"" + sArgument + L"\"";
 			}
-			cmdLineCopy = L"cmd.exe /d /v:off /s /c \"" + sBatchCommand + L"\"";
+			WCHAR systemDirectory[MAX_PATH + 1];
+			const UINT length = GetSystemDirectoryW(systemDirectory, ARRAYSIZE(systemDirectory));
+			if (length == 0 || length >= ARRAYSIZE(systemDirectory)) return __LINE__;
+			cmdLineCopy = L"\"" + std::wstring(systemDirectory) + L"\\cmd.exe\" /d /v:off /s /c \"" +
+				sBatchCommand + L"\"";
 		}
 	}
+
+	// Terminate requested processes only after validating the token and command.
+	for (const std::wstring& sProcessName : vProcessesToKill) KillProcess(sProcessName, targetSessionId);
 
 	if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
 	{
@@ -370,18 +367,10 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 
 	SmartPointer<HANDLE> hProcess(CloseHandle, pi.hProcess);
 	SmartPointer<HANDLE> hThread(CloseHandle, pi.hThread);
-
-	if (!bWait)
-	{
-		return 0;
-	}
+	if (!bWait) return 0;
 
 	// Wait for process to complete and clean up handles
-	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
-	{
-		return __LINE__;
-	}
-
+	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED) return __LINE__;
 	DWORD iExitCode = 0;
 	GetExitCodeProcess(hProcess, &iExitCode);
 	return iExitCode;

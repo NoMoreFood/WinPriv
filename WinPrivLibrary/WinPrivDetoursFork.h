@@ -6,18 +6,13 @@ from upstream commit `d644ce94e8c7f7f5a31591577c78134ea3ac1fae`, including
 Microsoft's ARM64 correctness fixes. The upstream license and fork provenance
 are reproduced in this file.
 
-The fork is specialized for WinPriv's x86, x64, and ARM64 builds and
-its single injected DLL. Generic Detours APIs, multi-DLL payloads, optional
-disassembler outputs, diagnostics, and compatibility code outside WinPriv's
-supported Windows versions have been removed. Internal handoff data uses a
-compact private payload record instead of a fabricated PE image. Architecture
-selection uses MSVC's predefined `_M_IX86`, `_M_X64`, `_M_ARM64`, and `_WIN64`
-macros directly.
+The fork provides instruction relocation and permanent hook attachment for
+WinPriv's x86, x64, and ARM64 builds. Transactions suspend peer threads while
+publishing hooks and retain published trampolines for the process lifetime.
+Architecture selection uses MSVC's predefined target macros directly.
 
 The implementation lives in `WinPrivDetoursFork.cpp`. Its C-compatible public
-surface and C++20 transaction wrapper live in `WinPrivDetoursFork.h`; PE
-records, instruction relocation, payload storage, and process injection
-remain private to the implementation translation unit.
+surface and C++20 transaction wrapper live in `WinPrivDetoursFork.h`.
 
 Upstream: https://github.com/microsoft/Detours
 */
@@ -58,76 +53,32 @@ SOFTWARE.
 
 #include <Windows.h>
 
-#ifdef __cplusplus
 extern "C" {
-#endif
-
-typedef BOOL(WINAPI* PDETOUR_CREATE_PROCESS_ROUTINEA)(
-    LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD,
-    LPVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION);
-
-typedef BOOL(WINAPI* PDETOUR_CREATE_PROCESS_ROUTINEW)(
-    LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD,
-    LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
 
 LONG WINAPI DetourTransactionBegin(void);
 LONG WINAPI DetourTransactionAbort(void);
 LONG WINAPI DetourTransactionCommit(void);
 LONG WINAPI DetourAttach(PVOID* target, PVOID replacement);
-LONG WINAPI DetourDetach(PVOID* target, PVOID replacement);
 LONG WINAPI DetourAttachTransaction(PVOID* target, PVOID replacement);
 
-BOOL WINAPI DetourCreateProcessWithDllExA(
-    LPCSTR applicationName, LPSTR commandLine,
-    LPSECURITY_ATTRIBUTES processAttributes, LPSECURITY_ATTRIBUTES threadAttributes,
-    BOOL inheritHandles, DWORD creationFlags, LPVOID environment,
-    LPCSTR currentDirectory, LPSTARTUPINFOA startupInfo,
-    LPPROCESS_INFORMATION processInformation, LPCSTR dllName,
-    const GUID* payloadGuid, LPCVOID payloadData, DWORD payloadSize,
-    PDETOUR_CREATE_PROCESS_ROUTINEA createProcess);
-
-BOOL WINAPI DetourCreateProcessWithDllExW(
-    LPCWSTR applicationName, LPWSTR commandLine,
-    LPSECURITY_ATTRIBUTES processAttributes, LPSECURITY_ATTRIBUTES threadAttributes,
-    BOOL inheritHandles, DWORD creationFlags, LPVOID environment,
-    LPCWSTR currentDirectory, LPSTARTUPINFOW startupInfo,
-    LPPROCESS_INFORMATION processInformation, LPCSTR dllName,
-    const GUID* payloadGuid, LPCVOID payloadData, DWORD payloadSize,
-    PDETOUR_CREATE_PROCESS_ROUTINEW createProcess);
-
-PVOID WINAPI DetourFindPayload(const GUID* guid, DWORD* dataSize);
-BOOL WINAPI DetourFreePayload(PVOID data);
-BOOL WINAPI DetourRestoreAfterWith(void);
-BOOL WINAPI DetourIsHelperProcess(void);
-
-#ifdef __cplusplus
 }
 
 #include <type_traits>
 #include <utility>
-#include <intrin.h>
+#include "WinPrivDynamicCode.h"
 
 namespace winpriv::detours
 {
-    enum class action : bool
-    {
-        detach,
-        attach,
-    };
-
     template <typename Type>
     concept function_pointer =
         std::is_pointer_v<Type> && std::is_function_v<std::remove_pointer_t<Type>>;
 
     template <function_pointer Function>
-    [[nodiscard]] inline LONG apply(
-        action requestedAction, Function& target, Function replacement) noexcept
+    [[nodiscard]] inline LONG attach(Function& target, Function replacement) noexcept
     {
         auto targetAddress = reinterpret_cast<PVOID*>(&target);
         auto replacementAddress = reinterpret_cast<PVOID>(replacement);
-        return requestedAction == action::attach
-            ? DetourAttach(targetAddress, replacementAddress)
-            : DetourDetach(targetAddress, replacementAddress);
+        return DetourAttach(targetAddress, replacementAddress);
     }
 
     class transaction final
@@ -135,38 +86,14 @@ namespace winpriv::detours
     public:
         transaction() noexcept
         {
-            PROCESS_MITIGATION_DYNAMIC_CODE_POLICY policy{};
-            if (!GetProcessMitigationPolicy(GetCurrentProcess(), ProcessDynamicCodePolicy, &policy, sizeof(policy)))
-            {
-                result_ = GetLastError();
-                return;
-            }
-
-            if (policy.ProhibitDynamicCode && policy.AllowThreadOptOut)
-            {
-                if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-                    &threadPolicy_, sizeof(threadPolicy_)))
-                {
-                    result_ = GetLastError();
-                    return;
-                }
-                if ((threadPolicy_ & THREAD_DYNAMIC_CODE_ALLOW) == 0)
-                {
-                    DWORD allowed = threadPolicy_ | THREAD_DYNAMIC_CODE_ALLOW;
-                    if (!SetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy, &allowed, sizeof(allowed)))
-                    {
-                        result_ = GetLastError();
-                        return;
-                    }
-                    restoreThreadPolicy_ = true;
-                }
-            }
+            result_ = dynamicCode_.Result();
+            if (result_ != NO_ERROR) return;
 
             result_ = DetourTransactionBegin();
             active_ = result_ == NO_ERROR;
             if (!active_)
             {
-                RestoreThreadPolicy();
+                dynamicCode_.Restore();
             }
         }
 
@@ -181,7 +108,7 @@ namespace winpriv::detours
             {
                 (void)DetourTransactionAbort();
             }
-            RestoreThreadPolicy();
+            dynamicCode_.Restore();
         }
 
         [[nodiscard]] explicit operator bool() const noexcept
@@ -190,11 +117,10 @@ namespace winpriv::detours
         }
 
         template <function_pointer Function>
-        [[nodiscard]] LONG apply(
-            action requestedAction, Function& target, Function replacement) noexcept
+        [[nodiscard]] LONG attach(Function& target, Function replacement) noexcept
         {
             return active_
-                ? detours::apply(requestedAction, target, replacement)
+                ? detours::attach(target, replacement)
                 : result_;
         }
 
@@ -206,39 +132,13 @@ namespace winpriv::detours
             }
 
             result_ = DetourTransactionCommit();
-            RestoreThreadPolicy();
+            dynamicCode_.Restore();
             return result_;
         }
 
     private:
-        void RestoreThreadPolicy() noexcept
-        {
-            if (!restoreThreadPolicy_)
-            {
-                return;
-            }
-            if (!SetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-                &threadPolicy_, sizeof(threadPolicy_)))
-            {
-                const DWORD error = GetLastError();
-                EXCEPTION_RECORD exception{};
-                exception.ExceptionCode = HRESULT_FROM_WIN32(error);
-                exception.ExceptionAddress = _ReturnAddress();
-                exception.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
-                exception.NumberParameters = 1;
-                exception.ExceptionInformation[0] = error;
-                OutputDebugStringW(L"WinPriv: Failed to restore thread dynamic-code policy; terminating the process.\n");
-                // Committed hooks can still target the DLL, so returning a load failure could unload live code.
-                RaiseFailFastException(&exception, nullptr, 0);
-                TerminateProcess(GetCurrentProcess(), error);
-            }
-            restoreThreadPolicy_ = false;
-        }
-
+        DynamicCodeScope dynamicCode_;
         LONG result_ = NO_ERROR;
-        DWORD threadPolicy_ = 0;
         bool active_ = false;
-        bool restoreThreadPolicy_ = false;
     };
 }
-#endif

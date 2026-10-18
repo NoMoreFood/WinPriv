@@ -46,8 +46,7 @@ refer to the filenames inside the archive.
 - Run elevated for account-rights changes or acquiring missing privileges. Overrides that do not request additional
   privileges can run as an ordinary user.
 - The `/RunAs...` switches require LocalSystem and an existing user session.
-- No installation is needed. Each launcher embeds all three injection libraries and normally extracts them to the
-  Windows temporary directory. See `/ExtractLibrary` for reusing copies beside the launcher.
+- No installation is needed. Each launcher embeds all three injection libraries and loads them directly into memory.
 
 Source builds enable Control Flow Guard (CFG) in the launchers and injection libraries, including for strict-CFG processes. Process protections must still permit DLL loading and API hooking. When dynamic-code policy (ACG) already permits thread opt-out, WinPriv uses that permission during hook transactions and restores the previous thread policy afterward. It leaves the process policy unchanged and reports error 1655 when strict ACG prevents hook installation.
 
@@ -61,10 +60,31 @@ The script builds the shared libraries and all three injection DLLs, then attemp
 It next builds both launchers for every architecture and the native test fixtures, and attempts to sign the six
 launchers in one batch before packaging. The launchers embed the DLLs after the DLL signing step. Signing is
 best-effort unless `RequireCodeSigning=true`; the native test fixtures are built, but tests are not run.
-The archive contains the six launchers and the license; `Build\WinPriv-hash.txt` covers the launchers and archive.
+The archive contains the six launchers; `Build\WinPriv-hash.txt` covers the launchers and archive.
 
 Use `Build\build.cmd /SkipCodeSigning` for an unsigned local build, or `/PackageOnly` to package existing Release
 launchers without compiling. Failures return a nonzero exit code, and the script does not pause for input.
+
+For interactive builds, open `WinPriv.sln` in Visual Studio with the v145 C++ toolset, Desktop development with C++,
+and ARM64 build tools, then select `Release` or `Debug` with solution platform `x86`, `x64`, or `ARM64` (`x86` maps to
+`Win32` in the project files). Release binaries are written to `Build\x86\`, `Build\x64\`, and `Build\ARM64\`;
+Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations automatically produce all three
+injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
+Install all three C++ toolchains even when building a launcher for only one architecture.
+
+The solution contains four product projects (listed below) and three native test fixture projects.
+
+| Project | Output | Description |
+|---|---|---|
+| `WinPriv` | `WinPriv.exe` | Main GUI executable |
+| `WinPrivCmd` | `WinPrivCmd.exe` | Main console executable |
+| `WinPrivLibrary` | `WinPrivLibrary.dll` | Injected hooking library containing the consolidated Detours fork |
+| `WinPrivShared` | static lib | Shared privilege and LSA utilities |
+
+Each launcher embeds the x86, x64, and ARM64 `WinPrivLibrary.dll` builds, and injection selects the library for the
+target's architecture. The operating system must support running both the launcher and the target.
+
+Code signing uses SignTool from `PATH` or an installed Windows SDK. It is best-effort by default: certificate or timestamp failures emit a build warning and preserve the generated files. Use `/p:SkipCodeSigning=true` to skip signing or `/p:RequireCodeSigning=true` to make signing failures fatal in MSBuild. For `Build\build.cmd`, use `/SkipCodeSigning` or set `RequireCodeSigning=true` in the environment. Files are signed and verified as temporary copies before replacing the outputs.
 
 ## Usage
 
@@ -326,9 +346,8 @@ Display a Yes/No prompt before launching. If the user clicks No, execution is ca
 
 **`/ExtractLibrary`**  
 Write the embedded libraries beside the running launcher as `WinPrivLibrary-32.dll`, `WinPrivLibrary-64.dll`, and
-`WinPrivLibrary-arm64.dll`, overwriting existing copies, then exit. Subsequent launches reuse them only when all
-three are present; otherwise all three payloads are extracted to the temporary directory. Re-extract the libraries
-after upgrading the launcher to keep the versions together.
+`WinPrivLibrary-arm64.dll`, overwriting existing copies, then exit. Normal launches always load the embedded
+libraries directly into memory.
 
 **`/Help`** or **`/?`**  
 Display help and exit. Use `WinPrivCmd.exe /Help` for the full switch reference; the GUI launcher shows brief usage.
@@ -389,34 +408,6 @@ Run a deployment script as the console user from a SYSTEM-context task:
 ```
 WinPrivCmd.exe /RunAsConsoleUser deploy.cmd
 ```
-
----
-
-## Building from Source
-
-Requirements: Visual Studio with the v145 C++ toolset, Desktop development with C++, ARM64 build tools, and a Windows SDK.
-
-Open `WinPriv.sln` and select `Release` or `Debug` with solution platform `x86`, `x64`, or `ARM64` (`x86` maps to
-`Win32` in the project files). Release binaries are written to `Build\x86\`, `Build\x64\`, and `Build\ARM64\`;
-Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations automatically produce all three
-injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
-Install all three C++ toolchains even when building a launcher for only one architecture.
-
-The solution contains four product projects (listed below) and three native test fixture projects.
-
-| Project | Output | Description |
-|---|---|---|
-| `WinPriv` | `WinPriv.exe` | Main GUI executable |
-| `WinPrivCmd` | `WinPrivCmd.exe` | Main console executable |
-| `WinPrivLibrary` | `WinPrivLibrary.dll` | Injected hooking library containing the consolidated Detours fork |
-| `WinPrivShared` | static lib | Shared privilege and LSA utilities |
-
-Each launcher embeds the x86, x64, and ARM64 `WinPrivLibrary.dll` builds. Injection selects the library for the
-target's architecture, using a matching helper process when needed for a different architecture. The operating
-system must support running both the launcher and the target. Library extraction and reuse follow the
-`/ExtractLibrary` rules above.
-
-Code signing uses SignTool from `PATH` or an installed Windows SDK. It is best-effort by default: certificate or timestamp failures emit a build warning and preserve the generated files. Use `/p:SkipCodeSigning=true` to skip signing or `/p:RequireCodeSigning=true` to make signing failures fatal in MSBuild. For `Build\build.cmd`, use `/SkipCodeSigning` or set `RequireCodeSigning=true` in the environment. Files are signed and verified as temporary copies before replacing the outputs.
 
 ---
 

@@ -640,12 +640,15 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
 
     It 'records plaintext from all six crypto hooks, including separate-buffer BCrypt decryption' {
         $plaintext = [Text.Encoding]::ASCII.GetBytes('WinPrivCrypto123')
-        $directory = Join-Path $sandbox.Root 'crypto records'
+        $directory = Join-Path $sandbox.Working 'crypto records'
+        $targetDirectory = Join-Path $sandbox.Root 'crypto target working directory'
+        [void](New-Item -ItemType Directory -Path $targetDirectory)
         $result = Invoke-WinPrivProbe -Architecture $Architecture `
-            -WinPrivArguments @('/RecordCrypto', $directory) -Operation crypto `
-            -Arguments @{ plaintextBase64 = [Convert]::ToBase64String($plaintext) } `
+            -WinPrivArguments @('/RecordCrypto', 'crypto records') -Operation crypto `
+            -Arguments @{ plaintextBase64 = [Convert]::ToBase64String($plaintext); workingDirectory = $targetDirectory } `
             -Sandbox $sandbox -TimeoutSeconds 30
         Assert-WinPrivInvocationSucceeded $result
+		$result.StdOut | Should -Not -Match 'Problem committing data'
 		$result.ProbeResult.result.cryptoApi.sizeQuerySuccess | Should -BeTrue
         $recordingProcessId = '{0:D5}' -f [uint32]$result.ProbeResult.result.processId
         $recordingThreadId = '{0:D5}' -f [uint32]$result.ProbeResult.result.threadId
@@ -1006,8 +1009,6 @@ Describe 'WinPriv cross-architecture descendant propagation (<Chain>, <ApiName>)
                         [string] $Role)
 
                     $expectedPointerSize = if ($ExpectedArchitecture -eq 'x64') { 8 } else { 4 }
-                    $expectedSuffix = if ($ExpectedArchitecture -eq 'x64') { '-64.dll' } else { '-32.dll' }
-                    $unexpectedSuffix = if ($ExpectedArchitecture -eq 'x64') { '-32.dll' } else { '-64.dll' }
 
                     $State.success | Should -BeTrue
                     $State.architecture | Should -Be $ExpectedArchitecture
@@ -1020,23 +1021,17 @@ Describe 'WinPriv cross-architecture descendant propagation (<Chain>, <ApiName>)
                     $State.winPrivLibraryLoaded | Should -BeTrue
                     $State.PSObject.Properties['loadedModulesError'] | Should -BeNullOrEmpty
 
-                    $modulePaths = @($State.winPrivLibraryModules)
+                    $modulePaths = @($State.winPrivMemoryImages)
                     $modulePaths | Should -HaveCount 1
-                    $expectedModules = @($modulePaths | Where-Object {
-                        [IO.Path]::GetFileName([string]$_) -like "*$expectedSuffix"
-                    })
-                    $unexpectedModules = @($modulePaths | Where-Object {
-                        [IO.Path]::GetFileName([string]$_) -like "*$unexpectedSuffix"
-                    })
-                    $expectedModules | Should -HaveCount 1
-                    $unexpectedModules | Should -HaveCount 0
+                    $modulePaths[0].architecture | Should -Be $ExpectedArchitecture
+                    @($State.winPrivLibraryModules) | Should -HaveCount 0
 
                     return [ordered]@{
                         Role = $Role
                         Architecture = $State.architecture
                         PointerSize = $State.pointerSize
                         ProcessPath = $State.processPath
-                        WinPrivLibraryModules = $modulePaths
+                        WinPrivMemoryImages = $modulePaths
                     }
                 }
 
@@ -1076,8 +1071,8 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
             Invoke-WinPrivCapability -Id 'propagation.create-process-wide' -Architecture $Architecture -Body {
                 Assert-WinPrivInvocationSucceeded $one
                 $one.ProbeResult.result.childResult.success | Should -BeTrue
-                @($one.ProbeResult.result.childResult.result.winPrivLibraryModules).Count | Should -BeGreaterThan 0
-                return $one.ProbeResult.result.childResult.result.winPrivLibraryModules
+                @($one.ProbeResult.result.childResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
+                return $one.ProbeResult.result.childResult.result.winPrivMemoryImages
             } | Out-Null
         }
         catch {
@@ -1093,8 +1088,8 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
                 $two.ProbeResult.result.childResult.success | Should -BeTrue
                 $two.ProbeResult.result.childResult.result.success | Should -BeTrue
                 $two.ProbeResult.result.childResult.result.childResult.success | Should -BeTrue
-                @($two.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryModules).Count | Should -BeGreaterThan 0
-                return $two.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryModules
+                @($two.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
+                return $two.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages
             } | Out-Null
         }
         catch {
@@ -1114,8 +1109,8 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
             Invoke-WinPrivCapability -Id 'propagation.create-process-ansi' -Architecture $Architecture -Body {
                 Assert-WinPrivInvocationSucceeded $result
                 $result.ProbeResult.result.childResult.success | Should -BeTrue
-                @($result.ProbeResult.result.childResult.result.winPrivLibraryModules).Count | Should -BeGreaterThan 0
-                return $result.ProbeResult.result.childResult.result.winPrivLibraryModules
+                @($result.ProbeResult.result.childResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
+                return $result.ProbeResult.result.childResult.result.winPrivMemoryImages
             } | Out-Null
         }
         catch {
@@ -1131,9 +1126,9 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
                 $grandchild.ProbeResult.result.childResult.success | Should -BeTrue
                 $grandchild.ProbeResult.result.childResult.result.success | Should -BeTrue
                 $grandchild.ProbeResult.result.childResult.result.childResult.success | Should -BeTrue
-                @($grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryModules).Count |
+                @($grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages).Count |
                     Should -BeGreaterThan 0
-                return $grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryModules
+                return $grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages
             } | Out-Null
         }
         catch {

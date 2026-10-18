@@ -26,6 +26,8 @@ namespace WinPrivTests
     public static class LogonRunner
     {
         private const int LOGON_WITHOUT_PROFILE = 0x00000000;
+        private const int LOGON32_LOGON_BATCH = 4;
+        private const int LOGON32_PROVIDER_DEFAULT = 0;
         private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         private const uint CREATE_NEW_CONSOLE = 0x00000010;
         private const uint CREATE_SUSPENDED = 0x00000004;
@@ -114,6 +116,16 @@ namespace WinPrivTests
             uint creationFlags, IntPtr environment, string currentDirectory,
             ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
 
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool LogonUserW(string userName, string domain, string password,
+            int logonType, int logonProvider, out IntPtr token);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateProcessWithTokenW(IntPtr token, int logonFlags,
+            string applicationName, StringBuilder commandLine, uint creationFlags,
+            IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo,
+            out PROCESS_INFORMATION processInformation);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
@@ -164,7 +176,7 @@ namespace WinPrivTests
 
         public static LogonRunResult Run(string domain, string userName, string password,
             string executable, string[] arguments, string currentDirectory, string[] environment,
-            int timeoutMilliseconds)
+            int timeoutMilliseconds, bool batchLogon)
         {
             LogonRunResult result = new LogonRunResult();
             string commandLine = Quote(executable);
@@ -179,6 +191,7 @@ namespace WinPrivTests
             startup.wShowWindow = SW_HIDE;
             PROCESS_INFORMATION process = new PROCESS_INFORMATION();
             IntPtr job = IntPtr.Zero;
+            IntPtr token = IntPtr.Zero;
             IntPtr environmentBlock = IntPtr.Zero;
             UserObjectAccess stationAccess = null;
             UserObjectAccess desktopAccess = null;
@@ -194,10 +207,27 @@ namespace WinPrivTests
                 // create a persistent profile for the temporary local user and
                 // provides no test coverage benefit.
                 environmentBlock = BuildEnvironmentBlock(environment);
-                bool created = CreateProcessWithLogonW(userName, domain, password,
-                    LOGON_WITHOUT_PROFILE, null, new StringBuilder(commandLine),
-                    CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE | CREATE_SUSPENDED, environmentBlock,
-                    currentDirectory, ref startup, out process);
+                uint creationFlags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE | CREATE_SUSPENDED;
+                bool created;
+                if (batchLogon)
+                {
+                    // Batch logon retains assigned privileges without interactive UAC token filtering.
+                    if (!LogonUserW(userName, domain, password, LOGON32_LOGON_BATCH,
+                        LOGON32_PROVIDER_DEFAULT, out token))
+                    {
+                        SetError(result);
+                        return result;
+                    }
+                    created = CreateProcessWithTokenW(token, LOGON_WITHOUT_PROFILE, null,
+                        new StringBuilder(commandLine), creationFlags, environmentBlock,
+                        currentDirectory, ref startup, out process);
+                }
+                else
+                {
+                    created = CreateProcessWithLogonW(userName, domain, password,
+                        LOGON_WITHOUT_PROFILE, null, new StringBuilder(commandLine), creationFlags,
+                        environmentBlock, currentDirectory, ref startup, out process);
+                }
                 result.Started = created;
                 if (!created)
                 {
@@ -270,6 +300,7 @@ namespace WinPrivTests
             finally
             {
                 if (environmentBlock != IntPtr.Zero) Marshal.FreeHGlobal(environmentBlock);
+                if (token != IntPtr.Zero) CloseHandle(token);
                 if (job != IntPtr.Zero) CloseHandle(job);
                 if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
                 if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);

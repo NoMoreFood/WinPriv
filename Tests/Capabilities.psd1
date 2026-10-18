@@ -61,10 +61,11 @@
         @{ Id = 'filesystem.redirect-duplicate'; Surface = 'directory duplication without process query access'; Profile = 'Safe'; Test = 'FileRules'; Required = $true }
 
         # Explicit native caller loading paths for an inline detour.
+        @{ Id = 'detour.rejected-hooks'; Surface = 'atomic rejection of invalid hooks and unsupported instructions'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.load-time-import'; Surface = 'RegQueryValueExW through a normal PE import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.delay-load-import'; Surface = 'RegQueryValueExW through an MSVC delay-load import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.loadlibrary-getprocaddress'; Surface = 'RegQueryValueExW through LoadLibraryW/GetProcAddress'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
-        @{ Id = 'detour.thread-churn'; Surface = 'transactions during thread creation and exit'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'detour.thread-churn'; Surface = 'transactions during thread creation and exit with file hooks active'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.thread-heap-lock'; Surface = 'transactions while a peer holds the process heap lock'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.thread-inaccessible'; Surface = 'transaction rollback when a peer cannot be suspended'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
@@ -75,7 +76,7 @@
         @{ Id = 'mitigation.dynamic-code-allocation'; Surface = 'ACG trampoline allocation error and rollback'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
 
         @{ Id = 'mitigation.dynamic-code-optout-propagation'; Surface = 'ACG opt-out launchers, injected targets, descendants, and restored thread policy'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
-        @{ Id = 'mitigation.dynamic-code-optout-transactions'; Surface = 'ACG scoped opt-out attach, detach, abort, failed commit, nesting, existing permission, and C bridge'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
+        @{ Id = 'mitigation.dynamic-code-optout-transactions'; Surface = 'ACG scoped opt-out attach, abort, failed commit, nesting, existing permission, and C bridge'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
 
         # Network, identity, OS, AMSI, crypto, and SQL hooks.
         @{ Id = 'network.mac-adapters-info'; Surface = '/MacOverride GetAdaptersInfo'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'NetworkAdapter'; Required = $true }
@@ -158,8 +159,8 @@
         @{ Id = 'artifact.build-x64'; Surface = 'Release x64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.build-arm64'; Surface = 'Release ARM64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.embedded-payloads'; Surface = 'embedded x86/x64/ARM64 DLL payloads'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
-        @{ Id = 'artifact.adjacent-library-reuse'; Surface = 'adjacent architecture-matching DLL reuse'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
-        @{ Id = 'artifact.temp-library-cleanup'; Surface = 'temporary injection DLL cleanup'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
+        @{ Id = 'artifact.embedded-library-loading'; Surface = 'in-memory embedded library loading'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
+        @{ Id = 'artifact.memory-library-loading'; Surface = 'injection without temporary DLL files'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.package'; Surface = 'Build/build.cmd ZIP and hash manifest'; Profile = 'Safe'; Test = 'Artifacts'; Architecture = 'All'; Required = $true }
     )
 }

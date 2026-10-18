@@ -135,14 +135,10 @@ static INT WSAAPI DetourGetAddrInfoExW(_In_opt_ PCWSTR sName, _In_opt_ PCWSTR sS
 	_Outptr_ PADDRINFOEXW* pResults, _In_opt_ timeval* pTimeout, _In_opt_ LPOVERLAPPED pOverlapped,
 	_In_opt_ LPLOOKUPSERVICE_COMPLETION_ROUTINE pCompletion, _Out_opt_ LPHANDLE pCancel)
 {
+	// Select the destination before extended lookups invoke additional resolver entry points.
 	const HostOverride* pOverride = iNamespace == NS_DNS || iNamespace == NS_ALL
 		? FindHostOverride(sName, _ReturnAddress()) : nullptr;
-	if (pOverride == nullptr)
-		return TrueGetAddrInfoExW(sName, sService, iNamespace, pProvider, pHints,
-			pResults, pTimeout, pOverlapped, pCompletion, pCancel);
-
-	// Select the destination before extended lookups invoke additional resolver entry points.
-	return TrueGetAddrInfoExW(pOverride->Replacement.c_str(), sService, iNamespace,
+	return TrueGetAddrInfoExW(pOverride == nullptr ? sName : pOverride->Replacement.c_str(), sService, iNamespace,
 		pProvider, pHints, pResults, pTimeout, pOverlapped, pCompletion, pCancel);
 }
 
@@ -153,10 +149,7 @@ static INT WSAAPI DetourGetAddrInfoExA(_In_opt_ PCSTR sName, _In_opt_ PCSTR sSer
 {
 	const HostOverride* pOverride = iNamespace == NS_DNS || iNamespace == NS_ALL
 		? FindHostOverride(sName, CP_ACP, _ReturnAddress()) : nullptr;
-	if (pOverride == nullptr)
-		return TrueGetAddrInfoExA(sName, sService, iNamespace, pProvider, pHints,
-			pResults, pTimeout, pOverlapped, pCompletion, pCancel);
-	return TrueGetAddrInfoExA(pOverride->NarrowReplacement.c_str(), sService, iNamespace,
+	return TrueGetAddrInfoExA(pOverride == nullptr ? sName : pOverride->NarrowReplacement.c_str(), sService, iNamespace,
 		pProvider, pHints, pResults, pTimeout, pOverlapped, pCompletion, pCancel);
 }
 
@@ -164,8 +157,7 @@ static DNS_STATUS WINAPI DetourDnsQueryW(_In_ PCWSTR sName, _In_ WORD iType, _In
 	_Inout_opt_ PVOID pExtra, _Out_opt_ PDNS_RECORD* pResults, _Out_opt_ PVOID* pReserved)
 {
 	const HostOverride* pOverride = IsHostAddressQuery(iType) ? FindHostOverride(sName, _ReturnAddress()) : nullptr;
-	if (pOverride == nullptr) return TrueDnsQueryW(sName, iType, iOptions, pExtra, pResults, pReserved);
-	return TrueDnsQueryW(pOverride->Replacement.c_str(),
+	return TrueDnsQueryW(pOverride == nullptr ? sName : pOverride->Replacement.c_str(),
 		iType, iOptions, pExtra, pResults, pReserved);
 }
 
@@ -174,8 +166,7 @@ static DNS_STATUS WINAPI DetourDnsQueryA(_In_ PCSTR sName, _In_ WORD iType, _In_
 {
 	const HostOverride* pOverride = IsHostAddressQuery(iType)
 		? FindHostOverride(sName, CP_ACP, _ReturnAddress()) : nullptr;
-	if (pOverride == nullptr) return TrueDnsQueryA(sName, iType, iOptions, pExtra, pResults, pReserved);
-	return TrueDnsQueryA(pOverride->NarrowReplacement.c_str(),
+	return TrueDnsQueryA(pOverride == nullptr ? sName : pOverride->NarrowReplacement.c_str(),
 		iType, iOptions, pExtra, pResults, pReserved);
 }
 
@@ -184,8 +175,7 @@ static DNS_STATUS WINAPI DetourDnsQueryUtf8(_In_ PCSTR sName, _In_ WORD iType, _
 {
 	const HostOverride* pOverride = IsHostAddressQuery(iType)
 		? FindHostOverride(sName, CP_UTF8, _ReturnAddress()) : nullptr;
-	if (pOverride == nullptr) return TrueDnsQueryUtf8(sName, iType, iOptions, pExtra, pResults, pReserved);
-	return TrueDnsQueryUtf8(pOverride->NarrowReplacement.c_str(),
+	return TrueDnsQueryUtf8(pOverride == nullptr ? sName : pOverride->NarrowReplacement.c_str(),
 		iType, iOptions, pExtra, pResults, pReserved);
 }
 
@@ -210,43 +200,41 @@ static DNS_STATUS WINAPI DetourDnsQueryEx(_In_ PDNS_QUERY_REQUEST pRequest,
 	return TrueDnsQueryEx(&tRequest, pResults, pCancel);
 }
 
-bool DllHostAttachDetach(winpriv::detours::action requestedAction)
+bool AttachHostHooks()
 {
 	if (!VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE)) return true;
-	if (requestedAction == winpriv::detours::action::attach)
+
+	// Read ordered rules before publishing hooks; replacement names stay stable for pending queries.
+	try
 	{
-		// Read ordered rules before publishing hooks; replacement names stay stable for pending queries.
-		try
+		INT iCount = 0;
+		LPWSTR* pArguments = CommandLineToArgvW(_wgetenv(WINPRIV_EV_HOST_OVERRIDE), &iCount);
+		SmartPointer<LPWSTR*> tArgumentsCleanup(LocalFree, pArguments);
+		if (pArguments == nullptr) return false;
+		for (int i = 0; i + 1 < iCount; i += 2)
 		{
-			INT iCount = 0;
-			LPWSTR* pArguments = CommandLineToArgvW(_wgetenv(WINPRIV_EV_HOST_OVERRIDE), &iCount);
-			SmartPointer<LPWSTR*> tArgumentsCleanup(LocalFree, pArguments);
-			if (pArguments == nullptr) return false;
-			for (int i = 0; i + 1 < iCount; i += 2)
-			{
-				HostOverride tOverride{ NormalizeHostName(pArguments[i]), pArguments[i + 1], {} };
-				for (wchar_t character : tOverride.Replacement)
-					tOverride.NarrowReplacement += static_cast<char>(character);
-				vHostOverrides.push_back(std::move(tOverride));
-			}
-		}
-		catch (...)
-		{
-			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-			return false;
+			HostOverride tOverride{ NormalizeHostName(pArguments[i]), pArguments[i + 1], {} };
+			for (wchar_t character : tOverride.Replacement)
+				tOverride.NarrowReplacement += static_cast<char>(character);
+			vHostOverrides.push_back(std::move(tOverride));
 		}
 	}
+	catch (...)
+	{
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return false;
+	}
 
-	ApplyDetour(requestedAction, TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW);
-	ApplyDetour(requestedAction, TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA);
-	ApplyDetour(requestedAction, TrueGetAddrInfoW, DetourGetAddrInfoW);
-	ApplyDetour(requestedAction, TrueGetAddrInfoA, DetourGetAddrInfoA);
-	ApplyDetour(requestedAction, TrueGetHostByName, DetourGetHostByName);
-	ApplyDetour(requestedAction, TrueGetAddrInfoExW, DetourGetAddrInfoExW);
-	ApplyDetour(requestedAction, TrueGetAddrInfoExA, DetourGetAddrInfoExA);
-	ApplyDetour(requestedAction, TrueDnsQueryW, DetourDnsQueryW);
-	ApplyDetour(requestedAction, TrueDnsQueryA, DetourDnsQueryA);
-	ApplyDetour(requestedAction, TrueDnsQueryUtf8, DetourDnsQueryUtf8);
-	ApplyDetour(requestedAction, TrueDnsQueryEx, DetourDnsQueryEx);
+	AttachDetour(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW);
+	AttachDetour(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA);
+	AttachDetour(TrueGetAddrInfoW, DetourGetAddrInfoW);
+	AttachDetour(TrueGetAddrInfoA, DetourGetAddrInfoA);
+	AttachDetour(TrueGetHostByName, DetourGetHostByName);
+	AttachDetour(TrueGetAddrInfoExW, DetourGetAddrInfoExW);
+	AttachDetour(TrueGetAddrInfoExA, DetourGetAddrInfoExA);
+	AttachDetour(TrueDnsQueryW, DetourDnsQueryW);
+	AttachDetour(TrueDnsQueryA, DetourDnsQueryA);
+	AttachDetour(TrueDnsQueryUtf8, DetourDnsQueryUtf8);
+	AttachDetour(TrueDnsQueryEx, DetourDnsQueryEx);
 	return true;
 }

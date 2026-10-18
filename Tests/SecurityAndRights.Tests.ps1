@@ -187,6 +187,8 @@ Describe 'WinPriv privilege and identity behavior (<Architecture>)' -Tag 'Admin'
             -Principal $principal -WinPrivArguments @() -Operation admin
         $baseline.Run.Started | Should -BeTrue
         $baseline.Run.TimedOut | Should -BeFalse
+        $baseline.Run.ExitCode | Should -Be 0
+        $baseline.ProbeResult.success | Should -BeTrue -Because ($baseline.ProbeResult | ConvertTo-Json -Depth 5)
         $baseline.Run.JobAssigned | Should -BeTrue
         @($baseline.Run.ProcessIds) | Should -Contain $baseline.Run.ProcessId
         $baseline.ProbeResult.result.isUserAnAdmin | Should -BeFalse
@@ -196,6 +198,8 @@ Describe 'WinPriv privilege and identity behavior (<Architecture>)' -Tag 'Admin'
             -Principal $principal -WinPrivArguments @('/AdminImpersonate') -Operation admin
         $hooked.Run.Started | Should -BeTrue
         $hooked.Run.TimedOut | Should -BeFalse
+        $hooked.Run.ExitCode | Should -Be 0
+        $hooked.ProbeResult.success | Should -BeTrue -Because ($hooked.ProbeResult | ConvertTo-Json -Depth 5)
         $hooked.Run.JobAssigned | Should -BeTrue
         @($hooked.Run.ProcessIds) | Should -Contain $hooked.Run.ProcessId
         Invoke-WinPrivCapability -Id 'identity.is-user-admin' -Architecture $Architecture -Body {
@@ -209,15 +213,28 @@ Describe 'WinPriv privilege and identity behavior (<Architecture>)' -Tag 'Admin'
         }
     }
 
-    It 'enables a requested privilege in a fresh token' {
-        $grant = Invoke-WinPriv -Architecture $Architecture `
-            -Arguments @('/GrantRight', 'SeDebugPrivilege', $principal.Account) `
-            -Launcher WinPrivCmd -Sandbox $sandbox -TimeoutSeconds 20
-        Assert-WinPrivInvocationSucceeded $grant
+    It 'enables requested privileges in a fresh token' {
+        foreach ($right in @('SeDebugPrivilege', 'SeBackupPrivilege', 'SeBatchLogonRight')) {
+            $grant = Invoke-WinPriv -Architecture $Architecture `
+                -Arguments @('/GrantRight', $right, $principal.Account) `
+                -Launcher WinPrivCmd -Sandbox $sandbox -TimeoutSeconds 20
+            Assert-WinPrivInvocationSucceeded $grant
+        }
         Invoke-WinPrivCapability -Id 'privilege.with-privs' -Architecture $Architecture -Body {
+            $baseline = Invoke-WinPrivFreshUserProbe -Architecture $Architecture -Sandbox $sandbox `
+                -Principal $principal -WinPrivArguments @() -Operation token -BatchLogon
+            $baseline.Run.ExitCode | Should -Be 0
+            $baseline.ProbeResult.success | Should -BeTrue
+            $baseline.ProbeResult.result.sid | Should -Be $principal.Sid
+            # PowerShell enables SeDebugPrivilege itself; the backup privilege measures WinPriv's adjustment.
+            $disabled = @($baseline.ProbeResult.result.privileges | Where-Object name -EQ 'SeBackupPrivilege')
+            $disabled | Should -HaveCount 1
+            $disabled[0].enabled | Should -BeFalse
+
             $probe = Invoke-WinPrivFreshUserProbe -Architecture $Architecture -Sandbox $sandbox `
-                -Principal $principal -WinPrivArguments @('/WithPrivs', 'SeDebugPrivilege,SeDebugPrivilege') `
-                -Operation token
+                -Principal $principal `
+                -WinPrivArguments @('/WithPrivs', 'SeDebugPrivilege,SeBackupPrivilege,SeDebugPrivilege') `
+                -Operation token -BatchLogon
             $probe.Run.Started | Should -BeTrue
             $probe.Run.TimedOut | Should -BeFalse
             $probe.Run.JobAssigned | Should -BeTrue
@@ -226,7 +243,10 @@ Describe 'WinPriv privilege and identity behavior (<Architecture>)' -Tag 'Admin'
             $debug = @($probe.ProbeResult.result.privileges | Where-Object name -EQ 'SeDebugPrivilege')
             $debug | Should -HaveCount 1
             $debug[0].enabled | Should -BeTrue
-            return $debug[0]
+            $backup = @($probe.ProbeResult.result.privileges | Where-Object name -EQ 'SeBackupPrivilege')
+            $backup | Should -HaveCount 1
+            $backup[0].enabled | Should -BeTrue
+            return @{ Debug = $debug[0]; Backup = $backup[0] }
         }
     }
 
@@ -236,15 +256,24 @@ Describe 'WinPriv privilege and identity behavior (<Architecture>)' -Tag 'Admin'
             -Sandbox $sandbox -TimeoutSeconds 60
         Assert-WinPrivInvocationSucceeded $grant
         Invoke-WinPrivCapability -Id 'privilege.with-all' -Architecture $Architecture -Body {
+            $baseline = Invoke-WinPrivFreshUserProbe -Architecture $Architecture -Sandbox $sandbox `
+                -Principal $principal -WinPrivArguments @() -Operation token -BatchLogon
+            $baseline.Run.ExitCode | Should -Be 0
+            $baseline.ProbeResult.success | Should -BeTrue
+            $baseline.ProbeResult.result.sid | Should -Be $principal.Sid
+            $available = @($baseline.ProbeResult.result.privileges)
+            @($available | Where-Object { -not $_.enabled }).Count | Should -BeGreaterThan 0
+
             $probe = Invoke-WinPrivFreshUserProbe -Architecture $Architecture -Sandbox $sandbox `
-                -Principal $principal -WinPrivArguments @('/WithAllPrivs') -Operation token
+                -Principal $principal -WinPrivArguments @('/WithAllPrivs') -Operation token -BatchLogon
             $probe.Run.Started | Should -BeTrue
             $probe.Run.TimedOut | Should -BeFalse
             $probe.Run.JobAssigned | Should -BeTrue
             @($probe.Run.ProcessIds) | Should -Contain $probe.Run.ProcessId
             $probe.Run.ExitCode | Should -Be 0
             $privileges = @($probe.ProbeResult.result.privileges)
-            $privileges.Count | Should -BeGreaterThan 0
+            $privileges.Count | Should -Be $available.Count
+            foreach ($name in $available.name) { $privileges.name | Should -Contain $name }
             @($privileges | Where-Object { -not $_.enabled }) | Should -HaveCount 0
             return @{ Privileges = $privileges.Count }
         }

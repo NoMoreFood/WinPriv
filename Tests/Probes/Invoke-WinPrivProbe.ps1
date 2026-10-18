@@ -431,11 +431,17 @@ try {
         $script:ProbeArguments = [pscustomobject]@{}
     }
 
-    $sourceFiles = [string[]]@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'WinPrivProbe.*.cs' |
-        Sort-Object -Property Name |
-        ForEach-Object { $_.FullName })
     if ($null -eq ('WinPrivProbe.Native' -as [type])) {
-        Add-Type -Path $sourceFiles -ErrorAction Stop
+        $assemblyPath = Join-Path $PSScriptRoot 'WinPrivProbe.dll'
+        if (Test-Path -LiteralPath $assemblyPath -PathType Leaf) {
+            Add-Type -Path $assemblyPath -ErrorAction Stop
+        }
+        else {
+            $sourceFiles = [string[]]@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'WinPrivProbe.*.cs' |
+                Sort-Object -Property Name |
+                ForEach-Object { $_.FullName })
+            Add-Type -Path $sourceFiles -ErrorAction Stop
+        }
     }
 
     $state = $null
@@ -580,6 +586,8 @@ try {
             $result = [WinPrivProbe.Native]::GetClockState()
         }
         'crypto' {
+            $workingDirectory = Get-ArgumentValue -Name 'workingDirectory'
+            if ($null -ne $workingDirectory) { [Environment]::CurrentDirectory = [string]$workingDirectory }
             $base64 = Get-ArgumentValue -Name 'plaintextBase64'
             if ($null -eq $base64) {
                 $bytes = [Text.Encoding]::UTF8.GetBytes('WinPrivProbeData')

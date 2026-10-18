@@ -110,13 +110,13 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalOptions>/Brepro /export:DetourFinishHelperProcess,@1,NONAME %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
       <AdditionalDependencies>kernel32.lib;user32.lib;ws2_32.lib;iphlpapi.lib;netapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
@@ -135,7 +135,7 @@
       <DebugInformationFormat>None</DebugInformationFormat>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
@@ -143,7 +143,7 @@
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalOptions>/Brepro /export:DetourFinishHelperProcess,@1,NONAME %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
       <SetChecksum>true</SetChecksum>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalDependencies>kernel32.lib;user32.lib;ws2_32.lib;iphlpapi.lib;netapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -165,7 +165,7 @@
       <DebugInformationFormat>None</DebugInformationFormat>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <LanguageStandard>stdcpp20</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
@@ -173,7 +173,7 @@
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalOptions>/Brepro /export:DetourFinishHelperProcess,@1,NONAME %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
       <SetChecksum>true</SetChecksum>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <AdditionalDependencies>kernel32.lib;user32.lib;ws2_32.lib;iphlpapi.lib;netapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -181,6 +181,11 @@
     <Bscmake>
       <PreserveSbr>true</PreserveSbr>
     </Bscmake>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="WinPrivDetoursFork.cpp">
@@ -195,13 +200,24 @@
     <ClCompile Include="WinPrivLibraryDetours.cpp" />
     <ClCompile Include="WinPrivLibraryFiles.cpp" />
     <ClCompile Include="WinPrivLibraryHosts.cpp" />
-    <ClCompile Include="WinPrivLibraryDetoursCom.c" />
     <ClCompile Include="WinPrivLibraryMain.cpp" />
+    <ClCompile Include="WinPrivMemoryLoader.cpp" />
+    <ClCompile Include="WinPrivMemoryInitialize.cpp">
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <ControlFlowGuard>false</ControlFlowGuard>
+      <SupportJustMyCode Condition="'$(Configuration)'=='Debug'">false</SupportJustMyCode>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <Optimization>MinSpace</Optimization>
+    </ClCompile>
     <ClCompile Include="WinPrivLibraryTime.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="WinPrivDetoursFork.h" />
     <ClInclude Include="WinPrivLibrary.h" />
+    <ClInclude Include="WinPrivMemoryLoader.h" />
+    <ClInclude Include="WinPrivDynamicCode.h" />
+    <ClInclude Include="WinPrivWow64Call.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\WinPrivShared\WinPrivShared.vcxproj">

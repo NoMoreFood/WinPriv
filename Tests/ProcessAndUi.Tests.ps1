@@ -25,9 +25,12 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
             Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\ping.exe') -Destination $keepPath
             $owned = @()
             try {
-                $owned += Start-Process -FilePath $killPath -ArgumentList @('127.0.0.1', '-n', '30', '-w', '1000') -PassThru
-                $owned += Start-Process -FilePath $killPath -ArgumentList @('127.0.0.1', '-n', '30', '-w', '1000') -PassThru
-                $sentinel = Start-Process -FilePath $keepPath -ArgumentList @('127.0.0.1', '-n', '30', '-w', '1000') -PassThru
+                $owned += Start-Process -FilePath $killPath -WindowStyle Hidden `
+                    -ArgumentList @('127.0.0.1', '-n', '30', '-w', '1000') -PassThru
+                $owned += Start-Process -FilePath $killPath -WindowStyle Hidden `
+                    -ArgumentList @('127.0.0.1', '-n', '30', '-w', '1000') -PassThru
+                $sentinel = Start-Process -FilePath $keepPath -WindowStyle Hidden `
+                    -ArgumentList @('127.0.0.1', '-n', '30', '-w', '1000') -PassThru
                 $owned += $sentinel
                 foreach ($process in $owned) {
                     Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Process -Identifier ([string]$process.Id) `
@@ -36,6 +39,13 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
                         } | Out-Null
                 }
                 Start-Sleep -Milliseconds 300
+                @($owned | Where-Object HasExited) | Should -HaveCount 0
+
+                $invalidRunAs = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 10 `
+                    -Arguments @('/KillProcess', $killName, '/RunAsUser',
+                        [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+                Assert-WinPrivInvocationFailedCleanly $invalidRunAs
+                foreach ($process in $owned) { $process.Refresh() }
                 @($owned | Where-Object HasExited) | Should -HaveCount 0
 
                 $result = Invoke-WinPrivProbe -Architecture $Architecture `
@@ -109,8 +119,8 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
                 -WinPrivArguments @('/UseShellExecute') -Operation state -Arguments @{} `
                 -Sandbox $sandbox -TimeoutSeconds 30
             Assert-WinPrivInvocationSucceeded $result
-            @($result.ProbeResult.result.winPrivLibraryModules).Count | Should -BeGreaterThan 0
-            return $result.ProbeResult.result.winPrivLibraryModules
+            @($result.ProbeResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
+            return $result.ProbeResult.result.winPrivMemoryImages
         }
     }
 
@@ -284,9 +294,7 @@ catch {
                 $evidence.ChildExitCode | Should -Be 0
                 $evidence.Value | Should -Be 0x12345678
                 $evidence.PointerSize | Should -Be $(if ($ChildArch -eq 'x64') { 8 } else { 4 })
-                @($evidence.Modules) | Should -HaveCount 1
-                $suffix = if ($ChildArch -eq 'x64') { '-64.dll' } else { '-32.dll' }
-                [IO.Path]::GetFileName([string]$evidence.Modules[0]) | Should -BeLike "*$suffix"
+                @($evidence.Modules) | Should -HaveCount 0
                 return $evidence
             }
         }
