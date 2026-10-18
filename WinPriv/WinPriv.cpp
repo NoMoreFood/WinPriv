@@ -8,6 +8,9 @@
 #include <Windows.h>
 #include <ShlObj.h>
 #include <WS2tcpip.h>
+#include <compressapi.h>
+
+#pragma comment(lib, "cabinet.lib")
 
 #include <algorithm>
 #include <cstdio>
@@ -39,13 +42,36 @@ constexpr std::array<std::pair<DWORD, LPCWSTR>, 3> vLibraryResources{ {
 	{ IDR_RT_RCDATA_X64, L"WinPrivLibrary-64.dll" },
 	{ IDR_RT_RCDATA_ARM64, L"WinPrivLibrary-arm64.dll" } } };
 
-winpriv::memory::LibraryImage LoadLibraryResource(const DWORD iResourceId)
+winpriv::memory::LibraryImage LoadLibraryResource(const DWORD iResourceId, std::vector<BYTE>& vBytes)
 {
-	// Locate an embedded library image; failures return an empty image.
+	// Locate and decompress an embedded library image; failures return an empty image.
 	const HRSRC hResource = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
 	const HGLOBAL hLoaded = hResource == nullptr ? nullptr : LoadResource(nullptr, hResource);
 	const LPCVOID pData = hLoaded == nullptr ? nullptr : LockResource(hLoaded);
-	return { pData, pData == nullptr ? 0 : SizeofResource(nullptr, hResource) };
+	SmartPointer<DECOMPRESSOR_HANDLE> hDecompressor(CloseDecompressor, nullptr);
+	if (pData == nullptr || !CreateDecompressor(COMPRESS_ALGORITHM_LZMS, nullptr, &hDecompressor)) return {};
+	const DWORD iCompressedSize = SizeofResource(nullptr, hResource);
+	SIZE_T iSize = 0;
+	if (Decompress(hDecompressor, pData, iCompressedSize, nullptr, 0, &iSize) ||
+		GetLastError() != ERROR_INSUFFICIENT_BUFFER) return {};
+
+	// Bound allocations based on the size stored in the compressed resource.
+	if (iSize == 0 || iSize > 64 * 1024 * 1024)
+	{
+		SetLastError(ERROR_BAD_COMPRESSION_BUFFER);
+		return {};
+	}
+	try
+	{
+		vBytes.resize(iSize);
+	}
+	catch (...)
+	{
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return {};
+	}
+	if (!Decompress(hDecompressor, pData, iCompressedSize, vBytes.data(), vBytes.size(), &iSize)) return {};
+	return { vBytes.data(), static_cast<DWORD>(iSize) };
 }
 
 int RunProgram(int iArgc, wchar_t* aArgv[])
@@ -261,7 +287,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			for (const auto& [iResourceId, sFileName] : vLibraryResources)
 			{
-				const winpriv::memory::LibraryImage tImage = LoadLibraryResource(iResourceId);
+				std::vector<BYTE> vBytes;
+				const winpriv::memory::LibraryImage tImage = LoadLibraryResource(iResourceId, vBytes);
 				const std::wstring sPath = std::filesystem::path(sExecutable).replace_filename(sFileName).wstring();
 				SmartPointer<HANDLE> hFile(CloseHandle, tImage.data == nullptr ? INVALID_HANDLE_VALUE : CreateFile(
 					sPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -619,9 +646,10 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	for (const std::wstring& sProcessName : vProcessesToKill) KillProcess(sProcessName);
 
 	// Load the embedded library directly and retain all architecture images for descendant processes.
+	std::array<std::vector<BYTE>, 3> vLibraryBytes;
 	std::array<winpriv::memory::LibraryImage, 3> vImages{};
 	for (size_t iIndex = 0; iIndex < vImages.size(); ++iIndex)
-		vImages[iIndex] = LoadLibraryResource(vLibraryResources[iIndex].first);
+		vImages[iIndex] = LoadLibraryResource(vLibraryResources[iIndex].first, vLibraryBytes[iIndex]);
 	std::vector<BYTE> vBundle;
 	if (!winpriv::memory::CreateBundle(vImages, vBundle) ||
 		!winpriv::memory::LoadBundle(reinterpret_cast<const winpriv::memory::LibraryBundle*>(vBundle.data())))

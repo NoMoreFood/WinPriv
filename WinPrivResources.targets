@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <UsingTask TaskName="CompressWinPrivResource" TaskFactory="CodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Source ParameterType="System.String" Required="true" />
+      <Destination ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public sealed class CompressWinPrivResource : Task
+{
+    [Required] public string Source { get; set; }
+    [Required] public string Destination { get; set; }
+
+    [DllImport("cabinet.dll", SetLastError = true)]
+    private static extern bool CreateCompressor(uint algorithm, IntPtr allocation, out IntPtr compressor);
+    [DllImport("cabinet.dll", SetLastError = true)]
+    private static extern bool SetCompressorInformation(IntPtr compressor, int informationClass,
+        ref uint blockSize, UIntPtr informationSize);
+    [DllImport("cabinet.dll", SetLastError = true)]
+    private static extern bool Compress(IntPtr compressor, byte[] input, UIntPtr inputSize,
+        byte[] output, UIntPtr outputSize, out UIntPtr compressedSize);
+    [DllImport("cabinet.dll")]
+    private static extern bool CloseCompressor(IntPtr compressor);
+
+    public override bool Execute()
+    {
+        IntPtr compressor = IntPtr.Zero;
+        try
+        {
+            // Compress each complete DLL as one LZMS block for the highest native compression ratio.
+            byte[] input = File.ReadAllBytes(Source);
+            uint blockSize = (uint)Math.Max(input.Length, 1024 * 1024);
+            if (!CreateCompressor(5, IntPtr.Zero, out compressor) ||
+                !SetCompressorInformation(compressor, 1, ref blockSize, (UIntPtr)sizeof(uint)))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            UIntPtr size;
+            if (Compress(compressor, input, (UIntPtr)input.Length, null, UIntPtr.Zero, out size) ||
+                Marshal.GetLastWin32Error() != 122)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            byte[] output = new byte[checked((int)size.ToUInt64())];
+            if (!Compress(compressor, input, (UIntPtr)input.Length, output, (UIntPtr)output.Length, out size))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            using (FileStream file = File.Create(Destination))
+                file.Write(output, 0, checked((int)size.ToUInt64()));
+            return true;
+        }
+        catch (Exception error)
+        {
+            Log.LogErrorFromException(error);
+            return false;
+        }
+        finally
+        {
+            if (compressor != IntPtr.Zero) CloseCompressor(compressor);
+        }
+    }
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <PropertyGroup>
+    <_WinPrivResourceRoot>$(WinPrivSolutionDir)Build\</_WinPrivResourceRoot>
+    <_WinPrivResourceRoot
+        Condition="'$(Configuration)'=='Debug'">$(WinPrivSolutionDir)Build\Debug\</_WinPrivResourceRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <_WinPrivLibraryResource Include="$(_WinPrivResourceRoot)x86\WinPrivLibrary.dll">
+      <Architecture>x86</Architecture>
+    </_WinPrivLibraryResource>
+    <_WinPrivLibraryResource Include="$(_WinPrivResourceRoot)x64\WinPrivLibrary.dll">
+      <Architecture>x64</Architecture>
+    </_WinPrivLibraryResource>
+    <_WinPrivLibraryResource Include="$(_WinPrivResourceRoot)ARM64\WinPrivLibrary.dll">
+      <Architecture>ARM64</Architecture>
+    </_WinPrivLibraryResource>
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+  <Target Name="CompressWinPrivLibraryResources" BeforeTargets="ResourceCompile"
+          Inputs="@(_WinPrivLibraryResource);$(MSBuildThisFileFullPath)"
+          Outputs="@(_WinPrivLibraryResource->'$(IntDir)WinPrivLibrary-%(Architecture).lzms')"
+          Condition="'$(DesignTimeBuild)'!='true'">
+    <MakeDir Directories="$(IntDir)" />
+    <CompressWinPrivResource Source="%(_WinPrivLibraryResource.Identity)"
+                            Destination="$(IntDir)WinPrivLibrary-%(_WinPrivLibraryResource.Architecture).lzms" />
+    <ItemGroup>
+      <FileWrites Include="@(_WinPrivLibraryResource->'$(IntDir)WinPrivLibrary-%(Architecture).lzms')" />
+    </ItemGroup>
+  </Target>
+</Project>

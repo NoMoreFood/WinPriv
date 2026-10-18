@@ -54,21 +54,11 @@ END
 // RT_RCDATA
 //
 
-#ifdef _DEBUG
-#define WINPRIV_LIBRARY_X86 "..\\Build\\Debug\\x86\\WinPrivLibrary.dll"
-#define WINPRIV_LIBRARY_X64 "..\\Build\\Debug\\x64\\WinPrivLibrary.dll"
-#define WINPRIV_LIBRARY_ARM64 "..\\Build\\Debug\\ARM64\\WinPrivLibrary.dll"
-#else
-#define WINPRIV_LIBRARY_X86 "..\\Build\\x86\\WinPrivLibrary.dll"
-#define WINPRIV_LIBRARY_X64 "..\\Build\\x64\\WinPrivLibrary.dll"
-#define WINPRIV_LIBRARY_ARM64 "..\\Build\\ARM64\\WinPrivLibrary.dll"
-#endif
+IDR_RT_RCDATA_X86       RT_RCDATA               "WinPrivLibrary-x86.lzms"
 
-IDR_RT_RCDATA_X86       RT_RCDATA               WINPRIV_LIBRARY_X86
+IDR_RT_RCDATA_X64       RT_RCDATA               "WinPrivLibrary-x64.lzms"
 
-IDR_RT_RCDATA_X64       RT_RCDATA               WINPRIV_LIBRARY_X64
-
-IDR_RT_RCDATA_ARM64     RT_RCDATA               WINPRIV_LIBRARY_ARM64
+IDR_RT_RCDATA_ARM64     RT_RCDATA               "WinPrivLibrary-ARM64.lzms"
 
 
 /////////////////////////////////////////////////////////////////////////////
