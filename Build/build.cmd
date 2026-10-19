@@ -31,10 +31,7 @@ IF ERRORLEVEL 1 (
     ECHO ERROR: 7-Zip is required to create the release archive.
     EXIT /B 1
 )
-IF EXIST "%STAGEDIR%" (
-    ECHO ERROR: "%STAGEDIR%" already exists. Finish or remove the previous staging operation first.
-    EXIT /B 1
-)
+IF EXIST "%STAGEDIR%" RD /S /Q "%STAGEDIR%"
 MD "%STAGEDIR%"
 IF ERRORLEVEL 1 EXIT /B 1
 IF NOT DEFINED PACKAGEONLY (
