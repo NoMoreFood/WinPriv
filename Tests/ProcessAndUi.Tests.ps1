@@ -77,6 +77,85 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
         }
     }
 
+    It 'terminates parents before descendants (<Launcher>, keep middle: <KeepMiddle>)' -ForEach @(
+        @{ Launcher = 'WinPrivCmd'; KeepMiddle = $false },
+        @{ Launcher = 'WinPriv'; KeepMiddle = $false },
+        @{ Launcher = 'WinPrivCmd'; KeepMiddle = $true },
+        @{ Launcher = 'WinPriv'; KeepMiddle = $true }
+    ) {
+        $roles = @('parent', 'middle', 'leaf')
+        $names = @{}
+        $owned = @{}
+        foreach ($role in $roles) {
+            $names[$role] = 'wpt-' + $role + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+                -Destination (Join-Path $sandbox.Root ($names[$role] + '.exe'))
+        }
+        [IO.File]::WriteAllText((Join-Path $sandbox.Root 'parent.cmd'),
+            ('@.\{0}.exe /D /Q /K .\middle.cmd' -f $names.middle))
+        [IO.File]::WriteAllText((Join-Path $sandbox.Root 'middle.cmd'),
+            ('@.\{0}.exe /D /Q /K' -f $names.leaf))
+        try {
+            $owned.parent = Start-Process -FilePath (Join-Path $sandbox.Root ($names.parent + '.exe')) `
+                -WorkingDirectory $sandbox.Root -WindowStyle Hidden `
+                -ArgumentList @('/D', '/Q', '/K', '.\parent.cmd') -PassThru
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            foreach ($role in $roles) {
+                while (-not $owned.ContainsKey($role) -and [DateTime]::UtcNow -lt $deadline) {
+                    $process = Get-Process -Name $names[$role] -ErrorAction SilentlyContinue
+                    if ($process) { $owned[$role] = $process }
+                    else { Start-Sleep -Milliseconds 25 }
+                }
+                $owned.ContainsKey($role) | Should -BeTrue -Because "$role must be running before termination"
+                $process = $owned[$role]
+                $process.Path | Should -Be (Join-Path $sandbox.Root ($names[$role] + '.exe'))
+                [void]$process.Handle
+                Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Process -Identifier ([string]$process.Id) `
+                    -OriginalState $null -Metadata @{
+                        Path = $process.Path; StartTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
+                    } | Out-Null
+            }
+
+            $arguments = @('/KillProcess', ($names.leaf + '.exe'))
+            if (-not $KeepMiddle) { $arguments += @('/KillProcess', ($names.middle + '.exe')) }
+            $arguments += @('/KillProcess', ($names.parent + '.exe'), '/WindowStyle', 'Hidden',
+                (Join-Path $env:SystemRoot 'System32\cmd.exe'), '/D', '/C', 'EXIT', '37')
+            $result = Invoke-WinPriv -Architecture $Architecture -Launcher $Launcher `
+                -Arguments $arguments -Sandbox $sandbox -TimeoutSeconds 15
+            $result.TimedOut | Should -BeFalse
+            $result.StartError | Should -BeNullOrEmpty
+            $result.ExitCode | Should -Be 37
+            $result.StdOut | Should -BeNullOrEmpty
+            $result.StdErr | Should -BeNullOrEmpty
+            foreach ($process in $owned.Values) { $process.Refresh() }
+            $owned.parent.HasExited | Should -BeTrue
+            $owned.leaf.HasExited | Should -BeTrue
+            $owned.parent.ExitTime.ToFileTimeUtc() | Should -BeLessThan $owned.leaf.ExitTime.ToFileTimeUtc()
+            if ($KeepMiddle) {
+                $owned.middle.HasExited | Should -BeFalse
+            }
+            else {
+                $owned.middle.HasExited | Should -BeTrue
+                $owned.parent.ExitTime.ToFileTimeUtc() | Should -BeLessThan $owned.middle.ExitTime.ToFileTimeUtc()
+                $owned.middle.ExitTime.ToFileTimeUtc() | Should -BeLessThan $owned.leaf.ExitTime.ToFileTimeUtc()
+            }
+        }
+        finally {
+            foreach ($name in $names.Values) {
+                foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+                    try {
+                        if ($process.Path -eq (Join-Path $sandbox.Root ($name + '.exe'))) {
+                            $process.Kill()
+                            [void]$process.WaitForExit(5000)
+                        }
+                    }
+                    finally { $process.Dispose() }
+                }
+            }
+            foreach ($process in $owned.Values) { $process.Dispose() }
+        }
+    }
+
     It 'passes every documented /WindowStyle value to STARTUPINFO' {
         Invoke-WinPrivCapability -Id 'process.window-style' -Architecture $Architecture -Body {
             $styles = @{

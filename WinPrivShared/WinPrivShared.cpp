@@ -18,6 +18,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "WinPrivShared.h"
@@ -491,36 +492,51 @@ BOOL GrantAllRights(const std::wstring& sAccountName)
 	return ModifyAccountRights(sAccountName, vRightsToGrant, TRUE);
 }
 
-void KillProcess(const std::wstring& sProcessName, DWORD iSessionId)
+void KillProcesses(const std::vector<std::wstring>& vProcessNames, DWORD iSessionId)
 {
+	if (vProcessNames.empty()) return;
+
 	// use the caller's own session id if no explicit session was specified
 	if (iSessionId == MAXDWORD && ProcessIdToSessionId(GetCurrentProcessId(), &iSessionId) == 0) return;
 
-	// enumerate all processes, looking for match by name
+	// collect matching processes and retain ancestry through nonmatching processes
+	std::unordered_map<DWORD, DWORD> mParents;
+	std::vector<std::pair<DWORD, size_t>> vProcesses;
 	PROCESSENTRY32 tEntry{ .dwSize = sizeof(PROCESSENTRY32) };
 	SmartPointer<HANDLE> hSnapshot(CloseHandle, CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL));
 	for (BOOL bValid = Process32First(hSnapshot, &tEntry); bValid; bValid = Process32Next(hSnapshot, &tEntry))
 	{
+		mParents.emplace(tEntry.th32ProcessID, tEntry.th32ParentProcessID);
+		const bool bMatches = std::ranges::any_of(vProcessNames, [&](const std::wstring& sProcessName)
+		{
+			return _wcsicmp(tEntry.szExeFile, sProcessName.c_str()) == 0;
+		});
+
 		// skip process if not the target session id or session id lookup fails
 		DWORD iProcessSessionId = 0;
-		if (_wcsicmp(tEntry.szExeFile, sProcessName.c_str()) != 0 ||
-			ProcessIdToSessionId(tEntry.th32ProcessID, &iProcessSessionId) == 0 ||
+		if (!bMatches || ProcessIdToSessionId(tEntry.th32ProcessID, &iProcessSessionId) == 0 ||
 			iProcessSessionId != iSessionId) continue;
+		vProcesses.emplace_back(tEntry.th32ProcessID, 0);
+	}
 
-		// kill process
-		SmartPointer<HANDLE> hProcess(CloseHandle,
-			OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, tEntry.th32ProcessID));
-		if (!hProcess || TerminateProcess(hProcess, 1) == 0)
+	// order parents before descendants, bounding ancestry walks for reused process ids
+	for (auto& [iProcessId, iDepth] : vProcesses)
+	{
+		DWORD iAncestor = iProcessId;
+		for (; iDepth < mParents.size(); ++iDepth)
 		{
-			const DWORD iError = GetLastError();
-			PrintMessage(L"ERROR: Could not terminate process '%s' (%lu): %lu\n",
-				sProcessName.c_str(), tEntry.th32ProcessID, iError);
-			continue;
+			const auto tParent = mParents.find(iAncestor);
+			if (tParent == mParents.end() || tParent->second == iAncestor) break;
+			iAncestor = tParent->second;
 		}
-		if (WaitForSingleObject(hProcess, INFINITE) != WAIT_OBJECT_0)
-		{
-			PrintMessage(L"ERROR: Could not wait for process '%s' (%lu) to terminate.\n",
-				sProcessName.c_str(), tEntry.th32ProcessID);
-		}
+	}
+	std::ranges::stable_sort(vProcesses, {}, &std::pair<DWORD, size_t>::second);
+
+	// attempt termination silently and wait only when it succeeds
+	for (const auto& [iProcessId, iDepth] : vProcesses)
+	{
+		SmartPointer<HANDLE> hProcess(CloseHandle, OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, iProcessId));
+		if (!hProcess || TerminateProcess(hProcess, 1) == 0) continue;
+		WaitForSingleObject(hProcess, INFINITE);
 	}
 }

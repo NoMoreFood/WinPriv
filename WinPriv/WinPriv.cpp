@@ -643,7 +643,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	}
 
 	// kill any processes requested
-	for (const std::wstring& sProcessName : vProcessesToKill) KillProcess(sProcessName);
+	KillProcesses(vProcessesToKill);
 
 	// Load the embedded library directly and retain all architecture images for descendant processes.
 	std::array<std::vector<BYTE>, 3> vLibraryBytes;

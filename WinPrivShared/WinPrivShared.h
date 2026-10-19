@@ -20,7 +20,7 @@ BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std
 BOOL ClearDenyRights(const std::wstring& sAccountName = L"");
 BOOL GrantAllRights(const std::wstring& sAccountName);
 std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
-void KillProcess(const std::wstring& sProcessName, DWORD iSessionId = MAXDWORD);
+void KillProcesses(const std::vector<std::wstring>& vProcessNames, DWORD iSessionId = MAXDWORD);
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset);
 std::wstring ResolveFileRulePath(std::wstring path);
 std::wstring NormalizeHostName(std::wstring_view name);

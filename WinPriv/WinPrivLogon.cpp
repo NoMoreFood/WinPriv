@@ -358,7 +358,7 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 	}
 
 	// Terminate requested processes only after validating the token and command.
-	for (const std::wstring& sProcessName : vProcessesToKill) KillProcess(sProcessName, targetSessionId);
+	KillProcesses(vProcessesToKill, targetSessionId);
 
 	if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
 	{
