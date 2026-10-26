@@ -146,7 +146,7 @@ function Test-WinPrivPesterExtraction {
         [Parameter(Mandatory = $true)][string]$PackageHash
     )
     $manifestPath = Join-Path $ModuleDirectory 'Pester.psd1'
-    $assemblyPath = Join-Path $ModuleDirectory 'bin\netstandard2.0\Pester.dll'
+    $assemblyPath = Join-Path $ModuleDirectory 'bin\net8.0\Pester.dll'
     $integrityPath = Join-Path $ModuleDirectory '.winpriv-package-integrity.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
         -not (Test-Path -LiteralPath $assemblyPath -PathType Leaf) -or
@@ -249,7 +249,7 @@ function Import-WinPrivPinnedPester {
                 $temporaryManifest = Import-PowerShellDataFile -LiteralPath (Join-Path $temporaryDirectory 'Pester.psd1')
                 if ([version]$temporaryManifest.ModuleVersion -ne [version]$requirement.Version -or
                     [guid]$temporaryManifest.GUID -ne [guid]$requirement.Guid -or
-                    -not (Test-Path -LiteralPath (Join-Path $temporaryDirectory 'bin\netstandard2.0\Pester.dll') -PathType Leaf)) {
+                    -not (Test-Path -LiteralPath (Join-Path $temporaryDirectory 'bin\net8.0\Pester.dll') -PathType Leaf)) {
                     throw 'The verified Pester package did not contain the expected module payload.'
                 }
                 $treeHash = Get-WinPrivPackageTreeHash -Root $temporaryDirectory
@@ -297,6 +297,7 @@ function Copy-WinPrivSourceStage {
         (Join-Path $script:RepositoryRoot '.vs'),
         (Join-Path $script:RepositoryRoot 'Build'),
         (Join-Path $script:TestsRoot '.tools'),
+        (Join-Path $script:TestsRoot '.work'),
         (Join-Path $script:TestsRoot 'Native\Build'),
         (Join-Path $script:TestsRoot 'Results'),
         (Join-Path $script:TestsRoot 'results'),

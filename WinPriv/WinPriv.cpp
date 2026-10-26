@@ -9,6 +9,8 @@
 #include <ShlObj.h>
 #include <WS2tcpip.h>
 #include <compressapi.h>
+#include <fcntl.h>
+#include <io.h>
 
 #pragma comment(lib, "cabinet.lib")
 
@@ -76,8 +78,13 @@ winpriv::memory::LibraryImage LoadLibraryResource(const DWORD iResourceId, std::
 
 int RunProgram(int iArgc, wchar_t* aArgv[])
 {
-	// get list of all privileges for general use later
-	const std::map<std::wstring, std::wstring> vPrivMaps = GetPrivilegeList();
+	// Query local policy only when a privilege option needs it.
+	std::optional<std::map<std::wstring, std::wstring>> vPrivMaps;
+	const auto GetPrivileges = [&]() -> const std::map<std::wstring, std::wstring>&
+	{
+		if (!vPrivMaps) vPrivMaps = GetPrivilegeList();
+		return *vPrivMaps;
+	};
 
 	// Validate settings against the private CRT's limit before passing them to injected processes.
 	const auto SetSetting = [](LPCWSTR sName, LPCWSTR sValue)
@@ -107,30 +114,51 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	WORD iShowWindow = SW_NORMAL;
 
 	// load arguments from a cfg file as a command-line string
+	constexpr DWORD iMaxCfgLength = 1024 * 1024;
 	const auto LoadCfgFile = [](const std::wstring& sCfgPath) -> std::optional<std::wstring>
 	{
-		std::ifstream oFileStream(sCfgPath);
-		std::ostringstream oStringStream;
-		if (oFileStream.is_open()) oStringStream << oFileStream.rdbuf();
+		// Bound file reads and preserve bytes so binary text cannot silently truncate the command.
+		std::ifstream oFileStream(sCfgPath, std::ios::binary | std::ios::ate);
+		const auto iFileSize = oFileStream.tellg();
+		if (iFileSize < 0 || iFileSize > iMaxCfgLength)
+		{
+			PrintMessage(L"ERROR: Could not read cfg file or file exceeds 1 MiB: %s\n", sCfgPath.c_str());
+			return std::nullopt;
+		}
+		std::string sNarrow(static_cast<size_t>(iFileSize), '\0');
+		oFileStream.seekg(0);
+		oFileStream.read(sNarrow.data(), static_cast<std::streamsize>(sNarrow.size()));
 
 		// strip a UTF-8 BOM so the first switch is not mistaken for the target executable
-		std::string sNarrow = oStringStream.str();
 		if (sNarrow.starts_with("\xEF\xBB\xBF")) sNarrow.erase(0, 3);
 		const int iNarrowLen = static_cast<int>(sNarrow.size());
-		const int iWideLen = MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), iNarrowLen, nullptr, 0);
+		const int iWideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, sNarrow.data(), iNarrowLen, nullptr, 0);
 		std::wstring sWide(iWideLen, L'\0');
-		MultiByteToWideChar(CP_UTF8, 0, sNarrow.c_str(), iNarrowLen, sWide.data(), iWideLen);
+		if (!oFileStream || sNarrow.find('\0') != sNarrow.npos || sNarrow.find('\x1A') != sNarrow.npos ||
+			(!sNarrow.empty() && (iWideLen == 0 || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+				sNarrow.data(), iNarrowLen, sWide.data(), iWideLen) != iWideLen)))
+		{
+			PrintMessage(L"ERROR: Could not read cfg file as UTF-8 text: %s\n", sCfgPath.c_str());
+			return std::nullopt;
+		}
 
 		// newlines separate tokens for CommandLineToArgvW, and environment variables are expanded
 		std::ranges::replace_if(sWide, [](wchar_t c) { return c == L'\r' || c == L'\n'; }, L' ');
-		std::wstring sExpanded(ExpandEnvironmentStringsW(sWide.c_str(), nullptr, 0), L'\0');
-		if (!oFileStream.is_open() || oFileStream.bad() || oStringStream.bad() || sExpanded.empty() ||
-			ExpandEnvironmentStringsW(sWide.c_str(), sExpanded.data(), static_cast<DWORD>(sExpanded.size())) == 0)
+		const DWORD iExpandedSize = ExpandEnvironmentStringsW(sWide.c_str(), nullptr, 0);
+		if (iExpandedSize == 0 || iExpandedSize > iMaxCfgLength + 1)
+		{
+			PrintMessage(L"ERROR: Could not expand cfg file or result exceeds 1 MiB: %s\n", sCfgPath.c_str());
+			return std::nullopt;
+		}
+		std::wstring sExpanded(iExpandedSize, L'\0');
+		const DWORD iExpandedLength = ExpandEnvironmentStringsW(sWide.c_str(), sExpanded.data(),
+			static_cast<DWORD>(sExpanded.size()));
+		if (iExpandedLength == 0 || iExpandedLength > sExpanded.size())
 		{
 			PrintMessage(L"ERROR: Could not read cfg file: %s\n", sCfgPath.c_str());
 			return std::nullopt;
 		}
-		sExpanded.resize(sExpanded.find(L'\0'));
+		sExpanded.resize(iExpandedLength - 1);
 		return sExpanded;
 	};
 
@@ -143,6 +171,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	std::unique_ptr<void, decltype(&LocalFree)> pOwnedArgv(nullptr, &LocalFree);
 	const auto ReplaceArgs = [&](const std::wstring& sCommandLine)
 	{
+		if (sCommandLine.size() > iMaxCfgLength)
+		{
+			PrintMessage(L"ERROR: Combined cfg file arguments exceed 1 MiB.\n");
+			return false;
+		}
 		LPWSTR* pParsedArgv = CommandLineToArgvW(sCommandLine.c_str(), &iArgc);
 		if (pParsedArgv == nullptr)
 		{
@@ -272,7 +305,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// enable every privilege defined on the system
 		else if (IsSwitch(L"/WithAllPrivs"))
 		{
-			for (const std::wstring& sPriv : vPrivMaps | std::views::keys) vPrivsToEnable.push_back(sPriv);
+			for (const std::wstring& sPriv : GetPrivileges() | std::views::keys) vPrivsToEnable.push_back(sPriv);
 		}
 
 		// kill processes with the specified name before launch
@@ -306,14 +339,15 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// display the system's privilege names and descriptions
 		else if (IsSwitch(L"/ListPrivileges") || IsSwitch(L"/ListPrivs"))
 		{
+			const auto& vPrivileges = GetPrivileges();
 			size_t iColumnSize = 0;
-			for (const std::wstring& sPriv : vPrivMaps | std::views::keys)
+			for (const std::wstring& sPriv : vPrivileges | std::views::keys)
 				iColumnSize = (std::max)(iColumnSize, sPriv.length());
 			const int iWidth = static_cast<int>(iColumnSize) + 1;
 			std::wstringstream ss;
 			ss << std::left << std::setw(iWidth) << L"Privilege Constant" << L" Privilege Description\n";
 			ss << std::setw(iWidth) << L"==================" << L" =====================\n";
-			for (const auto& [sName, sDescription] : vPrivMaps)
+			for (const auto& [sName, sDescription] : vPrivileges)
 				ss << std::setw(iWidth) << sName << L" " << sDescription << L"\n";
 			PrintMessage(L"%s", ss.str().c_str());
 			return 0;
@@ -367,10 +401,15 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			if (!HasArgs(1)) return __LINE__;
 			const LPCWSTR sWindowStyle = aArgv[++iArg];
 			if (_wcsicmp(sWindowStyle, L"NoActive") == 0) iShowWindow = SW_SHOWNOACTIVATE;
-			if (_wcsicmp(sWindowStyle, L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
-			if (_wcsicmp(sWindowStyle, L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
-			if (_wcsicmp(sWindowStyle, L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
-			if (_wcsicmp(sWindowStyle, L"Hidden") == 0) iShowWindow = SW_HIDE;
+			else if (_wcsicmp(sWindowStyle, L"Minimized") == 0) iShowWindow = SW_SHOWMINIMIZED;
+			else if (_wcsicmp(sWindowStyle, L"Maximized") == 0) iShowWindow = SW_SHOWMAXIMIZED;
+			else if (_wcsicmp(sWindowStyle, L"MinimizedNoActive") == 0) iShowWindow = SW_SHOWMINNOACTIVE;
+			else if (_wcsicmp(sWindowStyle, L"Hidden") == 0) iShowWindow = SW_HIDE;
+			else
+			{
+				PrintMessage(L"ERROR: Invalid window style: %s\n", sWindowStyle);
+				return __LINE__;
+			}
 		}
 
 		// override the FIPS setting through the registry override capability
@@ -597,7 +636,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	std::wstring sPrivsToSetList;
 	for (const std::wstring& sPrivToSet : vPrivsToEnable)
 	{
-		if (!vPrivMaps.contains(sPrivToSet))
+		if (!GetPrivileges().contains(sPrivToSet))
 		{
 			PrintMessage(L"ERROR: Invalid privilege specified: %s\n", sPrivToSet.c_str());
 			return __LINE__;
@@ -710,6 +749,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 #ifdef _CONSOLE
 int wmain(const int iArgc, wchar_t* aArgv[])
 {
+	// Preserve Unicode diagnostics in both the console and redirected UTF-8 output.
+	_setmode(_fileno(stdout), _O_U8TEXT);
 	return RunProgram(iArgc, aArgv);
 }
 #else

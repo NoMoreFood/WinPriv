@@ -71,6 +71,53 @@ BeforeAll {
     }
 }
 
+Describe 'WinPriv release test tooling' -Tag 'Safe' {
+    It 'stages source without cached test work or generated binaries' {
+        $runner = Join-Path $PSScriptRoot 'Invoke-WinPrivTests.ps1'
+        $ast = [Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$null)
+        $definition = $ast.EndBlock.Statements | Where-Object {
+            $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -eq 'Copy-WinPrivSourceStage'
+        }
+        . ([scriptblock]::Create($definition.Extent.Text))
+        $oldRepositoryRoot = Get-Variable -Name RepositoryRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        $oldTestsRoot = Get-Variable -Name TestsRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        try {
+            $script:RepositoryRoot = Join-Path $TestDrive 'repository'
+            $script:TestsRoot = Join-Path $script:RepositoryRoot 'Tests'
+            $ResultsPath = $null
+            foreach ($relative in @('WinPriv.cpp', 'Build\build.cmd', 'Build\x64\stale.exe',
+                'Tests\fixture.ps1', 'Tests\.work\old-source\stale.cpp', 'Tests\.tools\cached.ps1',
+                'Tests\Native\Build\stale.exe', 'Tests\TestResults\old.json')) {
+                $path = Join-Path $script:RepositoryRoot $relative
+                [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path)) | Out-Null
+                [IO.File]::WriteAllText($path, 'fixture')
+            }
+            $destination = Join-Path $TestDrive 'staged-source'
+            Copy-WinPrivSourceStage -Destination $destination -LogPath (Join-Path $TestDrive 'stage.log')
+            $files = @(Get-ChildItem -LiteralPath $destination -Recurse -File | ForEach-Object {
+                [IO.Path]::GetRelativePath($destination, $_.FullName)
+            } | Sort-Object)
+            $files | Should -Be @('Build\build.cmd', 'Tests\fixture.ps1', 'WinPriv.cpp')
+        }
+        finally {
+            $script:RepositoryRoot = $oldRepositoryRoot
+            $script:TestsRoot = $oldTestsRoot
+        }
+    }
+
+    It 'returns a test-runner failure through the batch entry point' {
+        $architecture = @(Get-WinPrivTestArchitectures)[0]
+        $sandbox = New-WinPrivSandbox -Architecture $architecture
+        try {
+            $result = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec -Sandbox $sandbox `
+                -ArgumentList @('/d', '/c', (Join-Path $PSScriptRoot 'Run-Tests.cmd'), '-Profile', 'Invalid') `
+                -TimeoutSeconds 20
+            Assert-WinPrivInvocationFailedCleanly $result
+        }
+        finally { Remove-WinPrivSandbox -Sandbox $sandbox | Out-Null }
+    }
+}
+
 Describe 'WinPriv local-principal fixture contract' -Tag 'Safe', 'Admin' {
     BeforeEach {
         $script:fakeDirectory = New-FakeWinPrivDirectoryContext

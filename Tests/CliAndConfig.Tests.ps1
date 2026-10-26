@@ -145,6 +145,8 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
                 @{ Arguments = [string[]]@('/FileRedirect', '*.txt', 'destination') },
                 @{ Arguments = [string[]]@('/FileRedirect', 'source', '*.txt') },
                 @{ Arguments = [string[]]@('/WindowStyle') },
+                @{ Arguments = [string[]]@('/WindowStyle', '') },
+                @{ Arguments = [string[]]@('/WindowStyle', 'Invisible') },
                 @{ Arguments = [string[]]@('/HostOverride', 'source.invalid') },
                 @{ Arguments = [string[]]@('/RecordCrypto') },
                 @{ Arguments = [string[]]@('/RecordCrypto', $recordingFile) },
@@ -191,6 +193,14 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
             @($probe.result.argumentsJson.values) | Should -Be $values
             return @{ ExitCode = 37; Values = $values }
         }
+    }
+
+    It 'preserves Unicode in redirected console diagnostics' {
+        $argument = '/Unknown-日本語-Żółć'
+        $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+            -Arguments @($argument) -TimeoutSeconds 10
+        Assert-WinPrivInvocationFailedCleanly $result
+        $result.StdOut | Should -Match ([regex]::Escape($argument))
     }
 
     It 'launches a matching-architecture probe through the console launcher' {
@@ -351,6 +361,60 @@ Describe 'WinPriv configuration files (<Architecture>)' -Tag 'Safe' -ForEach $ar
             $result.StdOut | Should -Match 'Cfg file not found'
             return @{ MissingPath = $missing; ExitCode = $result.ExitCode }
         }
+    }
+
+    It 'rejects malformed configuration text before processing any switches' {
+        $config = Join-Path $sandbox.Root 'malformed.cfg'
+        $prefix = [Text.Encoding]::UTF8.GetBytes('/Help ')
+        $cases = @(
+            @{ Bytes = $prefix + [byte[]]@(0, 32, 47, 63) },
+            @{ Bytes = $prefix + [byte[]]@(0x1A, 32, 47, 63) },
+            @{ Bytes = $prefix + [byte[]]@(0xC3, 0x28) },
+            @{ Bytes = $prefix + [byte[]]@(0xE2, 0x82) },
+            @{ Bytes = [Text.Encoding]::Unicode.GetPreamble() + [Text.Encoding]::Unicode.GetBytes('/Help') }
+        )
+        foreach ($case in $cases) {
+            [IO.File]::WriteAllBytes($config, $case.Bytes)
+            $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+                -Arguments @('/LoadCommands', $config) -TimeoutSeconds 10
+            Assert-WinPrivInvocationFailedCleanly $result
+            $result.StdOut | Should -Match 'ERROR:.*cfg file'
+        }
+    }
+
+    It 'accepts an empty command file without losing subsequent arguments' {
+        $config = Join-Path $sandbox.Root 'empty.cfg'
+        foreach ($bytes in @(@{ Value = [byte[]]@() }, @{ Value = [byte[]]@(0xEF, 0xBB, 0xBF) })) {
+            [IO.File]::WriteAllBytes($config, $bytes.Value)
+            $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+                -Arguments @('/LoadCommands', $config, '/Help') -TimeoutSeconds 10
+            Assert-WinPrivInvocationSucceeded $result
+            $result.StdOut | Should -Match 'Optional Switches'
+        }
+    }
+
+    It 'rejects command files larger than the input limit' {
+        $config = Join-Path $sandbox.Root 'large.cfg'
+        [IO.File]::WriteAllText($config, '/Help ' + (' ' * 1MB), [Text.UTF8Encoding]::new($false))
+        $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+            -Arguments @('/LoadCommands', $config) -TimeoutSeconds 10
+        Assert-WinPrivInvocationFailedCleanly $result
+        $result.StdOut | Should -Match 'exceeds 1 MiB'
+    }
+
+    It 'bounds environment expansion and merged command-file arguments' {
+        $config = Join-Path $sandbox.Root 'expanded.cfg'
+        [IO.File]::WriteAllText($config, '/Help ' + ('%WINPRIV_CFG_TEXT%' * 64), [Text.UTF8Encoding]::new($false))
+        $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+            -Arguments @('/LoadCommands', $config) -Environment @{ WINPRIV_CFG_TEXT = 'x' * 32700 } -TimeoutSeconds 10
+        Assert-WinPrivInvocationFailedCleanly $result
+        $result.StdOut | Should -Match 'exceeds 1 MiB'
+
+        [IO.File]::WriteAllText($config, '/WindowStyle Hidden ' * 28000, [Text.UTF8Encoding]::new($false))
+        $result = Invoke-WinPriv -Architecture $Architecture -Launcher WinPrivCmd -Sandbox $sandbox `
+            -Arguments @('/LoadCommands', $config, '/LoadCommands', $config, '/Help') -TimeoutSeconds 20
+        Assert-WinPrivInvocationFailedCleanly $result
+        $result.StdOut | Should -Match 'Combined cfg file arguments exceed 1 MiB'
     }
 
     It 'fails a recursive /LoadCommands cycle cleanly instead of looping' {

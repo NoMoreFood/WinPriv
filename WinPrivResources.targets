@@ -84,8 +84,12 @@ public sealed class CompressWinPrivResource : Task
     </_WinPrivLibraryResource>
   </ItemGroup>
   <ItemDefinitionGroup>
+    <Manifest>
+      <AdditionalManifestFiles>$(MSBuildThisFileDirectory)WinPriv\WinPriv.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+    </Manifest>
     <ResourceCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WINPRIV_ORIGINAL_FILENAME=\&quot;$(TargetFileName)\&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
   <Target Name="CompressWinPrivLibraryResources" BeforeTargets="ResourceCompile"

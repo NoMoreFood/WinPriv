@@ -31,9 +31,11 @@ IF ERRORLEVEL 1 (
     ECHO ERROR: 7-Zip is required to create the release archive.
     EXIT /B 1
 )
-IF EXIST "%STAGEDIR%" RD /S /Q "%STAGEDIR%"
-MD "%STAGEDIR%"
-IF ERRORLEVEL 1 EXIT /B 1
+MD "%STAGEDIR%" 2>NUL
+IF ERRORLEVEL 1 (
+    ECHO ERROR: Cannot create "%STAGEDIR%". Check for another build or retained recovery files.
+    EXIT /B 1
+)
 IF NOT DEFINED PACKAGEONLY (
     CALL :BUILD
     IF ERRORLEVEL 1 GOTO :FAILED
@@ -46,7 +48,11 @@ ECHO Built "%BINDIR%WinPriv.zip" and "%BINDIR%WinPriv-hash.txt".
 EXIT /B 0
 
 :FAILED
-RD /S /Q "%STAGEDIR%"
+IF EXIST "%STAGEDIR%\*.backup" (
+    ECHO ERROR: Previous release files are retained in "%STAGEDIR%" for recovery.
+) ELSE (
+    RD /S /Q "%STAGEDIR%"
+)
 ECHO ERROR: Build or packaging failed.
 EXIT /B 1
 
@@ -112,9 +118,12 @@ IF NOT "%ZIPRESULT%"=="0" EXIT /B 1
     "$files = Get-ChildItem -LiteralPath $env:STAGEDIR -Recurse -File | Where-Object Extension -In '.zip','.exe';" ^
     "$lines = foreach ($algorithm in 'SHA256','SHA1','MD5') { $files | Get-FileHash -Algorithm $algorithm |" ^
     "ForEach-Object { '{0} {1} {2}' -f $_.Algorithm,$_.Hash,$_.Path.Substring($base.Length) } };" ^
-    "$lines | Set-Content -LiteralPath ($base + 'WinPriv-hash.txt') -Encoding Unicode"
-IF ERRORLEVEL 1 EXIT /B 1
-COPY /Y "%STAGEDIR%\WinPriv.zip" "%BINDIR%WinPriv.zip" >NUL
-IF ERRORLEVEL 1 EXIT /B 1
-COPY /Y "%STAGEDIR%\WinPriv-hash.txt" "%BINDIR%WinPriv-hash.txt" >NUL
+    "$lines | Set-Content -LiteralPath ($base + 'WinPriv-hash.txt') -Encoding Unicode;" ^
+    "$published = @(); try { foreach ($name in 'WinPriv.zip','WinPriv-hash.txt') {" ^
+    "$source = $base + $name; $target = Join-Path $env:BINDIR $name;" ^
+    "if ([IO.File]::Exists($target)) { [IO.File]::Replace($source, $target, $source + '.backup') }" ^
+    "else { [IO.File]::Move($source, $target) }; $published += $name } } catch {" ^
+    "foreach ($name in $published) { $target = Join-Path $env:BINDIR $name; $backup = $base + $name + '.backup';" ^
+    "if ([IO.File]::Exists($backup)) { [IO.File]::Replace($backup, $target, [NullString]::Value) }" ^
+    "else { [IO.File]::Delete($target) } }; throw }"
 EXIT /B %ERRORLEVEL%

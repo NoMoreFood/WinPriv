@@ -35,9 +35,9 @@ BEGIN
             VALUE "CompanyName", "Bryan Berns"
             VALUE "FileDescription", "Windows Privilege Utility"
             VALUE "FileVersion", "1.2.0.0"
-            VALUE "InternalName", "WinPriv.exe"
+            VALUE "InternalName", WINPRIV_ORIGINAL_FILENAME
             VALUE "LegalCopyright", "Copyright (C) 2026"
-            VALUE "OriginalFilename", "WinPriv.exe"
+            VALUE "OriginalFilename", WINPRIV_ORIGINAL_FILENAME
             VALUE "ProductName", "WinPriv"
             VALUE "ProductVersion", "1.2.0.0"
         END

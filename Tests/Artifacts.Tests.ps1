@@ -47,6 +47,17 @@ Describe 'WinPriv build artifacts' -Tag 'Safe' {
         }
     }
 
+    It 'identifies each launcher correctly in Windows file properties' {
+        foreach ($architecture in @('x86', 'x64', 'ARM64')) {
+            foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe')) {
+                $path = Join-Path $binaryRoot "$architecture\$name"
+                $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($path)
+                $version.OriginalFilename | Should -Be $name -Because $path
+                $version.InternalName | Should -Be $name -Because $path
+            }
+        }
+    }
+
     It 'contains matching configured launchers for x64' {
         Invoke-WinPrivCapability -Id 'artifact.build-x64' -Architecture x64 -Body {
             $directory = Join-Path $binaryRoot $expected.x64.Directory
@@ -197,17 +208,43 @@ Describe 'WinPriv release package' -Tag 'Safe' {
                 $hashPath = Join-Path $build 'WinPriv-hash.txt'
                 Set-Content -LiteralPath $zipPath -Value 'previous archive'
                 Set-Content -LiteralPath $hashPath -Value 'previous hashes'
+                $previousArchiveHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
                 $missingLauncher = Join-Path $build 'ARM64\WinPrivCmd.exe'
                 Remove-Item -LiteralPath $missingLauncher
                 $failedPackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
                     -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
                     -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
                 Assert-WinPrivInvocationFailedCleanly $failedPackaging
-                (Get-Content -LiteralPath $zipPath) | Should -Be 'previous archive'
+                (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash | Should -Be $previousArchiveHash
                 (Get-Content -LiteralPath $hashPath) | Should -Be 'previous hashes'
                 (Join-Path $build 'PackageStage') | Should -Not -Exist
                 Copy-Item -LiteralPath (Join-Path $env:WINPRIV_TEST_BINARY_ROOT 'ARM64\WinPrivCmd.exe') `
                     -Destination $missingLauncher
+
+                $lockedHashes = [IO.File]::Open($hashPath, [IO.FileMode]::Open,
+                    [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                try {
+                    $failedPublishing = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
+                        -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
+                        -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
+                    Assert-WinPrivInvocationFailedCleanly $failedPublishing
+                    (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash | Should -Be $previousArchiveHash
+                    (Get-Content -LiteralPath $hashPath) | Should -Be 'previous hashes'
+                    (Join-Path $build 'PackageStage') | Should -Not -Exist
+                }
+                finally { $lockedHashes.Dispose() }
+
+                $stage = Join-Path $build 'PackageStage'
+                New-Item -ItemType Directory -Path $stage | Out-Null
+                $sentinel = Join-Path $stage 'another-build.txt'
+                Set-Content -LiteralPath $sentinel -Value 'preserved staging'
+                $busyPackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
+                    -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
+                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 20
+                Assert-WinPrivInvocationFailedCleanly $busyPackaging
+                (Get-Content -LiteralPath $sentinel) | Should -Be 'preserved staging'
+                Remove-Item -LiteralPath $sentinel
+                Remove-Item -LiteralPath $stage
 
                 $intermediate = Join-Path $build 'x64\WinPrivLibrary.dll'
                 $extraArchive = Join-Path $build 'unrelated.zip'

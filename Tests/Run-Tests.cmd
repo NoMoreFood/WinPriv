@@ -1,7 +1,6 @@
 @ECHO OFF
 TITLE Running WinPriv Tests
-SETLOCAL EnableExtensions EnableDelayedExpansion
+SETLOCAL ENABLEEXTENSIONS DISABLEDELAYEDEXPANSION
 
-pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0Invoke-WinPrivTests.ps1" %*
-
-PAUSE
+PWSH -NoProfile -ExecutionPolicy Bypass -File "%~dp0Invoke-WinPrivTests.ps1" %*
+EXIT /B %ERRORLEVEL%
