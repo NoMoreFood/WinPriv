@@ -248,6 +248,15 @@ Optional Switches
    for the target process and its child processes by overriding PowerShell
    policy queries. The last CLM switch wins. The machine policy is unchanged.
 
+/UseConsoleToken
+
+   Uses locally attached smart cards and hardware keys through the Windows
+   smart-card APIs, including from a Remote Desktop session. Applies to the
+   target and its child processes.
+   Signing through Microsoft's Smart Card Key Storage Provider prompts for a
+   PIN without saving it. Enter the PIN in the Windows dialog's password field.
+   The token's normal PIN validation and permissions still apply.
+
 /RecordCrypto <Directory>
 
    This option records the input to common Windows encryption functions and

@@ -451,6 +451,7 @@ try {
                 operations = [string[]]@(
                     'capabilities', 'state', 'args', 'cwd', 'env', 'exit', 'window', 'token',
                     'registry', 'adapters', 'wsa', 'hosts', 'amsi', 'admin', 'version', 'clock', 'crypto',
+                    'smart-cards', 'software-signing',
                     'odbc', 'ado', 'file', 'native-file', 'lsa', 'create-process', 'sleep', 'marker')
                 nativeSourceFiles = [string[]]@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'WinPrivProbe.*.cs' |
                     Sort-Object -Property Name | ForEach-Object { $_.Name })
@@ -501,6 +502,12 @@ try {
         }
         'window' {
             $result = [WinPrivProbe.Native]::GetWindowState()
+        }
+        'smart-cards' {
+            $result = [WinPrivProbe.Native]::GetSmartCardReaders()
+        }
+        'software-signing' {
+            $result = [WinPrivProbe.Native]::GetSoftwareSigning()
         }
         'token' {
             $result = [WinPrivProbe.Native]::GetTokenState()

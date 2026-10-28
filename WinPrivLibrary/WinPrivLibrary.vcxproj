@@ -201,6 +201,7 @@
     <ClCompile Include="WinPrivLibraryFiles.cpp" />
     <ClCompile Include="WinPrivLibraryHosts.cpp" />
     <ClCompile Include="WinPrivLibraryMain.cpp" />
+    <ClCompile Include="WinPrivLibrarySmartCards.cpp" />
     <ClCompile Include="WinPrivMemoryLoader.cpp" />
     <ClCompile Include="WinPrivMemoryInitialize.cpp">
       <BufferSecurityCheck>false</BufferSecurityCheck>

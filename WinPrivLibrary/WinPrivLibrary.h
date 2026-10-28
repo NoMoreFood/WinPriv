@@ -11,6 +11,7 @@
 bool AttachExtraHooks();
 bool AttachFileHooks();
 bool AttachHostHooks();
+bool AttachSmartCardHooks();
 void AttachTimeHooks();
 
 template <winpriv::detours::function_pointer Function>

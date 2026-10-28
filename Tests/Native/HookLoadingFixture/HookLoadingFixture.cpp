@@ -15,6 +15,7 @@
 
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
 #include "../../../WinPrivLibrary/WinPrivDetoursFork.h"
+int TestSmartCardSessionRouting();
 #endif
 
 #if (defined(WINPRIV_LOADING_MODE_IMPORT) + defined(WINPRIV_LOADING_MODE_DELAY) + defined(WINPRIV_LOADING_MODE_DYNAMIC)) != 1
@@ -1016,6 +1017,8 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
 int wmain(const int argumentCount, wchar_t* arguments[])
 {
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--smartcard-session-routing") == 0)
+        return TestSmartCardSessionRouting();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--rejected-detours") == 0) return TestRejectedDetours();
 #endif
     if (argumentCount == 2 && wcscmp(arguments[1], L"--memory-exceptions") == 0)

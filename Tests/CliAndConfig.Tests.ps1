@@ -10,7 +10,7 @@ BeforeAll {
         '/PolicyBlock', '/RecordCrypto', '/RegBlock', '/RegOverride', '/RevokeRight',
         '/RunAsConsoleUser', '/RunAsConsoleUserNoWait', '/RunAsUser', '/RunAsUserNoWait',
         '/ServerEdition', '/ShowMessage', '/SqlConnectSearchReplace', '/SqlConnectShow',
-        '/UseShellExecute', '/WindowStyle', '/WithAllPrivs', '/WithPrivs'
+        '/UseConsoleToken', '/UseShellExecute', '/WindowStyle', '/WithAllPrivs', '/WithPrivs'
     )
 }
 

@@ -1618,6 +1618,8 @@ bool AttachExtraHooks()
 
 	if (!AttachHostHooks()) return false;
 
+	if (!AttachSmartCardHooks()) return false;
+
 	if (!AttachFileHooks()) return false;
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))

@@ -18,6 +18,7 @@ Typical uses include testing security configurations on a per-process basis, wor
 - **OS and identity spoofing** — report server edition and fake administrator membership checks
 - **FIPS and policy control** — spoof FIPS enforcement state; suppress group policy registry reads
 - **Cryptography recording** — capture plaintext from selected Windows encryption and decryption APIs
+- **Hardware token access** — use smart cards and hardware keys attached to the local computer from Remote Desktop sessions
 - **SQL connection monitoring** — display or rewrite ODBC and ADO connection strings
 - **LSA rights management** — grant, revoke, and clear logon rights and privileges directly
 - **Run-as support** — launch programs in an existing user session from LocalSystem, optionally at Medium Plus integrity
@@ -235,6 +236,12 @@ Enable or disable PowerShell Constrained Language Mode (CLM) for the target proc
 Capture plaintext from `BCryptEncrypt/Decrypt`, `CryptEncrypt/Decrypt`, and `RtlEncryptMemory/DecryptMemory`:
 input to encryption and output from decryption. Captured nonempty buffers are written to separate `.bin` files
 in `<Directory>`. Specify `SHOW` to display text using the target process's console or message boxes instead.
+
+**`/UseConsoleToken`**  
+Use smart cards and hardware keys attached to the local computer through the Windows smart-card APIs, including
+from a Remote Desktop session, for the target process and its child processes. Signing through Microsoft's Smart
+Card Key Storage Provider prompts for the PIN in a Windows dialog; enter it in the password field. The PIN is not
+saved, and the token's normal PIN validation and permissions still apply.
 
 **`/SqlConnectShow`**  
 Display connection strings intercepted through ODBC `SQLDriverConnect` and ADO `Connection.Open`, after any

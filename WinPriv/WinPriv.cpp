@@ -429,6 +429,12 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				sRegistryOverride += std::wstring(sKey) + L" N/A REG_BLOCK N/A ";
 		}
 
+		// use locally attached smart cards and hardware keys from remote sessions
+		else if (IsSwitch(L"/UseConsoleToken"))
+		{
+			if (!SetSetting(WINPRIV_EV_CONSOLE_TOKEN, L"1")) return __LINE__;
+		}
+
 		// control amsi scanning
 		else if (IsSwitch(L"/AmsiOn") || IsSwitch(L"/AmsiOff"))
 		{

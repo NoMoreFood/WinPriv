@@ -25,6 +25,12 @@
         @{ Id = 'utility.ask-message-no'; Surface = '/AskMessage No'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
         @{ Id = 'utility.dialog-gui-parity'; Surface = 'WinPriv.exe message dialog parity'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
 
+        # Local smart-card access and its process propagation.
+        @{ Id = 'smartcard.local'; Surface = '/UseConsoleToken WinSCard reader routing'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
+        @{ Id = 'smartcard.propagation'; Surface = '/UseConsoleToken descendants and custom environments'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
+        @{ Id = 'smartcard.signing-pass-through'; Surface = '/UseConsoleToken software signing and silent requests'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
+        @{ Id = 'smartcard.session-routing'; Surface = '/UseConsoleToken signing across console and remote reconnects'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+
         # Wall clock offsets and their process propagation.
         @{ Id = 'time.mock-clock'; Surface = '/MockTime native, Win32, CRT, and managed wall clocks'; Profile = 'Safe'; Test = 'Time'; Required = $true }
         @{ Id = 'time.mock-deltas'; Surface = '/MockTime signed abbreviated and calendar deltas'; Profile = 'Safe'; Test = 'Time'; Required = $true }
