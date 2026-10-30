@@ -185,20 +185,17 @@ EXTERN_C BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 
 		// Install feature and child-process hooks in one transaction; the image remains loaded until process exit.
 		winpriv::detours::transaction transaction;
-		if (!transaction)
-		{
-			context->error = transaction.commit();
-			return FALSE;
-		}
+		context->error = transaction.error();
+		if (context->error != NO_ERROR) return FALSE;
 		SetLastError(NO_ERROR);
-		if (!AttachExtraHooks())
+		if (!AttachExtraHooks(transaction))
 		{
 			const DWORD error = GetLastError();
 			context->error = error == NO_ERROR ? ERROR_DLL_INIT_FAILED : error;
 			return FALSE;
 		}
-		(void)transaction.attach(trueCreateProcessA, HookCreateProcessA);
-		(void)transaction.attach(trueCreateProcessW, HookCreateProcessW);
+		transaction.attach(trueCreateProcessA, HookCreateProcessA);
+		transaction.attach(trueCreateProcessW, HookCreateProcessW);
 		context->error = transaction.commit();
 		return context->error == NO_ERROR;
 	}

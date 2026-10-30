@@ -8,18 +8,12 @@
 #include "WinPrivShared.h"
 
 // Shared hook registration and native entry points.
-bool AttachExtraHooks();
-bool AttachFileHooks();
-bool AttachHostHooks();
-bool AttachLogonHooks();
-bool AttachSmartCardHooks();
-void AttachTimeHooks();
-
-template <winpriv::detours::function_pointer Function>
-void AttachDetour(Function& target, Function replacement) noexcept
-{
-	(void)winpriv::detours::attach(target, replacement);
-}
+bool AttachExtraHooks(winpriv::detours::transaction& transaction);
+bool AttachFileHooks(winpriv::detours::transaction& transaction);
+bool AttachHostHooks(winpriv::detours::transaction& transaction);
+bool AttachLogonHooks(winpriv::detours::transaction& transaction);
+bool AttachSmartCardHooks(winpriv::detours::transaction& transaction);
+void AttachTimeHooks(winpriv::detours::transaction& transaction);
 
 inline const auto RtlInitUnicodeStringEx = LoadNtFunction<NTSTATUS(NTAPI*)(PUNICODE_STRING, PCWSTR)>(
 	"RtlInitUnicodeStringEx");

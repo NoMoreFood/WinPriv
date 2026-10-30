@@ -817,13 +817,9 @@ int TestThreadEnumeration(const wchar_t* scenario)
     for (; iterations < targets.size(); ++iterations)
     {
         winpriv::detours::transaction transaction;
-        const LONG apply = transaction.attach(targets[iterations], MitigationReplacement);
+        transaction.attach(targets[iterations], MitigationReplacement);
         commitError = transaction.commit();
-        if (apply != NO_ERROR || commitError != NO_ERROR)
-        {
-            if (commitError == NO_ERROR) commitError = apply;
-            break;
-        }
+        if (commitError != NO_ERROR) break;
         auto volatile call = ThreadOriginals[iterations];
         if (call(11) != 66 || targets[iterations](11) != 40 + iterations) ++state.invalidValues;
     }
@@ -841,20 +837,37 @@ int TestRejectedDetours()
 {
     // A rejected operation must abort every staged hook and preserve the original code and pointer.
     DWORD cases = 0;
-    for (DWORD invalid = 0; invalid < 3; ++invalid)
+    for (DWORD invalid = 0; invalid < 2; ++invalid)
     {
         auto target = &MitigationOriginal;
         winpriv::detours::transaction transaction;
-        const LONG attached = transaction.attach(target, MitigationReplacement);
-        PVOID missing = nullptr;
-        const LONG rejected = invalid == 0 ? DetourAttach(nullptr, reinterpret_cast<PVOID>(MitigationReplacement)) :
-            invalid == 1 ? DetourAttach(reinterpret_cast<PVOID*>(&target), nullptr) :
-            DetourAttach(&missing, reinterpret_cast<PVOID>(MitigationReplacement));
+        transaction.attach(target, MitigationReplacement);
+        const LONG attached = transaction.error();
+        decltype(target) missing = nullptr;
+        if (invalid == 0) transaction.attach(target, static_cast<decltype(target)>(nullptr));
+        else transaction.attach(missing, MitigationReplacement);
+        const LONG rejected = transaction.error();
+        auto skipped = ThreadOriginals[0];
+        transaction.attach(skipped, MitigationReplacement);
         const LONG committed = transaction.commit();
         auto volatile call = &MitigationOriginal;
-        if (attached != NO_ERROR || rejected != (invalid == 1 ? ERROR_INVALID_PARAMETER : ERROR_INVALID_HANDLE) ||
-            committed != rejected || target != &MitigationOriginal || call(11) != 40)
+        if (attached != NO_ERROR || rejected != (invalid == 0 ? ERROR_INVALID_PARAMETER : ERROR_INVALID_HANDLE) ||
+            committed != rejected || transaction.error() != rejected || target != &MitigationOriginal ||
+            skipped != ThreadOriginals[0] || call(11) != 40 || skipped(11) != 40)
             return Fail(L"invalid-transaction", ERROR_INVALID_DATA);
+        ++cases;
+    }
+
+    // Completed transactions reject further attachments without reacquiring ownership.
+    {
+        auto target = &MitigationOriginal;
+        winpriv::detours::transaction transaction;
+        if (transaction.commit() != NO_ERROR || transaction.commit() != NO_ERROR)
+            return Fail(L"empty-transaction", ERROR_INVALID_DATA);
+        transaction.attach(target, MitigationReplacement);
+        if (transaction.error() != ERROR_INVALID_OPERATION || transaction.commit() != ERROR_INVALID_OPERATION ||
+            target != &MitigationOriginal)
+            return Fail(L"completed-transaction", ERROR_INVALID_DATA);
         ++cases;
     }
 #if defined(_M_IX86) || defined(_M_X64)
@@ -871,12 +884,14 @@ int TestRejectedDetours()
         if (!VirtualProtect(memory.get(), 4096, PAGE_EXECUTE_READ, &previous) ||
             !FlushInstructionCache(GetCurrentProcess(), memory.get(), code.size()))
             return Fail(L"prepare-code", GetLastError());
-        PVOID target = memory.get();
+        auto target = reinterpret_cast<decltype(&MitigationOriginal)>(memory.get());
         winpriv::detours::transaction transaction;
-        const LONG rejected = DetourAttach(&target, reinterpret_cast<PVOID>(MitigationReplacement));
+        transaction.attach(target, MitigationReplacement);
+        const LONG rejected = transaction.error();
         const LONG committed = transaction.commit();
         MEMORY_BASIC_INFORMATION information{};
-        if (rejected != ERROR_INVALID_BLOCK || committed != rejected || target != memory.get() ||
+        if (rejected != ERROR_INVALID_BLOCK || committed != rejected ||
+            reinterpret_cast<PVOID>(target) != memory.get() ||
             memcmp(memory.get(), code.data(), code.size()) != 0 ||
             VirtualQuery(memory.get(), &information, sizeof(information)) != sizeof(information) ||
             information.Protect != PAGE_EXECUTE_READ)
@@ -900,8 +915,9 @@ int TestDynamicCodeAllocation()
 
     auto target = &MitigationOriginal;
     winpriv::detours::transaction transaction;
-    if (!transaction) return Fail(L"DetourTransactionBegin", transaction.commit());
-    const LONG attach = transaction.attach(target, MitigationReplacement);
+    if (transaction.error() != NO_ERROR) return Fail(L"begin-transaction", transaction.error());
+    transaction.attach(target, MitigationReplacement);
+    const LONG attach = transaction.error();
     const LONG commit = transaction.commit();
     std::wprintf(L"{\"schemaVersion\":1,\"mitigation\":\"dynamic-code\",\"enforced\":true,"
         L"\"attachError\":%ld,\"commitError\":%ld,\"originalPointer\":%ls,\"value\":%lu}\n",
@@ -915,8 +931,7 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
     const bool failedCommit = wcscmp(scenario, L"failed-commit") == 0;
     const bool nested = wcscmp(scenario, L"nested") == 0;
     const bool preexisting = wcscmp(scenario, L"preexisting") == 0;
-    const bool bridge = wcscmp(scenario, L"c-bridge") == 0;
-    if (!abort && !failedCommit && !nested && !preexisting && !bridge && wcscmp(scenario, L"attach") != 0)
+    if (!abort && !failedCommit && !nested && !preexisting && wcscmp(scenario, L"attach") != 0)
         return Fail(L"optout-scenario", ERROR_INVALID_PARAMETER);
 
     PROCESS_MITIGATION_DYNAMIC_CODE_POLICY policy{};
@@ -938,53 +953,36 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
     auto volatile call = &MitigationOriginal;
     DWORD threadDuring = MAXDWORD;
     DWORD threadAfterNested = MAXDWORD;
-    DWORD threadAfterInvalid = MAXDWORD;
     DWORD threadAfterCommit = MAXDWORD;
     LONG attach = ERROR_INVALID_OPERATION;
     LONG commit = ERROR_INVALID_OPERATION;
     LONG invalidApply = NO_ERROR;
     LONG nestedCommit = NO_ERROR;
     bool nestedActive = false;
-    PVOID invalidTarget = nullptr;
-    if (nested)
-    {
-        const LONG begin = DetourTransactionBegin();
-        if (begin != NO_ERROR) return Fail(L"outer-transaction", begin);
-        {
-            winpriv::detours::transaction inner;
-            nestedActive = static_cast<bool>(inner);
-            nestedCommit = inner.commit();
-        }
-        const bool queried = GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-            &threadAfterNested, sizeof(threadAfterNested)) != FALSE;
-        const DWORD queryError = GetLastError();
-        const LONG aborted = DetourTransactionAbort();
-        if (!queried || aborted != NO_ERROR) return Fail(L"outer-abort", queried ? aborted : queryError);
-    }
-    if (bridge)
-    {
-        invalidApply = DetourAttachTransaction(&invalidTarget, reinterpret_cast<PVOID>(MitigationReplacement));
-        if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-            &threadAfterInvalid, sizeof(threadAfterInvalid)))
-            return Fail(L"GetThreadInformation", GetLastError());
-        attach = DetourAttachTransaction(reinterpret_cast<PVOID*>(&target),
-            reinterpret_cast<PVOID>(MitigationReplacement));
-        commit = attach;
-        if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
-            &threadAfterCommit, sizeof(threadAfterCommit)))
-            return Fail(L"GetThreadInformation", GetLastError());
-    }
-    else
     {
         winpriv::detours::transaction transaction;
-        if (!transaction) return Fail(L"DetourTransactionBegin", transaction.commit());
+        if (transaction.error() != NO_ERROR) return Fail(L"begin-transaction", transaction.error());
         if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy, &threadDuring, sizeof(threadDuring)))
             return Fail(L"GetThreadInformation", GetLastError());
-        attach = transaction.attach(target, MitigationReplacement);
+        if (nested)
+        {
+            {
+                winpriv::detours::transaction inner;
+                nestedActive = inner.error() == NO_ERROR;
+                inner.attach(target, MitigationReplacement);
+                nestedCommit = inner.commit();
+            }
+            if (!GetThreadInformation(GetCurrentThread(), ThreadDynamicCodePolicy,
+                &threadAfterNested, sizeof(threadAfterNested)))
+                return Fail(L"GetThreadInformation", GetLastError());
+        }
+        transaction.attach(target, MitigationReplacement);
+        attach = transaction.error();
         if (failedCommit)
         {
             decltype(target) missing = nullptr;
-            invalidApply = transaction.attach(missing, MitigationReplacement);
+            transaction.attach(missing, MitigationReplacement);
+            invalidApply = transaction.error();
         }
         if (!abort)
         {
@@ -1004,12 +1002,11 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
     std::wprintf(L"{\"schemaVersion\":1,\"scenario\":\"%ls\",\"processDynamicCode\":%lu,\"allowThreadOptOut\":%lu,"
         L"\"threadBefore\":%lu,\"threadDuring\":%lu,\"threadAfterNested\":%lu,\"threadAfterCommit\":%lu,"
         L"\"threadAfterScope\":%lu,\"attachError\":%ld,\"commitError\":%ld,\"invalidApplyError\":%ld,"
-        L"\"nestedActive\":%ls,\"threadAfterInvalid\":%lu,\"invalidPointerUnchanged\":%ls,\"nestedCommitError\":%ld,"
+        L"\"nestedActive\":%ls,\"nestedCommitError\":%ld,"
         L"\"hookedValue\":%lu,\"trampolineValue\":%lu,\"originalPointer\":%ls}\n",
         scenario, static_cast<DWORD>(policy.ProhibitDynamicCode), static_cast<DWORD>(policy.AllowThreadOptOut),
         threadBefore, threadDuring, threadAfterNested, threadAfterCommit, threadAfterScope,
-        attach, commit, invalidApply, nestedActive ? L"true" : L"false", threadAfterInvalid,
-        invalidTarget == nullptr ? L"true" : L"false", nestedCommit, hookedValue, trampolineValue,
+        attach, commit, invalidApply, nestedActive ? L"true" : L"false", nestedCommit, hookedValue, trampolineValue,
         target == &MitigationOriginal ? L"true" : L"false");
     return 0;
 }

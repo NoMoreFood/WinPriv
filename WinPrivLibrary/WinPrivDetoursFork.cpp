@@ -11,8 +11,8 @@ WinPriv's x86, x64, and ARM64 builds. Transactions suspend peer threads while
 publishing hooks and retain published trampolines for the process lifetime.
 Architecture selection uses MSVC's predefined target macros directly.
 
-The implementation lives in `WinPrivDetoursFork.cpp`. Its C-compatible public
-surface and C++20 transaction wrapper live in `WinPrivDetoursFork.h`.
+The implementation lives in `WinPrivDetoursFork.cpp`. Its C++ transaction API
+lives in `WinPrivDetoursFork.h`.
 
 Upstream: https://github.com/microsoft/Detours
 */
@@ -58,9 +58,11 @@ SOFTWARE.
 #include <cstddef>
 #include <memory>
 #include <new>
+#include <ranges>
+#include <span>
+#include <utility>
 #include <vector>
 
-struct _DETOUR_TRAMPOLINE;
 using DETOUR_TRAMPOLINE = _DETOUR_TRAMPOLINE;
 using PDETOUR_TRAMPOLINE = DETOUR_TRAMPOLINE*;
 
@@ -2282,30 +2284,6 @@ inline PBYTE detour_skip_jmp(PBYTE pbCode)
     return pbCode;
 }
 
-inline void detour_find_jmp_bounds(PBYTE pbCode,
-                                   PDETOUR_TRAMPOLINE *ppLower,
-                                   PDETOUR_TRAMPOLINE *ppUpper)
-{
-    // We have to place trampolines within +/- 2GB of code.
-    ULONG_PTR lo = detour_2gb_below((ULONG_PTR)pbCode);
-    ULONG_PTR hi = detour_2gb_above((ULONG_PTR)pbCode);
-
-    // And, within +/- 2GB of relative jmp targets.
-    if (pbCode[0] == 0xe9) {   // jmp +imm32
-        PBYTE pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
-
-        if (pbNew < pbCode) {
-            hi = detour_2gb_above((ULONG_PTR)pbNew);
-        }
-        else {
-            lo = detour_2gb_below((ULONG_PTR)pbNew);
-        }
-    }
-
-    *ppLower = (PDETOUR_TRAMPOLINE)lo;
-    *ppUpper = (PDETOUR_TRAMPOLINE)hi;
-}
-
 #endif // _M_IX86
 
 ///////////////////////////////////////////////////////////////////////// X64.
@@ -2395,41 +2373,6 @@ inline PBYTE detour_skip_jmp(PBYTE pbCode)
         }
     }
     return pbCode;
-}
-
-inline void detour_find_jmp_bounds(PBYTE pbCode,
-                                   PDETOUR_TRAMPOLINE *ppLower,
-                                   PDETOUR_TRAMPOLINE *ppUpper)
-{
-    // We have to place trampolines within +/- 2GB of code.
-    ULONG_PTR lo = detour_2gb_below((ULONG_PTR)pbCode);
-    ULONG_PTR hi = detour_2gb_above((ULONG_PTR)pbCode);
-
-    // And, within +/- 2GB of relative jmp vectors.
-    if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [+imm32]
-        PBYTE pbNew = pbCode + 6 + *(UNALIGNED INT32 *)&pbCode[2];
-
-        if (pbNew < pbCode) {
-            hi = detour_2gb_above((ULONG_PTR)pbNew);
-        }
-        else {
-            lo = detour_2gb_below((ULONG_PTR)pbNew);
-        }
-    }
-    // And, within +/- 2GB of relative jmp targets.
-    else if (pbCode[0] == 0xe9) {   // jmp +imm32
-        PBYTE pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
-
-        if (pbNew < pbCode) {
-            hi = detour_2gb_above((ULONG_PTR)pbNew);
-        }
-        else {
-            lo = detour_2gb_below((ULONG_PTR)pbNew);
-        }
-    }
-
-    *ppLower = (PDETOUR_TRAMPOLINE)lo;
-    *ppUpper = (PDETOUR_TRAMPOLINE)hi;
 }
 
 #endif // _M_X64
@@ -2667,21 +2610,6 @@ then unsigned size-unscaled (8) 12-bit offset, then opcode bits 0xF94.
     return pbCode;
 }
 
-inline void detour_find_jmp_bounds(PBYTE pbCode,
-                                   PDETOUR_TRAMPOLINE *ppLower,
-                                   PDETOUR_TRAMPOLINE *ppUpper)
-{
-    // The encoding used by detour_gen_jmp_indirect actually enables a
-    // displacement of +/- 4GiB. In the future, this could be changed to
-    // reflect that. For now, just reuse the x86 logic which is plenty.
-
-    ULONG_PTR lo = detour_2gb_below((ULONG_PTR)pbCode);
-    ULONG_PTR hi = detour_2gb_above((ULONG_PTR)pbCode);
-
-    *ppLower = (PDETOUR_TRAMPOLINE)lo;
-    *ppUpper = (PDETOUR_TRAMPOLINE)hi;
-}
-
 inline BOOL detour_is_code_os_patched(PBYTE pbCode)
 {
     // Identify whether the provided code pointer is a OS patch jump.
@@ -2740,6 +2668,36 @@ inline ULONG detour_is_code_filler(PBYTE pbCode)
 }
 
 #endif // _M_ARM64
+
+inline std::pair<PBYTE, PBYTE> detour_find_jmp_bounds(PBYTE pbCode)
+{
+    // Keep trampolines within +/- 2GB of code, including on ARM64 where indirect jumps allow +/- 4GB.
+    ULONG_PTR lo = detour_2gb_below((ULONG_PTR)pbCode);
+    ULONG_PTR hi = detour_2gb_above((ULONG_PTR)pbCode);
+
+#if defined(_M_IX86) || defined(_M_X64)
+    // Also keep relocated jumps within range of their original targets or vectors.
+    PBYTE pbNew = pbCode;
+#ifdef _M_X64
+    if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [+imm32]
+        pbNew = pbCode + 6 + *(UNALIGNED INT32 *)&pbCode[2];
+    }
+    else
+#endif
+    if (pbCode[0] == 0xe9) {   // jmp +imm32
+        pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
+    }
+
+    if (pbNew < pbCode) {
+        hi = detour_2gb_above((ULONG_PTR)pbNew);
+    }
+    else {
+        lo = detour_2gb_below((ULONG_PTR)pbNew);
+    }
+#endif
+
+    return { (PBYTE)lo, (PBYTE)hi };
+}
 
 //////////////////////////////////////////////// Trampoline Memory Management.
 //
@@ -2891,8 +2849,8 @@ static PVOID detour_alloc_region_from_hi(PBYTE pbLo, PBYTE pbHi, LONG& error)
 }
 
 static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
-                                                  PDETOUR_TRAMPOLINE pLo,
-                                                  PDETOUR_TRAMPOLINE pHi,
+                                                  PBYTE pLo,
+                                                  PBYTE pHi,
                                                   LONG& error)
 {
     PVOID pbTry = NULL;
@@ -2903,11 +2861,11 @@ static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
 #if defined(_WIN64)
     // Try looking 1GB below or lower.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
-        pbTry = detour_alloc_region_from_hi((PBYTE)pLo, pbTarget - 0x40000000, error);
+        pbTry = detour_alloc_region_from_hi(pLo, pbTarget - 0x40000000, error);
     }
     // Try looking 1GB above or higher.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = detour_alloc_region_from_lo(pbTarget + 0x40000000, (PBYTE)pHi, error);
+        pbTry = detour_alloc_region_from_lo(pbTarget + 0x40000000, pHi, error);
     }
     // Try looking 1GB below or higher.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
@@ -2921,11 +2879,11 @@ static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
 
     // Try anything below.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
-        pbTry = detour_alloc_region_from_hi((PBYTE)pLo, pbTarget, error);
+        pbTry = detour_alloc_region_from_hi(pLo, pbTarget, error);
     }
     // try anything above.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
-        pbTry = detour_alloc_region_from_lo(pbTarget, (PBYTE)pHi, error);
+        pbTry = detour_alloc_region_from_lo(pbTarget, pHi, error);
     }
 
     return pbTry;
@@ -2935,68 +2893,48 @@ static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget, LONG& error)
 {
     error = ERROR_NOT_ENOUGH_MEMORY;
 
-    // We have to place trampolines within +/- 2GB of target.
+    const auto [pLo, pHi] = detour_find_jmp_bounds(pbTarget);
+    const auto usable = [=](const DETOUR_REGION* region) {
+        return region != NULL && region->pFree != NULL &&
+            (PBYTE)region->pFree >= pLo && (PBYTE)region->pFree <= pHi;
+    };
 
-    PDETOUR_TRAMPOLINE pLo;
-    PDETOUR_TRAMPOLINE pHi;
-
-    detour_find_jmp_bounds(pbTarget, &pLo, &pHi);
-
-    PDETOUR_TRAMPOLINE pTrampoline = NULL;
-
-    // Insure that there is a default region.
-    if (s_pRegion == NULL && s_pRegions != NULL) {
+    // Prefer the cached region, then search existing regions for a valid free block.
+    if (!usable(s_pRegion)) {
         s_pRegion = s_pRegions;
+        while (s_pRegion != NULL && !usable(s_pRegion)) {
+            s_pRegion = s_pRegion->pNext;
+        }
     }
 
-    // First check the default region for an valid free block.
-    if (s_pRegion != NULL && s_pRegion->pFree != NULL &&
-        s_pRegion->pFree >= pLo && s_pRegion->pFree <= pHi) {
-
-      found_region:
-        pTrampoline = s_pRegion->pFree;
-        // do a last sanity check on region.
-        if (pTrampoline < pLo || pTrampoline > pHi) {
+    // Allocate a region when every existing region is full or outside the jump bounds.
+    if (s_pRegion == NULL) {
+        // Round pbTarget down to 64KB block.
+        // /RTCc RuntimeChecks breaks PtrToUlong.
+        pbTarget = detour_alloc_round_down_to_region(pbTarget);
+        s_pRegion = (DETOUR_REGION*)detour_alloc_trampoline_allocate_new(pbTarget, pLo, pHi, error);
+        if (s_pRegion == NULL) {
             return NULL;
         }
-        s_pRegion->pFree = (PDETOUR_TRAMPOLINE)pTrampoline->pbRemain;
-        return pTrampoline;
-    }
-
-    // Then check the existing regions for a valid free block.
-    for (s_pRegion = s_pRegions; s_pRegion != NULL; s_pRegion = s_pRegion->pNext) {
-        if (s_pRegion != NULL && s_pRegion->pFree != NULL &&
-            s_pRegion->pFree >= pLo && s_pRegion->pFree <= pHi) {
-            goto found_region;
-        }
-    }
-
-    // We need to allocate a new region.
-
-    // Round pbTarget down to 64KB block.
-    // /RTCc RuntimeChecks breaks PtrToUlong.
-    pbTarget = pbTarget - (ULONG)((ULONG_PTR)pbTarget & 0xffff);
-
-    PVOID pbNewlyAllocated =
-        detour_alloc_trampoline_allocate_new(pbTarget, pLo, pHi, error);
-    if (pbNewlyAllocated != NULL) {
-        s_pRegion = (DETOUR_REGION*)pbNewlyAllocated;
         s_pRegion->pFree = NULL;
         s_pRegion->pNext = s_pRegions;
         s_pRegions = s_pRegion;
 
         // Put everything but the first trampoline on the free list.
-        PBYTE pFree = NULL;
-        pTrampoline = ((PDETOUR_TRAMPOLINE)s_pRegion) + 1;
+        auto trampolines = ((PDETOUR_TRAMPOLINE)s_pRegion) + 1;
         for (int i = DETOUR_TRAMPOLINES_PER_REGION - 1; i > 1; i--) {
-            pTrampoline[i].pbRemain = pFree;
-            pFree = (PBYTE)&pTrampoline[i];
+            trampolines[i].pbRemain = (PBYTE)s_pRegion->pFree;
+            s_pRegion->pFree = &trampolines[i];
         }
-        s_pRegion->pFree = (PDETOUR_TRAMPOLINE)pFree;
-        goto found_region;
     }
 
-    return NULL;
+    // Validate newly allocated regions before consuming their first free block.
+    if (!usable(s_pRegion)) {
+        return NULL;
+    }
+    auto pTrampoline = s_pRegion->pFree;
+    s_pRegion->pFree = (PDETOUR_TRAMPOLINE)pTrampoline->pbRemain;
+    return pTrampoline;
 }
 
 static void detour_free_trampoline(PDETOUR_TRAMPOLINE pTrampoline)
@@ -3011,19 +2949,7 @@ static void detour_free_trampoline(PDETOUR_TRAMPOLINE pTrampoline)
 ///////////////////////////////////////////////////////// Transaction Structs.
 //
 
-struct DetourOperation
-{
-    PBYTE *             ppbPointer;
-    PBYTE               pbTarget;
-    PDETOUR_TRAMPOLINE  pTrampoline;
-    ULONG               dwPerm;
-};
-
-static constexpr ULONG DETOUR_PENDING_OPERATION_CAPACITY = 128;
-static std::atomic<DWORD> s_nPendingThreadId = 0;
-static LONG s_nPendingError = NO_ERROR;
-static ULONG s_nPendingOperationCount = 0;
-static DetourOperation s_rPendingOperations[DETOUR_PENDING_OPERATION_CAPACITY];
+static std::atomic_flag s_transactionActive;
 
 #pragma warning(push)
 #pragma warning(disable:4324)
@@ -3032,9 +2958,7 @@ struct DetourSuspendedThread
     DWORD threadId;
     HANDLE handle;
     CONTEXT originalContext;
-    CONTEXT relocatedContext;
-    bool suspended;
-    bool contextChanged;
+    PBYTE relocatedInstructionPointer;
 };
 #pragma warning(pop)
 
@@ -3084,18 +3008,13 @@ using DetourSuspendedThreads = std::vector<
 static void detour_resume_and_close_threads(
     DetourSuspendedThreads& threads)
 {
+    // Every recorded thread has a valid handle and remains suspended until this cleanup.
     for (auto& thread : threads) {
-        if (thread.handle != NULL && thread.suspended) {
-            ResumeThread(thread.handle);
-            thread.suspended = false;
-        }
+        ResumeThread(thread.handle);
     }
 
     for (auto& thread : threads) {
-        if (thread.handle != NULL) {
-            CloseHandle(thread.handle);
-            thread.handle = NULL;
-        }
+        CloseHandle(thread.handle);
     }
     threads.clear();
 }
@@ -3183,17 +3102,8 @@ static LONG detour_suspend_other_threads(
         const auto entries = reinterpret_cast<const SYSTEM_THREAD_INFORMATION*>(process + 1);
         for (ULONG i = 0; i < process->NumberOfThreads; ++i) {
             const DWORD threadId = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(entries[i].ClientId.UniqueThread));
-            if (threadId == currentThreadId) {
-                continue;
-            }
-            bool alreadyOpened = false;
-            for (const auto& opened : threads) {
-                if (opened.threadId == threadId) {
-                    alreadyOpened = true;
-                    break;
-                }
-            }
-            if (alreadyOpened) {
+            if (threadId == currentThreadId ||
+                std::ranges::contains(threads, threadId, &DetourSuspendedThread::threadId)) {
                 continue;
             }
 
@@ -3244,9 +3154,7 @@ static LONG detour_suspend_other_threads(
                 .threadId = threadId,
                 .handle = thread.get(),
                 .originalContext = {},
-                .relocatedContext = {},
-                .suspended = true,
-                .contextChanged = false,
+                .relocatedInstructionPointer = NULL,
             };
 #if defined(_M_IX86)
             candidate.originalContext.ContextFlags = CONTEXT_CONTROL;
@@ -3267,7 +3175,6 @@ static LONG detour_suspend_other_threads(
                 detour_resume_and_close_threads(threads);
                 continue;
             }
-            candidate.relocatedContext = candidate.originalContext;
             threads.push_back(candidate);
             (void)thread.release();
             discoveredThread = true;
@@ -3288,7 +3195,7 @@ static LONG detour_suspend_other_threads(
     return NO_ERROR;
 }
 
-static ULONG_PTR detour_context_instruction_pointer(const CONTEXT& context)
+static auto& detour_context_instruction_pointer(CONTEXT& context)
 {
 #if defined(_M_IX86)
     return context.Eip;
@@ -3296,18 +3203,6 @@ static ULONG_PTR detour_context_instruction_pointer(const CONTEXT& context)
     return context.Rip;
 #elif defined(_M_ARM64)
     return context.Pc;
-#endif
-}
-
-static void detour_set_context_instruction_pointer(
-    CONTEXT& context, ULONG_PTR instructionPointer)
-{
-#if defined(_M_IX86)
-    context.Eip = static_cast<DWORD>(instructionPointer);
-#elif defined(_M_X64)
-    context.Rip = instructionPointer;
-#elif defined(_M_ARM64)
-    context.Pc = instructionPointer;
 #endif
 }
 
@@ -3331,19 +3226,14 @@ static PBYTE detour_align_target_to_trampoline(
 }
 
 static LONG detour_relocate_suspended_threads(
-    DetourSuspendedThreads& threads)
+    DetourSuspendedThreads& threads, const auto& operations)
 {
     for (auto& thread : threads) {
-        if (thread.handle == NULL) {
-            continue;
-        }
-
         const ULONG_PTR instructionPointer =
             detour_context_instruction_pointer(thread.originalContext);
         PBYTE relocated = NULL;
 
-        for (ULONG i = s_nPendingOperationCount; i-- != 0;) {
-            const DetourOperation& operation = s_rPendingOperations[i];
+        for (const auto& operation : std::views::reverse(operations)) {
             const auto targetBegin = reinterpret_cast<ULONG_PTR>(operation.pbTarget);
             const auto targetEnd = targetBegin + operation.pTrampoline->cbRestore;
             if (instructionPointer >= targetBegin &&
@@ -3358,16 +3248,13 @@ static LONG detour_relocate_suspended_threads(
 
         if (relocated != NULL &&
             reinterpret_cast<ULONG_PTR>(relocated) != instructionPointer) {
-            detour_set_context_instruction_pointer(
-                thread.relocatedContext,
-                reinterpret_cast<ULONG_PTR>(relocated));
-            thread.contextChanged = true;
+            thread.relocatedInstructionPointer = relocated;
         }
     }
 
     // Verify context writes are permitted before changing any instruction pointer.
     for (auto& thread : threads) {
-        if (thread.handle != NULL && thread.contextChanged &&
+        if (thread.relocatedInstructionPointer != NULL &&
             !SetThreadContext(thread.handle, &thread.originalContext)) {
             return GetLastError();
         }
@@ -3375,14 +3262,17 @@ static LONG detour_relocate_suspended_threads(
 
     for (SIZE_T threadIndex = 0; threadIndex < threads.size(); ++threadIndex) {
         auto& thread = threads[threadIndex];
-        if (thread.handle == NULL || !thread.contextChanged) {
+        if (thread.relocatedInstructionPointer == NULL) {
             continue;
         }
-        if (!SetThreadContext(thread.handle, &thread.relocatedContext)) {
+        CONTEXT relocatedContext = thread.originalContext;
+        detour_context_instruction_pointer(relocatedContext) =
+            reinterpret_cast<ULONG_PTR>(thread.relocatedInstructionPointer);
+        if (!SetThreadContext(thread.handle, &relocatedContext)) {
             const LONG error = GetLastError();
             for (SIZE_T i = 0; i < threadIndex; ++i) {
                 auto& prior = threads[i];
-                if (prior.handle != NULL && prior.contextChanged) {
+                if (prior.relocatedInstructionPointer != NULL) {
                     SetThreadContext(prior.handle, &prior.originalContext);
                 }
             }
@@ -3396,89 +3286,68 @@ static LONG detour_relocate_suspended_threads(
 //////////////////////////////////////////////////////////// Transaction APIs.
 //
 
-extern "C" LONG WINAPI DetourAttachTransaction(PVOID* target, PVOID replacement)
+winpriv::detours::transaction::transaction() noexcept :
+    error_(dynamicCode_.Result())
 {
-    winpriv::detours::transaction transaction;
-    if (!transaction)
-    {
-        return transaction.commit();
+    // One transaction owns the writable trampoline regions until completion or abort.
+    if (error_ != NO_ERROR) return;
+    if (s_transactionActive.test_and_set()) {
+        error_ = ERROR_INVALID_OPERATION;
+        dynamicCode_.Restore();
+        return;
     }
-    const LONG error = DetourAttach(target, replacement);
-    return error != NO_ERROR ? error : transaction.commit();
+
+    active_ = true;
+    error_ = detour_writable_trampoline_regions();
+    if (error_ != NO_ERROR) {
+        abort();
+    }
 }
 
-extern "C" LONG WINAPI DetourTransactionBegin()
+winpriv::detours::transaction::~transaction()
 {
-    DWORD expected = 0;
-    if (!s_nPendingThreadId.compare_exchange_strong(expected, GetCurrentThreadId())) {
-        return ERROR_INVALID_OPERATION;
-    }
-
-    s_nPendingOperationCount = 0;
-    s_nPendingError = detour_writable_trampoline_regions();
-    if (s_nPendingError != NO_ERROR) {
-        LONG error = s_nPendingError;
-        detour_runnable_trampoline_regions();
-        s_nPendingError = NO_ERROR;
-        s_nPendingThreadId = 0;
-        return error;
-    }
-
-    return NO_ERROR;
+    abort();
 }
 
-extern "C" LONG WINAPI DetourTransactionAbort()
+void winpriv::detours::transaction::abort() noexcept
 {
-    if (s_nPendingThreadId != GetCurrentThreadId()) {
-        return ERROR_INVALID_OPERATION;
-    }
+    if (!active_) return;
 
-    for (ULONG i = s_nPendingOperationCount; i-- != 0;) {
-        DetourOperation& o = s_rPendingOperations[i];
+    // Return unpublished trampolines and restore every staged target's protection.
+    for (auto& o : std::views::reverse(std::span(operations_.data(), operationCount_))) {
         DWORD dwOld;
         VirtualProtect(o.pbTarget, o.pTrampoline->cbRestore, o.dwPerm, &dwOld);
-
         detour_free_trampoline(o.pTrampoline);
     }
-    s_nPendingOperationCount = 0;
+    operationCount_ = 0;
 
     detour_runnable_trampoline_regions();
-    s_nPendingError = NO_ERROR;
-    s_nPendingThreadId = 0;
-
-    return NO_ERROR;
+    dynamicCode_.Restore();
+    active_ = false;
+    s_transactionActive.clear();
 }
 
-extern "C" LONG WINAPI DetourTransactionCommit()
+LONG winpriv::detours::transaction::commit() noexcept
 {
-    if (s_nPendingThreadId != GetCurrentThreadId()) {
-        return ERROR_INVALID_OPERATION;
-    }
+    if (!active_) return error_;
 
-    if (s_nPendingError != NO_ERROR) {
-        LONG error = s_nPendingError;
-        DetourTransactionAbort();
-        return error;
-    }
-
+    // Prepare every peer's instruction pointer before publishing any hook.
     DetourSuspendedThreads suspendedThreads;
-    if (s_nPendingOperationCount != 0) {
-        LONG error = detour_suspend_other_threads(suspendedThreads);
-        if (error != NO_ERROR) {
-            DetourTransactionAbort();
-            return error;
-        }
-
-        error = detour_relocate_suspended_threads(suspendedThreads);
-        if (error != NO_ERROR) {
-            detour_resume_and_close_threads(suspendedThreads);
-            DetourTransactionAbort();
-            return error;
+    const auto operations = std::span(operations_.data(), operationCount_);
+    if (error_ == NO_ERROR && !operations.empty()) {
+        error_ = detour_suspend_other_threads(suspendedThreads);
+        if (error_ == NO_ERROR) {
+            error_ = detour_relocate_suspended_threads(suspendedThreads, operations);
         }
     }
+    if (error_ != NO_ERROR) {
+        detour_resume_and_close_threads(suspendedThreads);
+        abort();
+        return error_;
+    }
 
-    for (ULONG i = s_nPendingOperationCount; i-- != 0;) {
-        DetourOperation& o = s_rPendingOperations[i];
+    // Publish hooks and the original-function pointers while peers remain suspended.
+    for (auto& o : std::views::reverse(operations)) {
 #ifdef _M_X64
         detour_gen_jmp_indirect(o.pTrampoline->rbCodeIn,
                                 &o.pTrampoline->pbDetour);
@@ -3496,40 +3365,31 @@ extern "C" LONG WINAPI DetourTransactionCommit()
         *o.ppbPointer = o.pTrampoline->rbCode;
     }
 
+    // Restore executable protections and flush generated code before resuming peers.
     HANDLE hProcess = GetCurrentProcess();
-    for (ULONG i = s_nPendingOperationCount; i-- != 0;) {
-        DetourOperation& o = s_rPendingOperations[i];
+    for (auto& o : std::views::reverse(operations)) {
         DWORD dwOld;
         VirtualProtect(o.pbTarget, o.pTrampoline->cbRestore, o.dwPerm, &dwOld);
         FlushInstructionCache(hProcess, o.pbTarget, o.pTrampoline->cbRestore);
     }
-    s_nPendingOperationCount = 0;
-
     detour_runnable_trampoline_regions();
     detour_resume_and_close_threads(suspendedThreads);
-    s_nPendingThreadId = 0;
-    return NO_ERROR;
+    operationCount_ = 0;
+    dynamicCode_.Restore();
+    active_ = false;
+    s_transactionActive.clear();
+    return error_;
 }
 
 ///////////////////////////////////////////////////////////// Transacted APIs.
 //
-extern "C" LONG WINAPI DetourAttach(_Inout_ PVOID *ppPointer,
-                         _In_ PVOID pDetour)
+LONG winpriv::detours::transaction::stage(PVOID* ppPointer, PVOID pDetour) noexcept
 {
-    if (s_nPendingThreadId != GetCurrentThreadId()) {
-        return ERROR_INVALID_OPERATION;
-    }
-
-    // If any of the pending operations failed, then we don't need to do this.
-    if (s_nPendingError != NO_ERROR) {
-        return s_nPendingError;
-    }
-
     if (pDetour == NULL) {
-        return s_nPendingError = ERROR_INVALID_PARAMETER;
+        return ERROR_INVALID_PARAMETER;
     }
-    if (ppPointer == NULL || *ppPointer == NULL) {
-        return s_nPendingError = ERROR_INVALID_HANDLE;
+    if (*ppPointer == NULL) {
+        return ERROR_INVALID_HANDLE;
     }
 
     PBYTE pbTarget = detour_skip_jmp((PBYTE)*ppPointer);
@@ -3539,19 +3399,18 @@ extern "C" LONG WINAPI DetourAttach(_Inout_ PVOID *ppPointer,
         return NO_ERROR;
     }
 
-    if (s_nPendingOperationCount == DETOUR_PENDING_OPERATION_CAPACITY) {
-        return s_nPendingError = ERROR_NOT_ENOUGH_MEMORY;
+    if (operationCount_ == operations_.size()) {
+        return ERROR_NOT_ENOUGH_MEMORY;
     }
 
     LONG allocationError = NO_ERROR;
     PDETOUR_TRAMPOLINE pTrampoline = detour_alloc_trampoline(pbTarget, allocationError);
     if (pTrampoline == NULL) {
-        return s_nPendingError = allocationError;
+        return allocationError;
     }
 
     const auto fail = [&](LONG error) {
         detour_free_trampoline(pTrampoline);
-        s_nPendingError = error;
         return error;
     };
 
@@ -3647,8 +3506,8 @@ extern "C" LONG WINAPI DetourAttach(_Inout_ PVOID *ppPointer,
         return fail(GetLastError());
     }
 
-    s_rPendingOperations[s_nPendingOperationCount++] = {
-        .ppbPointer = (PBYTE*)ppPointer,
+    operations_[operationCount_++] = {
+        .ppbPointer = ppPointer,
         .pbTarget = pbTarget,
         .pTrampoline = pTrampoline,
         .dwPerm = dwOld,

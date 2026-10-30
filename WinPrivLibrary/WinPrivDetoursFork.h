@@ -11,8 +11,8 @@ WinPriv's x86, x64, and ARM64 builds. Transactions suspend peer threads while
 publishing hooks and retain published trampolines for the process lifetime.
 Architecture selection uses MSVC's predefined target macros directly.
 
-The implementation lives in `WinPrivDetoursFork.cpp`. Its C-compatible public
-surface and C++20 transaction wrapper live in `WinPrivDetoursFork.h`.
+The implementation lives in `WinPrivDetoursFork.cpp`. Its C++ transaction API
+lives in `WinPrivDetoursFork.h`.
 
 Upstream: https://github.com/microsoft/Detours
 */
@@ -52,20 +52,12 @@ SOFTWARE.
 #pragma once
 
 #include <Windows.h>
-
-extern "C" {
-
-LONG WINAPI DetourTransactionBegin(void);
-LONG WINAPI DetourTransactionAbort(void);
-LONG WINAPI DetourTransactionCommit(void);
-LONG WINAPI DetourAttach(PVOID* target, PVOID replacement);
-LONG WINAPI DetourAttachTransaction(PVOID* target, PVOID replacement);
-
-}
-
+#include <array>
+#include <cstddef>
 #include <type_traits>
-#include <utility>
 #include "WinPrivDynamicCode.h"
+
+struct _DETOUR_TRAMPOLINE;
 
 namespace winpriv::detours
 {
@@ -73,72 +65,48 @@ namespace winpriv::detours
     concept function_pointer =
         std::is_pointer_v<Type> && std::is_function_v<std::remove_pointer_t<Type>>;
 
-    template <function_pointer Function>
-    [[nodiscard]] inline LONG attach(Function& target, Function replacement) noexcept
-    {
-        auto targetAddress = reinterpret_cast<PVOID*>(&target);
-        auto replacementAddress = reinterpret_cast<PVOID>(replacement);
-        return DetourAttach(targetAddress, replacementAddress);
-    }
-
     class transaction final
     {
     public:
-        transaction() noexcept
-        {
-            result_ = dynamicCode_.Result();
-            if (result_ != NO_ERROR) return;
-
-            result_ = DetourTransactionBegin();
-            active_ = result_ == NO_ERROR;
-            if (!active_)
-            {
-                dynamicCode_.Restore();
-            }
-        }
+        transaction() noexcept;
+        ~transaction();
 
         transaction(const transaction&) = delete;
         transaction& operator=(const transaction&) = delete;
-        transaction(transaction&&) = delete;
-        transaction& operator=(transaction&&) = delete;
-
-        ~transaction()
-        {
-            if (active_)
-            {
-                (void)DetourTransactionAbort();
-            }
-            dynamicCode_.Restore();
-        }
-
-        [[nodiscard]] explicit operator bool() const noexcept
-        {
-            return active_;
-        }
 
         template <function_pointer Function>
-        [[nodiscard]] LONG attach(Function& target, Function replacement) noexcept
+        void attach(Function& target, Function replacement) noexcept
         {
-            return active_
-                ? detours::attach(target, replacement)
-                : result_;
-        }
-
-        [[nodiscard]] LONG commit() noexcept
-        {
-            if (!std::exchange(active_, false))
+            // Preserve the first error so commit can reject the entire batch.
+            if (error_ == NO_ERROR)
             {
-                return result_;
+                error_ = active_
+                    ? stage(reinterpret_cast<PVOID*>(&target), reinterpret_cast<PVOID>(replacement))
+                    : ERROR_INVALID_OPERATION;
             }
-
-            result_ = DetourTransactionCommit();
-            dynamicCode_.Restore();
-            return result_;
         }
+
+        [[nodiscard]] LONG error() const noexcept { return error_; }
+        [[nodiscard]] LONG commit() noexcept;
 
     private:
+        struct operation
+        {
+            PVOID* ppbPointer;
+            PBYTE pbTarget;
+            _DETOUR_TRAMPOLINE* pTrampoline;
+            DWORD dwPerm;
+        };
+
+        LONG stage(PVOID* target, PVOID replacement) noexcept;
+        void abort() noexcept;
+
         DynamicCodeScope dynamicCode_;
-        LONG result_ = NO_ERROR;
+
+        // Hook staging must remain usable while a peer holds the process heap lock.
+        std::array<operation, 128> operations_;
+        std::size_t operationCount_ = 0;
+        LONG error_ = NO_ERROR;
         bool active_ = false;
     };
 }

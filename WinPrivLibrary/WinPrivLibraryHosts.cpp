@@ -200,7 +200,7 @@ static DNS_STATUS WINAPI DetourDnsQueryEx(_In_ PDNS_QUERY_REQUEST pRequest,
 	return TrueDnsQueryEx(&tRequest, pResults, pCancel);
 }
 
-bool AttachHostHooks()
+bool AttachHostHooks(winpriv::detours::transaction& transaction)
 {
 	if (!VariableNotEmpty(WINPRIV_EV_HOST_OVERRIDE)) return true;
 
@@ -225,16 +225,16 @@ bool AttachHostHooks()
 		return false;
 	}
 
-	AttachDetour(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW);
-	AttachDetour(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA);
-	AttachDetour(TrueGetAddrInfoW, DetourGetAddrInfoW);
-	AttachDetour(TrueGetAddrInfoA, DetourGetAddrInfoA);
-	AttachDetour(TrueGetHostByName, DetourGetHostByName);
-	AttachDetour(TrueGetAddrInfoExW, DetourGetAddrInfoExW);
-	AttachDetour(TrueGetAddrInfoExA, DetourGetAddrInfoExA);
-	AttachDetour(TrueDnsQueryW, DetourDnsQueryW);
-	AttachDetour(TrueDnsQueryA, DetourDnsQueryA);
-	AttachDetour(TrueDnsQueryUtf8, DetourDnsQueryUtf8);
-	AttachDetour(TrueDnsQueryEx, DetourDnsQueryEx);
+	transaction.attach(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW);
+	transaction.attach(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA);
+	transaction.attach(TrueGetAddrInfoW, DetourGetAddrInfoW);
+	transaction.attach(TrueGetAddrInfoA, DetourGetAddrInfoA);
+	transaction.attach(TrueGetHostByName, DetourGetHostByName);
+	transaction.attach(TrueGetAddrInfoExW, DetourGetAddrInfoExW);
+	transaction.attach(TrueGetAddrInfoExA, DetourGetAddrInfoExA);
+	transaction.attach(TrueDnsQueryW, DetourDnsQueryW);
+	transaction.attach(TrueDnsQueryA, DetourDnsQueryA);
+	transaction.attach(TrueDnsQueryUtf8, DetourDnsQueryUtf8);
+	transaction.attach(TrueDnsQueryEx, DetourDnsQueryEx);
 	return true;
 }

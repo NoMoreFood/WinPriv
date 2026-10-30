@@ -499,7 +499,7 @@ EXTERN_C NTSTATUS NTAPI DetourNtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MAS
 }
 
 // Install file hooks together so opening, attributes, and mutation share the same rules.
-bool AttachFileHooks()
+bool AttachFileHooks(winpriv::detours::transaction& transaction)
 {
 	const bool rulesEnabled = VariableNotEmpty(WINPRIV_EV_FILE_RULES);
 
@@ -529,19 +529,19 @@ bool AttachFileHooks()
 	// Enable the hooks required by the selected file options.
 	if (rulesEnabled || VariableIsSet(WINPRIV_EV_BACKUP_RESTORE, 1) || VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1))
 	{
-		AttachDetour(TrueNtOpenFile, DetourNtOpenFile);
-		AttachDetour(TrueNtCreateFile, DetourNtCreateFile);
+		transaction.attach(TrueNtOpenFile, DetourNtOpenFile);
+		transaction.attach(TrueNtCreateFile, DetourNtCreateFile);
 	}
 	if (rulesEnabled)
 	{
-		AttachDetour(TrueNtQueryAttributesFile, DetourNtQueryAttributesFile);
-		AttachDetour(TrueNtQueryFullAttributesFile, DetourNtQueryFullAttributesFile);
-		AttachDetour(TrueNtDeleteFile, DetourNtDeleteFile);
-		AttachDetour(TrueNtSetInformationFile, DetourNtSetInformationFile);
-		AttachDetour(TrueNtClose, DetourNtClose);
-		AttachDetour(TrueNtDuplicateObject, DetourNtDuplicateObject);
+		transaction.attach(TrueNtQueryAttributesFile, DetourNtQueryAttributesFile);
+		transaction.attach(TrueNtQueryFullAttributesFile, DetourNtQueryFullAttributesFile);
+		transaction.attach(TrueNtDeleteFile, DetourNtDeleteFile);
+		transaction.attach(TrueNtSetInformationFile, DetourNtSetInformationFile);
+		transaction.attach(TrueNtClose, DetourNtClose);
+		transaction.attach(TrueNtDuplicateObject, DetourNtDuplicateObject);
 		if (TrueNtQueryInformationByName != nullptr)
-			AttachDetour(TrueNtQueryInformationByName, DetourNtQueryInformationByName);
+			transaction.attach(TrueNtQueryInformationByName, DetourNtQueryInformationByName);
 	}
 	return true;
 }

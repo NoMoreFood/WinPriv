@@ -154,17 +154,17 @@ static int WINAPI DetourGetTimeFormatEx(LPCWSTR sLocale, DWORD iFlags, const SYS
 }
 
 template <winpriv::detours::function_pointer Function>
-static void AttachClockDetour(Function& target,
+static void AttachClockDetour(winpriv::detours::transaction& transaction, Function& target,
 	Function& baseTarget, Function replacement, LPCSTR sName)
 {
 	// API-set imports can resolve to separate KernelBase implementations of the same clock.
 	baseTarget = reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), sName));
 	if (baseTarget == target) baseTarget = nullptr;
-	AttachDetour(target, replacement);
-	if (baseTarget != nullptr) AttachDetour(baseTarget, replacement);
+	transaction.attach(target, replacement);
+	if (baseTarget != nullptr) transaction.attach(baseTarget, replacement);
 }
 
-void AttachTimeHooks()
+void AttachTimeHooks(winpriv::detours::transaction& transaction)
 {
 	// The launcher resolves calendar arithmetic once; every descendant receives the same tick delta.
 	WCHAR sOffset[24]{};
@@ -177,22 +177,22 @@ void AttachTimeHooks()
 	iMockTimeOffset = iOffset;
 	if (iMockTimeOffset == 0) return;
 
-	AttachDetour(TrueNtQuerySystemTime, DetourNtQuerySystemTime);
+	transaction.attach(TrueNtQuerySystemTime, DetourNtQuerySystemTime);
 	if (TrueRtlGetSystemTimePrecise != nullptr)
-		AttachDetour(TrueRtlGetSystemTimePrecise, DetourRtlGetSystemTimePrecise);
-	AttachDetour(TrueNtQuerySystemInformation, DetourNtQuerySystemInformation);
-	AttachClockDetour(TrueGetSystemTimeAsFileTime, TrueBaseGetSystemTimeAsFileTime,
+		transaction.attach(TrueRtlGetSystemTimePrecise, DetourRtlGetSystemTimePrecise);
+	transaction.attach(TrueNtQuerySystemInformation, DetourNtQuerySystemInformation);
+	AttachClockDetour(transaction, TrueGetSystemTimeAsFileTime, TrueBaseGetSystemTimeAsFileTime,
 		DetourGetSystemTimeAsFileTime, "GetSystemTimeAsFileTime");
-	AttachClockDetour(TrueGetSystemTimePreciseAsFileTime, TrueBaseGetSystemTimePreciseAsFileTime,
+	AttachClockDetour(transaction, TrueGetSystemTimePreciseAsFileTime, TrueBaseGetSystemTimePreciseAsFileTime,
 		DetourGetSystemTimePreciseAsFileTime, "GetSystemTimePreciseAsFileTime");
-	AttachClockDetour(TrueGetSystemTime, TrueBaseGetSystemTime, DetourGetSystemTime, "GetSystemTime");
-	AttachClockDetour(TrueGetLocalTime, TrueBaseGetLocalTime, DetourGetLocalTime, "GetLocalTime");
+	AttachClockDetour(transaction, TrueGetSystemTime, TrueBaseGetSystemTime, DetourGetSystemTime, "GetSystemTime");
+	AttachClockDetour(transaction, TrueGetLocalTime, TrueBaseGetLocalTime, DetourGetLocalTime, "GetLocalTime");
 
 	// A null formatting input requests the current local date/time; explicit inputs remain conversions.
-	AttachDetour(TrueGetDateFormatA, DetourGetDateFormatA);
-	AttachDetour(TrueGetDateFormatW, DetourGetDateFormatW);
-	AttachDetour(TrueGetDateFormatEx, DetourGetDateFormatEx);
-	AttachDetour(TrueGetTimeFormatA, DetourGetTimeFormatA);
-	AttachDetour(TrueGetTimeFormatW, DetourGetTimeFormatW);
-	AttachDetour(TrueGetTimeFormatEx, DetourGetTimeFormatEx);
+	transaction.attach(TrueGetDateFormatA, DetourGetDateFormatA);
+	transaction.attach(TrueGetDateFormatW, DetourGetDateFormatW);
+	transaction.attach(TrueGetDateFormatEx, DetourGetDateFormatEx);
+	transaction.attach(TrueGetTimeFormatA, DetourGetTimeFormatA);
+	transaction.attach(TrueGetTimeFormatW, DetourGetTimeFormatW);
+	transaction.attach(TrueGetTimeFormatEx, DetourGetTimeFormatEx);
 }

@@ -1443,17 +1443,12 @@ static void AttachAdoDispatchDetour()
 			}
 			else
 #endif
+			if (bTargetsReady)
 			{
-				winpriv::detours::transaction tTransaction;
-				if (bTargetsReady && tTransaction &&
-					tTransaction.attach(
-						TrueAdoDispatchInvoke, DetourAdoDispatchInvoke) == NO_ERROR &&
-					tTransaction.attach(
-						TrueAdoConnectionOpen, DetourAdoConnectionOpen) == NO_ERROR &&
-					tTransaction.commit() == NO_ERROR)
-				{
-					bAdoDispatchAttached = true;
-				}
+				winpriv::detours::transaction transaction;
+				transaction.attach(TrueAdoDispatchInvoke, DetourAdoDispatchInvoke);
+				transaction.attach(TrueAdoConnectionOpen, DetourAdoConnectionOpen);
+				bAdoDispatchAttached = transaction.commit() == NO_ERROR;
 			}
 		}
 	}
@@ -1470,11 +1465,13 @@ static void AttachAdoOpenDetour()
 		IID_WinPrivConnection15, reinterpret_cast<void**>(&pConnection))) || pConnection == nullptr) return;
 	pAdoConnectionOpenTarget = (*reinterpret_cast<PVOID**>(pConnection))[iConnectionOpenVtableIndex];
 	TrueAdoConnectionOpen = reinterpret_cast<AdoConnectionOpen>(pAdoConnectionOpenTarget);
-	winpriv::detours::transaction tTransaction;
-	bAdoDispatchAttached = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-		reinterpret_cast<LPCWSTR>(pAdoConnectionOpenTarget), &hAdoConnectionOpenModule) && tTransaction &&
-		tTransaction.attach(TrueAdoConnectionOpen, DetourAdoConnectionOpen) == NO_ERROR &&
-		tTransaction.commit() == NO_ERROR;
+	if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(pAdoConnectionOpenTarget), &hAdoConnectionOpenModule))
+	{
+		winpriv::detours::transaction transaction;
+		transaction.attach(TrueAdoConnectionOpen, DetourAdoConnectionOpen);
+		bAdoDispatchAttached = transaction.commit() == NO_ERROR;
+	}
 	pConnection->Release();
 }
 #endif
@@ -1565,7 +1562,7 @@ static HRESULT STDAPICALLTYPE DetourCoCreateInstanceEx(_In_ REFCLSID Clsid,
 //  |  \ |__   |  /  \ |  | |__) /__`     |\/|  /\  |\ |  /\  / _` |__   |\/| |__  |\ |  |
 //  |__/ |___  |  \__/ \__/ |  \ .__/     |  | /~~\ | \| /~~\ \__> |___  |  | |___ | \|  |
 
-bool AttachExtraHooks()
+bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 {
 	// Skip if this is the parent process
 	if (VariableIsSet(WINPRIV_EV_PARENT_PID, GetCurrentProcessId()))
@@ -1575,83 +1572,83 @@ bool AttachExtraHooks()
 
 	if (VariableIsSet(WINPRIV_EV_RELAUNCH_MODE, 1))
 	{
-		AttachDetour(TrueRtlExitUserProcess, DetourRtlExitUserProcess);
+		transaction.attach(TrueRtlExitUserProcess, DetourRtlExitUserProcess);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_MOCK_TIME))
 	{
-		AttachTimeHooks();
+		AttachTimeHooks(transaction);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))
 	{
 		(void)GetMacOverrideInfo();
-		AttachDetour(TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
-		AttachDetour(TrueGetAdaptersInfo, DetourGetAdaptersInfo);
-		AttachDetour(TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
+		transaction.attach(TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
+		transaction.attach(TrueGetAdaptersInfo, DetourGetAdaptersInfo);
+		transaction.attach(TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
 	{
 		// Emulated x86 threads can query the registry before their static TLS is initialized.
 		InitializeRegistryOverrides();
-		AttachDetour(TrueNtQueryValueKey, DetourNtQueryValueKey);
-		AttachDetour(TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
+		transaction.attach(TrueNtQueryValueKey, DetourNtQueryValueKey);
+		transaction.attach(TrueNtEnumerateValueKey, DetourNtEnumerateValueKey);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_DISABLE_AMSI, 1))
 	{
-		AttachDetour(TrueAmsiScanBuffer, DetourAmsiScanBuffer);
-		AttachDetour(TrueAmsiScanString, DetourAmsiScanString);
+		transaction.attach(TrueAmsiScanBuffer, DetourAmsiScanBuffer);
+		transaction.attach(TrueAmsiScanString, DetourAmsiScanString);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_CLM))
 	{
-		AttachDetour(TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy);
+		transaction.attach(TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy);
 		TrueWldpCanExecuteFile = reinterpret_cast<decltype(TrueWldpCanExecuteFile)>(
 			GetProcAddress(GetModuleHandleW(L"wldp.dll"), "WldpCanExecuteFile"));
 		if (TrueWldpCanExecuteFile != nullptr)
-			AttachDetour(TrueWldpCanExecuteFile, DetourWldpCanExecuteFile);
-		AttachDetour(TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList);
-		AttachDetour(TrueSaferIdentifyLevel, DetourSaferIdentifyLevel);
+			transaction.attach(TrueWldpCanExecuteFile, DetourWldpCanExecuteFile);
+		transaction.attach(TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList);
+		transaction.attach(TrueSaferIdentifyLevel, DetourSaferIdentifyLevel);
 	}
 
-	if (!AttachHostHooks()) return false;
+	if (!AttachHostHooks(transaction)) return false;
 
-	if (!AttachLogonHooks()) return false;
+	if (!AttachLogonHooks(transaction)) return false;
 
-	if (!AttachSmartCardHooks()) return false;
+	if (!AttachSmartCardHooks(transaction)) return false;
 
-	if (!AttachFileHooks()) return false;
+	if (!AttachFileHooks(transaction)) return false;
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
 		(void)GetLocalAdministratorsGroup();
-		AttachDetour(TrueIsUserAnAdmin, DetourIsUserAnAdmin);
-		AttachDetour(TrueCheckTokenMembership, DetourCheckTokenMembership);
+		transaction.attach(TrueIsUserAnAdmin, DetourIsUserAnAdmin);
+		transaction.attach(TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
 	{
-		AttachDetour(TrueGetVersionExW, DetourGetVersionExW);
-		AttachDetour(TrueGetVersionExA, DetourGetVersionExA);
-		AttachDetour(TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
+		transaction.attach(TrueGetVersionExW, DetourGetVersionExW);
+		transaction.attach(TrueGetVersionExA, DetourGetVersionExA);
+		transaction.attach(TrueVerifyVersionInfoW, DetourVerifyVersionInfoW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
 	{
-		AttachDetour(TrueBCryptEncrypt, DetourBCryptEncrypt);
-		AttachDetour(TrueBCryptDecrypt, DetourBCryptDecrypt);
-		AttachDetour(TrueCryptEncrypt, DetourCryptEncrypt);
-		AttachDetour(TrueCryptDecrypt, DetourCryptDecrypt);
-		AttachDetour(TrueRtlEncryptMemory, DetourRtlEncryptMemory);
-		AttachDetour(TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+		transaction.attach(TrueBCryptEncrypt, DetourBCryptEncrypt);
+		transaction.attach(TrueBCryptDecrypt, DetourBCryptDecrypt);
+		transaction.attach(TrueCryptEncrypt, DetourCryptEncrypt);
+		transaction.attach(TrueCryptDecrypt, DetourCryptDecrypt);
+		transaction.attach(TrueRtlEncryptMemory, DetourRtlEncryptMemory);
+		transaction.attach(TrueRtlDecryptMemory, DetourRtlDecryptMemory);
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
 		if (!InitializeHookThreadState()) return false;
-		AttachDetour(TrueSQLDriverConnectW, DetourSQLDriverConnectW);
+		transaction.attach(TrueSQLDriverConnectW, DetourSQLDriverConnectW);
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
@@ -1666,10 +1663,10 @@ bool AttachExtraHooks()
 	// special handling for com-based detours
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		AttachDetour(TrueCoInitializeEx, DetourCoInitializeEx);
-		AttachDetour(TrueCoInitialize, DetourCoInitialize);
-		AttachDetour(TrueCoCreateInstance, DetourCoCreateInstance);
-		AttachDetour(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx);
+		transaction.attach(TrueCoInitializeEx, DetourCoInitializeEx);
+		transaction.attach(TrueCoInitialize, DetourCoInitialize);
+		transaction.attach(TrueCoCreateInstance, DetourCoCreateInstance);
+		transaction.attach(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx);
 	}
 	return true;
 }

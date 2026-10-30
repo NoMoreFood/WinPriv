@@ -108,7 +108,7 @@ static SECURITY_STATUS WINAPI DetourNCryptSignHash(NCRYPT_KEY_HANDLE hKey, VOID*
 		pSignature, iSignatureSize, pResultSize, iFlags | NCRYPT_SILENT_FLAG);
 }
 
-bool AttachSmartCardHooks()
+bool AttachSmartCardHooks(winpriv::detours::transaction& transaction)
 {
 	if (!VariableIsSet(WINPRIV_EV_CONSOLE_TOKEN, 1)) return true;
 
@@ -121,7 +121,7 @@ bool AttachSmartCardHooks()
 	if (TrueWinStationGetCurrentSessionCapabilities == nullptr) return false;
 
 	// shortcut: WinSCard's capability query is undocumented, recheck it if Windows changes reader routing.
-	AttachDetour(TrueWinStationGetCurrentSessionCapabilities, DetourWinStationGetCurrentSessionCapabilities);
-	AttachDetour(TrueNCryptSignHash, DetourNCryptSignHash);
+	transaction.attach(TrueWinStationGetCurrentSessionCapabilities, DetourWinStationGetCurrentSessionCapabilities);
+	transaction.attach(TrueNCryptSignHash, DetourNCryptSignHash);
 	return true;
 }

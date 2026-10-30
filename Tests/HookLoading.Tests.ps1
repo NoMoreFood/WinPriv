@@ -257,7 +257,7 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
             -Capability 'mitigation.dynamic-code-optout-transactions' -AllowOptOut)) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-optout-transactions' -Architecture $Architecture -Body {
-            foreach ($scenario in @('attach', 'abort', 'failed-commit', 'nested', 'preexisting', 'c-bridge')) {
+            foreach ($scenario in @('attach', 'abort', 'failed-commit', 'nested', 'preexisting')) {
                 $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
                     -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 `
                     -ArgumentList @('--dynamic-code-optout', $scenario)
@@ -268,7 +268,7 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 $payload.processDynamicCode | Should -Be 1 -Because $scenario
                 $payload.allowThreadOptOut | Should -Be 1 -Because $scenario
                 $payload.threadBefore | Should -Be $expectedPolicy -Because $scenario
-                if ($scenario -ne 'c-bridge') { $payload.threadDuring | Should -Be 1 -Because $scenario }
+                $payload.threadDuring | Should -Be 1 -Because $scenario
                 $payload.threadAfterScope | Should -Be $expectedPolicy -Because $scenario
                 $payload.attachError | Should -Be 0 -Because $scenario
                 $payload.trampolineValue | Should -Be 40 -Because $scenario
@@ -287,15 +287,10 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
                 if ($scenario -in @('abort', 'failed-commit')) {
                     $payload.hookedValue | Should -Be 40 -Because $scenario
                 }
-                if ($scenario -eq 'c-bridge') {
-                    $payload.invalidApplyError | Should -Be 6
-                    $payload.threadAfterInvalid | Should -Be 0
-                    $payload.invalidPointerUnchanged | Should -BeTrue
-                }
                 if ($scenario -eq 'nested') {
                     $payload.nestedActive | Should -BeFalse
                     $payload.nestedCommitError | Should -Be 4317
-                    $payload.threadAfterNested | Should -Be 0
+                    $payload.threadAfterNested | Should -Be 1
                 }
                 $payload
             }

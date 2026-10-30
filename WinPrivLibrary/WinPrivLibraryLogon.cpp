@@ -105,7 +105,7 @@ static BOOL WINAPI DetourCreateProcessWithLogonW(LPCWSTR sUser, LPCWSTR sDomain,
 	}
 }
 
-bool AttachLogonHooks()
+bool AttachLogonHooks(winpriv::detours::transaction& transaction)
 {
 	if (!VariableIsSet(WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM, 1)) return true;
 
@@ -117,6 +117,6 @@ bool AttachLogonHooks()
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) ||
 		!GetTokenInformation(hToken, TokenUser, pUser, static_cast<DWORD>(vBuffer.size()), &iSize)) return false;
 	if (IsWellKnownSid(pUser->User.Sid, WinLocalSystemSid))
-		AttachDetour(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW);
+		transaction.attach(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW);
 	return true;
 }
