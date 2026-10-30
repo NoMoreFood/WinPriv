@@ -1134,14 +1134,19 @@ function Remove-WinPrivSandbox {
             return $result
         }
 
-        $errorText = $null
-        try {
-            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
-        }
-        catch {
-            $errorText = $_.Exception.Message
-        }
-        $residual = Test-Path -LiteralPath $root
+        # Process images and filesystem filters can retain files briefly after process exit.
+        $deleteDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            $errorText = $null
+            try {
+                Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+            }
+            catch {
+                $errorText = $_.Exception.Message
+            }
+            $residual = Test-Path -LiteralPath $root
+            if ($residual) { Start-Sleep -Milliseconds 50 }
+        } while ($residual -and [DateTime]::UtcNow -lt $deleteDeadline)
         $result = [pscustomobject]@{
             MarkerId     = $Sandbox.MarkerId
             Path         = $root

@@ -68,7 +68,10 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
                 foreach ($process in $owned) {
                     try {
                         $process.Refresh()
-                        if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+                        if (-not $process.HasExited) {
+                            $process.Kill()
+                            [void]$process.WaitForExit(5000)
+                        }
                     }
                     catch { }
                     $process.Dispose()
@@ -94,20 +97,25 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
         [IO.File]::WriteAllText((Join-Path $sandbox.Root 'parent.cmd'),
             ('@.\{0}.exe /D /Q /K .\middle.cmd' -f $names.middle))
         [IO.File]::WriteAllText((Join-Path $sandbox.Root 'middle.cmd'),
-            ('@.\{0}.exe /D /Q /K' -f $names.leaf))
+            ('@.\{0}.exe /D /Q /K .\leaf.cmd' -f $names.leaf))
+        $readyPath = Join-Path $sandbox.Root 'tree.ready'
+        [IO.File]::WriteAllText((Join-Path $sandbox.Root 'leaf.cmd'), '@ECHO ready>tree.ready')
         try {
             $owned.parent = Start-Process -FilePath (Join-Path $sandbox.Root ($names.parent + '.exe')) `
                 -WorkingDirectory $sandbox.Root -WindowStyle Hidden `
                 -ArgumentList @('/D', '/Q', '/K', '.\parent.cmd') -PassThru
             $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            # The leaf runs this command only after all three interpreters finish loading.
+            while (-not (Test-Path -LiteralPath $readyPath) -and [DateTime]::UtcNow -lt $deadline) {
+                Start-Sleep -Milliseconds 25
+            }
+            Test-Path -LiteralPath $readyPath | Should -BeTrue -Because 'the process tree must finish startup'
             foreach ($role in $roles) {
-                while (-not $owned.ContainsKey($role) -and [DateTime]::UtcNow -lt $deadline) {
-                    $process = Get-Process -Name $names[$role] -ErrorAction SilentlyContinue
-                    if ($process) { $owned[$role] = $process }
-                    else { Start-Sleep -Milliseconds 25 }
+                if (-not $owned.ContainsKey($role)) {
+                    $owned[$role] = Get-Process -Name $names[$role] -ErrorAction Stop
                 }
-                $owned.ContainsKey($role) | Should -BeTrue -Because "$role must be running before termination"
                 $process = $owned[$role]
+                $process.Refresh()
                 $process.Path | Should -Be (Join-Path $sandbox.Root ($names[$role] + '.exe'))
                 [void]$process.Handle
                 Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Process -Identifier ([string]$process.Id) `
@@ -141,18 +149,15 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
             }
         }
         finally {
-            foreach ($name in $names.Values) {
-                foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
-                    try {
-                        if ($process.Path -eq (Join-Path $sandbox.Root ($name + '.exe'))) {
-                            $process.Kill()
-                            [void]$process.WaitForExit(5000)
-                        }
+            foreach ($process in $owned.Values) {
+                try {
+                    if (-not $process.HasExited) {
+                        $process.Kill($true)
+                        [void]$process.WaitForExit(5000)
                     }
-                    finally { $process.Dispose() }
                 }
+                finally { $process.Dispose() }
             }
-            foreach ($process in $owned.Values) { $process.Dispose() }
         }
     }
 

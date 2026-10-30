@@ -3139,9 +3139,11 @@ static LONG detour_suspend_other_threads(
                 detour_resume_and_close_threads(threads);
                 continue;
             }
+            // Terminating peers can reject suspension before their handles become signaled.
             if (SuspendThread(thread.get()) == MAXDWORD) {
                 const LONG error = GetLastError();
-                if (WaitForSingleObject(thread.get(), 0) != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER) {
+                if (WaitForSingleObject(thread.get(), 0) != WAIT_OBJECT_0 &&
+                    error != ERROR_INVALID_PARAMETER && error != ERROR_ACCESS_DENIED) {
                     return fail(error);
                 }
                 retryEnumeration = true;
@@ -3167,7 +3169,7 @@ static LONG detour_suspend_other_threads(
                 if (wait != WAIT_OBJECT_0) {
                     ResumeThread(thread.get());
                 }
-                if (wait != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER) {
+                if (wait != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER && error != ERROR_ACCESS_DENIED) {
                     return fail(error);
                 }
                 retryEnumeration = true;
