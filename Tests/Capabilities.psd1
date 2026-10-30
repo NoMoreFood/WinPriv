@@ -25,6 +25,9 @@
         @{ Id = 'utility.ask-message-no'; Surface = '/AskMessage No'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
         @{ Id = 'utility.dialog-gui-parity'; Surface = 'WinPriv.exe message dialog parity'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
 
+        # Credentialed process creation from LocalSystem.
+        @{ Id = 'process.logon-policy'; Surface = '/AllowCreateProcessAsSystem logon policy and creation arguments'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+
         # Local smart-card access and its process propagation.
         @{ Id = 'smartcard.local'; Surface = '/UseConsoleToken WinSCard reader routing'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
         @{ Id = 'smartcard.propagation'; Surface = '/UseConsoleToken descendants and custom environments'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }

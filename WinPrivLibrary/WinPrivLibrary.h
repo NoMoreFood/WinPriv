@@ -11,6 +11,7 @@
 bool AttachExtraHooks();
 bool AttachFileHooks();
 bool AttachHostHooks();
+bool AttachLogonHooks();
 bool AttachSmartCardHooks();
 void AttachTimeHooks();
 

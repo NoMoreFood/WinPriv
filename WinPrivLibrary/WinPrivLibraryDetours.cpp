@@ -1618,6 +1618,8 @@ bool AttachExtraHooks()
 
 	if (!AttachHostHooks()) return false;
 
+	if (!AttachLogonHooks()) return false;
+
 	if (!AttachSmartCardHooks()) return false;
 
 	if (!AttachFileHooks()) return false;

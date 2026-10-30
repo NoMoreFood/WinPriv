@@ -200,6 +200,7 @@
     <ClCompile Include="WinPrivLibraryDetours.cpp" />
     <ClCompile Include="WinPrivLibraryFiles.cpp" />
     <ClCompile Include="WinPrivLibraryHosts.cpp" />
+    <ClCompile Include="WinPrivLibraryLogon.cpp" />
     <ClCompile Include="WinPrivLibraryMain.cpp" />
     <ClCompile Include="WinPrivLibrarySmartCards.cpp" />
     <ClCompile Include="WinPrivMemoryLoader.cpp" />

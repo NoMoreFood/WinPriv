@@ -35,6 +35,9 @@
     <ClCompile Include="SmartCardRouting.cpp">
       <AdditionalIncludeDirectories>..\..\..\WinPrivShared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ClCompile Include="ProcessLogon.cpp">
+      <AdditionalIncludeDirectories>..\..\..\WinPrivShared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="..\..\..\WinPrivLibrary\WinPrivDetoursFork.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

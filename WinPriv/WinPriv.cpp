@@ -435,6 +435,12 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			if (!SetSetting(WINPRIV_EV_CONSOLE_TOKEN, L"1")) return __LINE__;
 		}
 
+		// allow LocalSystem targets to create processes with explicit user credentials
+		else if (IsSwitch(L"/AllowCreateProcessAsSystem"))
+		{
+			if (!SetSetting(WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM, L"1")) return __LINE__;
+		}
+
 		// control amsi scanning
 		else if (IsSwitch(L"/AmsiOn") || IsSwitch(L"/AmsiOff"))
 		{

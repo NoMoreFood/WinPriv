@@ -30,6 +30,33 @@ BeforeAll {
     }
 }
 
+Describe 'WinPriv process logon (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll {
+        $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'process-logon'
+    }
+
+    AfterAll {
+        Remove-WinPrivSandbox -Sandbox $sandbox
+    }
+
+    It 'preserves creation arguments and cleans up failed logons without removing existing rights' {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'process.logon-policy' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+        Invoke-WinPrivCapability -Id 'process.logon-policy' -Architecture $Architecture -Body {
+            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                -WorkingDirectory $Sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--process-logon')
+            Assert-WinPrivInvocationSucceeded $result
+            $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+            $payload.logonCases | Should -Be 42
+            return $payload
+        }
+    }
+}
+
 $loadingCases = foreach ($architectureCase in Get-WinPrivArchitectureCases) {
     foreach ($mode in @(
         @{ Name = 'normal-import'; Executable = 'WinPrivHookImport.exe'; Capability = 'detour.load-time-import' },

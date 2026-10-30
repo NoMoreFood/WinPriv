@@ -79,7 +79,7 @@ constexpr DWORD DETOUR_THREAD_ENUMERATION_RETRY_LIMIT = 64;
 // Instruction relocation
 
 // Copy one instruction from pSrc to pDst, preserving relative targets.
-// The return value points to the following source instruction; plExtra reports
+// The return value points to the following source instruction; extra reports
 // instruction growth or -1 when the instruction cannot be relocated.
 
 //////////////////////////////////////////////////// X86 and X64 Disassembler.
@@ -91,15 +91,14 @@ constexpr DWORD DETOUR_THREAD_ENUMERATION_RETRY_LIMIT = 64;
 class CDetourDis
 {
   public:
+    struct COPYENTRY;
+
     explicit CDetourDis(LONG& extra);
 
-    PBYTE   CopyInstruction(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyInstruction(PBYTE pbDst, PBYTE pbSrc, const COPYENTRY* table = s_rceCopyTable);
 
   public:
-    struct COPYENTRY;
-    typedef const COPYENTRY * REFCOPYENTRY;
-
-    typedef PBYTE (CDetourDis::* COPYFUNC)(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    typedef PBYTE (CDetourDis::* COPYFUNC)(PBYTE pbDst, PBYTE pbSrc);
 
     // nFlagBits flags.
     enum {
@@ -122,37 +121,37 @@ class CDetourDis
         ULONG       nModOffset      : 4;    // Offset to mod/rm byte (0=none)
         ULONG       nRelOffset      : 4;    // Offset to relative target.
         ULONG       nFlagBits       : 4;
-        COPYFUNC    pfCopy;                 // Function pointer.
+        COPYFUNC    pfCopy = nullptr;       // Custom instruction handler.
     };
 
   protected:
 // These macros define common uses of nFixedSize, nFixedSize16, nModOffset, nRelOffset, nFlagBits, pfCopy.
 #define ENTRY_DataIgnored           0, 0, 0, 0, 0,
-#define ENTRY_CopyBytes1            { 1, 1, 0, 0, 0, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes1            { 1, 1, 0, 0, 0 }
 #ifdef _M_X64
-#define ENTRY_CopyBytes1Address     { 9, 5, 0, 0, ADDRESS, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes1Address     { 9, 5, 0, 0, ADDRESS }
 #else
-#define ENTRY_CopyBytes1Address     { 5, 3, 0, 0, ADDRESS, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes1Address     { 5, 3, 0, 0, ADDRESS }
 #endif
-#define ENTRY_CopyBytes2            { 2, 2, 0, 0, 0, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes2            { 2, 2, 0, 0, 0 }
 #define ENTRY_CopyBytes2Jump        { ENTRY_DataIgnored &CDetourDis::CopyBytesJump }
-#define ENTRY_CopyBytes2CantJump    { 2, 2, 0, 1, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes3            { 3, 3, 0, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes3Or5         { 5, 3, 0, 0, 0, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes2CantJump    { 2, 2, 0, 1, 0 }
+#define ENTRY_CopyBytes3            { 3, 3, 0, 0, 0 }
+#define ENTRY_CopyBytes3Or5         { 5, 3, 0, 0, 0 }
 #ifdef _M_X64
-#define ENTRY_CopyBytes3Or5Rax      { 5, 3, 0, 0, RAX, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes3Or5Target   { 5, 5, 0, 1, 0, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes3Or5Rax      { 5, 3, 0, 0, RAX }
+#define ENTRY_CopyBytes3Or5Target   { 5, 5, 0, 1, 0 }
 #else
-#define ENTRY_CopyBytes3Or5Rax      { 5, 3, 0, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes3Or5Target   { 5, 3, 0, 1, 0, &CDetourDis::CopyBytes }
+#define ENTRY_CopyBytes3Or5Rax      { 5, 3, 0, 0, 0 }
+#define ENTRY_CopyBytes3Or5Target   { 5, 3, 0, 1, 0 }
 #endif
-#define ENTRY_CopyBytes4            { 4, 4, 0, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes5Or7         { 7, 5, 0, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes2Mod         { 2, 2, 1, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes2Mod1        { 3, 3, 1, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes2ModOperand  { 6, 4, 1, 0, 0, &CDetourDis::CopyBytes }
-#define ENTRY_CopyBytes3Mod         { 3, 3, 2, 0, 0, &CDetourDis::CopyBytes } // SSE3 0F 38 opcode modrm
-#define ENTRY_CopyBytes3Mod1        { 4, 4, 2, 0, 0, &CDetourDis::CopyBytes } // SSE3 0F 3A opcode modrm .. imm8
+#define ENTRY_CopyBytes4            { 4, 4, 0, 0, 0 }
+#define ENTRY_CopyBytes5Or7         { 7, 5, 0, 0, 0 }
+#define ENTRY_CopyBytes2Mod         { 2, 2, 1, 0, 0 }
+#define ENTRY_CopyBytes2Mod1        { 3, 3, 1, 0, 0 }
+#define ENTRY_CopyBytes2ModOperand  { 6, 4, 1, 0, 0 }
+#define ENTRY_CopyBytes3Mod         { 3, 3, 2, 0, 0 } // SSE3 0F 38 opcode modrm
+#define ENTRY_CopyBytes3Mod1        { 4, 4, 2, 0, 0 } // SSE3 0F 3A opcode modrm .. imm8
 #define ENTRY_CopyBytesPrefix       { ENTRY_DataIgnored &CDetourDis::CopyBytesPrefix }
 #define ENTRY_CopyBytesSegment      ENTRY_CopyBytesPrefix
 #define ENTRY_CopyBytesRax          { ENTRY_DataIgnored &CDetourDis::CopyBytesRax }
@@ -171,40 +170,40 @@ class CDetourDis
 #define ENTRY_CopyEvex              { ENTRY_DataIgnored &CDetourDis::CopyEvex } // 62, 3 byte payload, then normal with implied prefixes like vex
 #define ENTRY_CopyXop               { ENTRY_DataIgnored &CDetourDis::CopyXop }   // 0x8F ... POP /0 or AMD XOP
 #define ENTRY_CopyRex2              { ENTRY_DataIgnored &CDetourDis::CopyRex2 }  // 0xD5 Intel APX REX2 (x64 only)
-#define ENTRY_CopyBytesXop          { 5, 5, 4, 0, 0, &CDetourDis::CopyBytes } // 0x8F xop1 xop2 opcode modrm
-#define ENTRY_CopyBytesXop1         { 6, 6, 4, 0, 0, &CDetourDis::CopyBytes } // 0x8F xop1 xop2 opcode modrm ... imm8
-#define ENTRY_CopyBytesXop4         { 9, 9, 4, 0, 0, &CDetourDis::CopyBytes } // 0x8F xop1 xop2 opcode modrm ... imm32
-#define ENTRY_Invalid               { ENTRY_DataIgnored &CDetourDis::Invalid }
+#define ENTRY_CopyBytesXop          { 5, 5, 4, 0, 0 } // 0x8F xop1 xop2 opcode modrm
+#define ENTRY_CopyBytesXop1         { 6, 6, 4, 0, 0 } // 0x8F xop1 xop2 opcode modrm ... imm8
+#define ENTRY_CopyBytesXop4         { 9, 9, 4, 0, 0 } // 0x8F xop1 xop2 opcode modrm ... imm32
+#define ENTRY_Invalid               { ENTRY_DataIgnored }
 
-    PBYTE CopyBytes(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyBytesPrefix(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyBytes(const COPYENTRY& entry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyBytesPrefix(PBYTE pbDst, PBYTE pbSrc);
 #ifdef _M_X64
-    PBYTE CopyBytesRax(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyBytesRax(PBYTE pbDst, PBYTE pbSrc);
 #endif
-    PBYTE CopyBytesJump(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyBytesJump(PBYTE pbDst, PBYTE pbSrc);
 
-    PBYTE Invalid(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE Invalid(PBYTE pbSrc);
 
     void AdjustTarget(PBYTE pbDst, PBYTE pbSrc,
                       UINT cbTargetOffset, UINT cbTargetSize);
 
   protected:
-    PBYTE Copy0F(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE Copy0F78(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc); // vmread, 66/extrq/ib/ib, F2/insertq/ib/ib
-    PBYTE Copy66(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE Copy67(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyF2(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyF6(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyF7(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyC7(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyVex2(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyVex3(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE Copy0F(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE Copy0F78(PBYTE pbDst, PBYTE pbSrc); // vmread, 66/extrq/ib/ib, F2/insertq/ib/ib
+    PBYTE Copy66(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE Copy67(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyF2(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyF6(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyF7(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyC7(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyVex2(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyVex3(PBYTE pbDst, PBYTE pbSrc);
     PBYTE CopyVexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p, BYTE fp16 = 0);
-    PBYTE CopyEvex(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyXop(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p);
+    PBYTE CopyEvex(PBYTE pbDst, PBYTE pbSrc);
+    PBYTE CopyXop(PBYTE pbDst, PBYTE pbSrc);
 #ifdef _M_X64
-    PBYTE CopyRex2(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc); // AMD64 only, Intel APX REX2
+    PBYTE CopyRex2(PBYTE pbDst, PBYTE pbSrc); // AMD64 only, Intel APX REX2
 #endif
 
   protected:
@@ -224,10 +223,10 @@ class CDetourDis
     LONG&               m_lExtra;
 };
 
-static PVOID WINAPI DetourCopyInstruction(PVOID pDst, PVOID pSrc, LONG* plExtra)
+static PBYTE DetourCopyInstruction(PBYTE pDst, PBYTE pSrc, LONG& extra)
 {
-    CDetourDis oDetourDisasm(*plExtra);
-    return oDetourDisasm.CopyInstruction((PBYTE)pDst, (PBYTE)pSrc);
+    CDetourDis oDetourDisasm(extra);
+    return oDetourDisasm.CopyInstruction(pDst, pSrc);
 }
 
 /////////////////////////////////////////////////////////// Disassembler Code.
@@ -238,23 +237,30 @@ CDetourDis::CDetourDis(LONG& extra) :
     m_lExtra = 0;
 }
 
-PBYTE CDetourDis::CopyInstruction(PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyInstruction(PBYTE pbDst, PBYTE pbSrc, const COPYENTRY* table)
 {
     // Figure out how big the instruction is, do the appropriate copy,
     // and relocate any relative target.
     //
-    REFCOPYENTRY pEntry = &s_rceCopyTable[pbSrc[0]];
-    return (this->*pEntry->pfCopy)(pEntry, pbDst, pbSrc);
+    const COPYENTRY& entry = table[pbSrc[0]];
+    return entry.pfCopy != nullptr
+        ? (this->*entry.pfCopy)(pbDst, pbSrc)
+        : CopyBytes(entry, pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::CopyBytes(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyBytes(const COPYENTRY& entry, PBYTE pbDst, PBYTE pbSrc)
 {
     UINT nBytesFixed;
 
-    UINT const nModOffset = pEntry->nModOffset;
-    UINT const nFlagBits = pEntry->nFlagBits;
-    UINT const nFixedSize = pEntry->nFixedSize;
-    UINT const nFixedSize16 = pEntry->nFixedSize16;
+    UINT const nModOffset = entry.nModOffset;
+    UINT const nFlagBits = entry.nFlagBits;
+    UINT const nFixedSize = entry.nFixedSize;
+    UINT const nFixedSize16 = entry.nFixedSize16;
+
+    // A zero-sized entry without a custom handler marks an invalid opcode.
+    if (nFixedSize == 0) {
+        return Invalid(pbSrc);
+    }
 
     if (nFlagBits & ADDRESS) {
         nBytesFixed = m_bAddressOverride ? nFixedSize16 : nFixedSize;
@@ -276,7 +282,7 @@ PBYTE CDetourDis::CopyBytes(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
     }
 
     UINT nBytes = nBytesFixed;
-    UINT nRelOffset = pEntry->nRelOffset;
+    UINT nRelOffset = entry.nRelOffset;
     UINT cbTarget = nBytes - nRelOffset;
     if (nModOffset > 0) {
         BYTE const bModRm = pbSrc[nModOffset];
@@ -315,27 +321,24 @@ PBYTE CDetourDis::CopyBytes(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
     return pbSrc + nBytes;
 }
 
-PBYTE CDetourDis::CopyBytesPrefix(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyBytesPrefix(PBYTE pbDst, PBYTE pbSrc)
 {
     pbDst[0] = pbSrc[0];
-    pEntry = &s_rceCopyTable[pbSrc[1]];
-    return (this->*pEntry->pfCopy)(pEntry, pbDst + 1, pbSrc + 1);
+    return CopyInstruction(pbDst + 1, pbSrc + 1);
 }
 
 #ifdef _M_X64
-PBYTE CDetourDis::CopyBytesRax(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyBytesRax(PBYTE pbDst, PBYTE pbSrc)
 { // AMD64 only
     if (pbSrc[0] & 0x8) {
         m_bRaxOverride = true;
     }
-    return CopyBytesPrefix(0, pbDst, pbSrc);
+    return CopyBytesPrefix(pbDst, pbSrc);
 }
 #endif
 
-PBYTE CDetourDis::CopyBytesJump(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyBytesJump(PBYTE pbDst, PBYTE pbSrc)
 {
-    (void)pEntry;
-
     PVOID pvSrcAddr = &pbSrc[1];
     PVOID pvDstAddr = NULL;
     LONG_PTR nOldOffset = (LONG_PTR)*(signed char*&)pvSrcAddr;
@@ -423,24 +426,21 @@ void CDetourDis::AdjustTarget(PBYTE pbDst, PBYTE pbSrc,
     }
 }
 
-PBYTE CDetourDis::Invalid(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::Invalid(PBYTE pbSrc)
 {
-    (void)pbDst;
-    (void)pEntry;
     m_lExtra = -1;
     return pbSrc + 1;
 }
 
 ////////////////////////////////////////////////////// Individual Bytes Codes.
 //
-PBYTE CDetourDis::Copy0F(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::Copy0F(PBYTE pbDst, PBYTE pbSrc)
 {
     pbDst[0] = pbSrc[0];
-    pEntry = &s_rceCopyTable0F[pbSrc[1]];
-    return (this->*pEntry->pfCopy)(pEntry, pbDst + 1, pbSrc + 1);
+    return CopyInstruction(pbDst + 1, pbSrc + 1, s_rceCopyTable0F);
 }
 
-PBYTE CDetourDis::Copy0F78(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::Copy0F78(PBYTE pbDst, PBYTE pbSrc)
 {
     // vmread, 66/extrq, F2/insertq
 
@@ -452,39 +452,35 @@ PBYTE CDetourDis::Copy0F78(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
     // insertq/extrq/78 are followed by two immediate bytes, and given mode == 11, mod/rm byte is always one byte,
     // and the 0x78 makes 4 bytes (not counting the 66/F2/F which are accounted for elsewhere)
 
-    REFCOPYENTRY const pEntry = ((m_bF2 || m_bOperandOverride) ? &extrq_insertq : &vmread);
-
-    return (this->*pEntry->pfCopy)(pEntry, pbDst, pbSrc);
+    return CopyBytes(m_bF2 || m_bOperandOverride ? extrq_insertq : vmread, pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::Copy66(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::Copy66(PBYTE pbDst, PBYTE pbSrc)
 {   // Operand-size override prefix
     m_bOperandOverride = true;
-    return CopyBytesPrefix(pEntry, pbDst, pbSrc);
+    return CopyBytesPrefix(pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::Copy67(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::Copy67(PBYTE pbDst, PBYTE pbSrc)
 {   // Address size override prefix
     m_bAddressOverride = true;
-    return CopyBytesPrefix(pEntry, pbDst, pbSrc);
+    return CopyBytesPrefix(pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::CopyF2(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyF2(PBYTE pbDst, PBYTE pbSrc)
 {
     m_bF2 = true;
-    return CopyBytesPrefix(pEntry, pbDst, pbSrc);
+    return CopyBytesPrefix(pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::CopyF6(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyF6(PBYTE pbDst, PBYTE pbSrc)
 {
-    (void)pEntry;
-
     // TEST BYTE /0 and /1 (both encodings are TEST per Intel SDM Vol 2A Group 3
     // and AMD APM Vol 3; /1 is an undocumented alias of /0 historically but is
     // now documented in both manuals).
     if (0x00 == (0x30 & pbSrc[1])) {    // reg(bits 543) of ModR/M == 000 or 001
         static const COPYENTRY ce = /* f6 */ ENTRY_CopyBytes2Mod1;
-        return (this->*ce.pfCopy)(&ce, pbDst, pbSrc);
+        return CopyBytes(ce, pbDst, pbSrc);
     }
     // DIV /6
     // IDIV /7
@@ -494,17 +490,15 @@ PBYTE CDetourDis::CopyF6(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
     // NOT /2
 
     static const COPYENTRY ce = /* f6 */ ENTRY_CopyBytes2Mod;
-    return (this->*ce.pfCopy)(&ce, pbDst, pbSrc);
+    return CopyBytes(ce, pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::CopyF7(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyF7(PBYTE pbDst, PBYTE pbSrc)
 {
-    (void)pEntry;
-
     // TEST WORD /0 and /1 (see CopyF6 for /1 rationale).
     if (0x00 == (0x30 & pbSrc[1])) {    // reg(bits 543) of ModR/M == 000 or 001
         static const COPYENTRY ce = /* f7 */ ENTRY_CopyBytes2ModOperand;
-        return (this->*ce.pfCopy)(&ce, pbDst, pbSrc);
+        return CopyBytes(ce, pbDst, pbSrc);
     }
 
     // DIV /6
@@ -514,31 +508,28 @@ PBYTE CDetourDis::CopyF7(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
     // NEG /3
     // NOT /2
     static const COPYENTRY ce = /* f7 */ ENTRY_CopyBytes2Mod;
-    return (this->*ce.pfCopy)(&ce, pbDst, pbSrc);
+    return CopyBytes(ce, pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::CopyC7(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyC7(PBYTE pbDst, PBYTE pbSrc)
 {
-    (void)pEntry;
-
     // C7 /7 is XBEGIN rel32 (or rel16 with 66 prefix).
     // It has a relative displacement that must be relocated like CALL/JMP.
     if (0x38 == (0x38 & pbSrc[1])) {    // reg(bits 543) of ModR/M == 111
-        static const COPYENTRY ce = /* c7 /7 */ { 6, 4, 0, 2, 0, &CDetourDis::CopyBytes };
-        return (this->*ce.pfCopy)(&ce, pbDst, pbSrc);
+        static const COPYENTRY ce = /* c7 /7 */ { 6, 4, 0, 2, 0 };
+        return CopyBytes(ce, pbDst, pbSrc);
     }
     // MOV /0 r/m, imm16/32
     static const COPYENTRY ce = /* c7 /0 */ ENTRY_CopyBytes2ModOperand;
-    return (this->*ce.pfCopy)(&ce, pbDst, pbSrc);
+    return CopyBytes(ce, pbDst, pbSrc);
 }
 
-PBYTE CDetourDis::CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p, BYTE fp16)
+PBYTE CDetourDis::CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p)
 // m is first instead of last in the hopes of pbDst/pbSrc being
 // passed along efficiently in the registers they were already in.
 {
     static const COPYENTRY ceF38 = /* 38 */ ENTRY_CopyBytes2Mod;
     static const COPYENTRY ceF3A = /* 3A */ ENTRY_CopyBytes2Mod1;
-    static const COPYENTRY ceInvalid = /* C4 */ ENTRY_Invalid;
 
     switch (p & 3) {
     case 0:
@@ -547,8 +538,6 @@ PBYTE CDetourDis::CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p, BY
     case 3: m_bF2 = true; break;
     }
 
-    REFCOPYENTRY pEntry;
-
     // see https://software.intel.com/content/www/us/en/develop/download/intel-avx512-fp16-architecture-specification.html
     // EVEX maps (with FP16 and APX mmm-bit extension):
     //   mmm=001 (MAP1) and mmm=101 (MAP5) share the legacy 0F opcode structure,
@@ -556,17 +545,15 @@ PBYTE CDetourDis::CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p, BY
     //   mmm=010 (MAP2) and mmm=110 (MAP6) share the legacy 0F 38 structure (ModR/M, no imm).
     //   mmm=011 (MAP3) has the 0F 3A structure (ModR/M + imm8).
     //   mmm=100 (MAP4, APX) mirrors legacy MAP0 opcode structure (per-opcode sizing).
-    switch (m | fp16) {
-    default: return Invalid(&ceInvalid, pbDst, pbSrc);
+    switch (m) {
+    default: return Invalid(pbSrc);
     case 5:  // MAP5 (FP16) - opcode structure mirrors 0F (MAP1).
-    case 1:  pEntry = &s_rceCopyTable0F[pbSrc[0]];
-             return (this->*pEntry->pfCopy)(pEntry, pbDst, pbSrc);
+    case 1:  return CopyInstruction(pbDst, pbSrc, s_rceCopyTable0F);
     case 6:  // MAP6 (FP16) - opcode structure mirrors 0F 38 (MAP2).
-    case 2:  return CopyBytes(&ceF38, pbDst, pbSrc);
-    case 3:  return CopyBytes(&ceF3A, pbDst, pbSrc);
+    case 2:  return CopyBytes(ceF38, pbDst, pbSrc);
+    case 3:  return CopyBytes(ceF3A, pbDst, pbSrc);
     case 4:  // MAP4 (APX) - promoted legacy MAP0 instructions.
-             pEntry = &s_rceCopyTable[pbSrc[0]];
-             return (this->*pEntry->pfCopy)(pEntry, pbDst, pbSrc);
+             return CopyInstruction(pbDst, pbSrc);
     }
 }
 
@@ -579,14 +566,13 @@ PBYTE CDetourDis::CopyVexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc)
     return CopyVexEvexCommon(m, pbDst, pbSrc, p);
 }
 
-PBYTE CDetourDis::CopyVex3(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyVex3(PBYTE pbDst, PBYTE pbSrc)
 // 3 byte VEX prefix 0xC4
 {
 #ifdef _M_IX86
     const static COPYENTRY ceLES = /* C4 */ ENTRY_CopyBytes2Mod;
     if ((pbSrc[1] & 0xC0) != 0xC0) {
-        REFCOPYENTRY pEntry = &ceLES;
-        return (this->*pEntry->pfCopy)(pEntry, pbDst, pbSrc);
+        return CopyBytes(ceLES, pbDst, pbSrc);
     }
 #endif
     pbDst[0] = pbSrc[0];
@@ -624,14 +610,13 @@ PBYTE CDetourDis::CopyVex3(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
     return CopyVexCommon(pbSrc[1] & 0x1F, pbDst + 3, pbSrc + 3);
 }
 
-PBYTE CDetourDis::CopyVex2(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyVex2(PBYTE pbDst, PBYTE pbSrc)
 // 2 byte VEX prefix 0xC5
 {
 #ifdef _M_IX86
     const static COPYENTRY ceLDS = /* C5 */ ENTRY_CopyBytes2Mod;
     if ((pbSrc[1] & 0xC0) != 0xC0) {
-        REFCOPYENTRY pEntry = &ceLDS;
-        return (this->*pEntry->pfCopy)(pEntry, pbDst, pbSrc);
+        return CopyBytes(ceLDS, pbDst, pbSrc);
     }
 #endif
     pbDst[0] = pbSrc[0];
@@ -639,7 +624,7 @@ PBYTE CDetourDis::CopyVex2(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
     return CopyVexCommon(1, pbDst + 2, pbSrc + 2);
 }
 
-PBYTE CDetourDis::CopyEvex(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyEvex(PBYTE pbDst, PBYTE pbSrc)
 // 62, 3 byte payload, x86 with implied prefixes like Vex
 // for 32bit, mode 0xC0 else fallback to bound /r
 {
@@ -651,16 +636,14 @@ PBYTE CDetourDis::CopyEvex(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
 #ifdef _M_IX86
     const static COPYENTRY ceBound = /* 62 */ ENTRY_CopyBytes2Mod;
     if ((p0 & 0xC0) != 0xC0) {
-        return CopyBytes(&ceBound, pbDst, pbSrc);
+        return CopyBytes(ceBound, pbDst, pbSrc);
     }
 #endif
-
-    static const COPYENTRY ceInvalid = /* 62 */ ENTRY_Invalid;
 
     BYTE const p1 = pbSrc[2];
 
     if ((p1 & 0x04) != 0x04)
-        return Invalid(&ceInvalid, pbDst, pbSrc);
+        return Invalid(pbSrc);
 
     // Copy 4 byte prefix.
     *(UNALIGNED ULONG *)pbDst = *(UNALIGNED ULONG*)pbSrc;
@@ -675,10 +658,10 @@ PBYTE CDetourDis::CopyEvex(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
     // Bits [2:0] = map (1-7). Bit 3 = B4 (APX register extension, not a map bit).
     // For FP16: bit 2 extends map (MAP5=101, MAP6=110).
     // For APX:  map=4 (100) uses bit 2 as part of mmm field.
-    return CopyVexEvexCommon(p0 & 3u, pbDst + 4, pbSrc + 4, p1 & 3u, p0 & 4u);
+    return CopyVexEvexCommon(p0 & 7u, pbDst + 4, pbSrc + 4, p1 & 3u);
 }
 
-PBYTE CDetourDis::CopyXop(REFCOPYENTRY, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyXop(PBYTE pbDst, PBYTE pbSrc)
 /* 3 byte AMD XOP prefix 0x8F
 byte0: 0x8F
 byte1: RXBmmmmm
@@ -698,29 +681,27 @@ pp is like VEX but only instructions with 0 are defined
     switch (m)
     {
     default:
-        return CopyBytes(&cePop, pbDst, pbSrc);
+        return CopyBytes(cePop, pbDst, pbSrc);
 
     case 8: // modrm with 8bit immediate
-        return CopyBytes(&ceXop1, pbDst, pbSrc);
+        return CopyBytes(ceXop1, pbDst, pbSrc);
 
     case 9: // modrm with no immediate
-        return CopyBytes(&ceXop, pbDst, pbSrc);
+        return CopyBytes(ceXop, pbDst, pbSrc);
 
     case 10: // modrm with 32bit immediate
-        return CopyBytes(&ceXop4, pbDst, pbSrc);
+        return CopyBytes(ceXop4, pbDst, pbSrc);
     }
 }
 
 #ifdef _M_X64
-PBYTE CDetourDis::CopyRex2(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
+PBYTE CDetourDis::CopyRex2(PBYTE pbDst, PBYTE pbSrc)
 // Intel APX REX2 prefix 0xD5 (64-bit mode only)
 // Byte 0: D5
 // Byte 1: M(7) R4(6) X4(5) B4(4) W(3) R3(2) X3(1) B3(0)
 //   M: 0 = opcode from MAP0, 1 = opcode from MAP1 (no 0F escape needed)
 //   W: operand size override to 64-bit (same as REX.W)
 {
-    (void)pEntry;
-
     BYTE const payload = pbSrc[1];
 
     if (payload & 0x08) { // W bit (bit 3)
@@ -730,17 +711,8 @@ PBYTE CDetourDis::CopyRex2(REFCOPYENTRY pEntry, PBYTE pbDst, PBYTE pbSrc)
     pbDst[0] = pbSrc[0];
     pbDst[1] = pbSrc[1];
 
-    PBYTE pbOut;
-    if (payload & 0x80) { // M bit (bit 7) - MAP1
-        REFCOPYENTRY pEntry2 = &s_rceCopyTable0F[pbSrc[2]];
-        pbOut = (this->*pEntry2->pfCopy)(pEntry2, pbDst + 2, pbSrc + 2);
-    }
-    else { // MAP0
-        REFCOPYENTRY pEntry2 = &s_rceCopyTable[pbSrc[2]];
-        pbOut = (this->*pEntry2->pfCopy)(pEntry2, pbDst + 2, pbSrc + 2);
-    }
-
-    return pbOut;
+    const COPYENTRY* table = payload & 0x80 ? s_rceCopyTable0F : s_rceCopyTable;
+    return CopyInstruction(pbDst + 2, pbSrc + 2, table);
 }
 #endif
 
@@ -1435,7 +1407,7 @@ const CDetourDis::COPYENTRY CDetourDis::s_rceCopyTable0F[] =
 class CDetourDis
 {
   public:
-    static PBYTE CopyInstruction(PBYTE pDst, PBYTE pSrc, LONG* plExtra);
+    static PBYTE CopyInstruction(PBYTE pDst, PBYTE pSrc, LONG& extra);
 
     union AddImm12
     {
@@ -1698,7 +1670,7 @@ protected:
     static BYTE EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate);
     static BYTE CopyAdr(BYTE* pSource, BYTE* pDest, ULONG instruction);
     static BYTE CopyBcc(BYTE* pSource, BYTE* pDest, ULONG instruction);
-    static BYTE CopyB_or_Bl(BYTE* pSource, BYTE* pDest, ULONG instruction, bool link);
+    static BYTE CopyB_or_Bl(BYTE* pSource, BYTE* pDest, ULONG instruction);
     static BYTE CopyCbz(BYTE* pSource, BYTE* pDest, ULONG instruction);
     static BYTE CopyTbz(BYTE* pSource, BYTE* pDest, ULONG instruction);
     static BYTE CopyLdrLiteral(BYTE* pSource, BYTE* pDest, ULONG instruction);
@@ -1724,7 +1696,7 @@ BYTE CDetourDis::PureCopy32(BYTE* pSource, BYTE* pDest)
 
 PBYTE CDetourDis::CopyInstruction(PBYTE pDst,
                                   PBYTE pSrc,
-                                  LONG* plExtra)
+                                  LONG& extra)
 {
     DWORD Instruction = GetInstruction(pSrc);
 
@@ -1734,7 +1706,7 @@ PBYTE CDetourDis::CopyInstruction(PBYTE pDst,
     } else if ((Instruction & 0xff000010) == 0x54000000) {
         CopiedSize = CopyBcc(pSrc, pDst, Instruction);
     } else if ((Instruction & 0x7c000000) == 0x14000000) {
-        CopiedSize = CopyB_or_Bl(pSrc, pDst, Instruction, (Instruction & 0x80000000) != 0);
+        CopiedSize = CopyB_or_Bl(pSrc, pDst, Instruction);
     } else if ((Instruction & 0x7e000000) == 0x34000000) {
         CopiedSize = CopyCbz(pSrc, pDst, Instruction);
     } else if ((Instruction & 0x7e000000) == 0x36000000) {
@@ -1745,7 +1717,7 @@ PBYTE CDetourDis::CopyInstruction(PBYTE pDst,
         CopiedSize = PureCopy32(pSrc, pDst);
     }
 
-    *plExtra = CopiedSize - sizeof(DWORD);
+    extra = CopiedSize - sizeof(DWORD);
 
     return pSrc + 4;
 }
@@ -1890,7 +1862,7 @@ BYTE CDetourDis::CopyBcc(BYTE* pSource, BYTE* pDest, ULONG instruction)
     return (BYTE)((BYTE*)pDstInst - pDest);
 }
 
-BYTE CDetourDis::CopyB_or_Bl(BYTE* pSource, BYTE* pDest, ULONG instruction, bool link)
+BYTE CDetourDis::CopyB_or_Bl(BYTE* pSource, BYTE* pDest, ULONG instruction)
 {
     Branch26& decoded = (Branch26&)(instruction);
     PULONG pDstInst = (PULONG)(pDest);
@@ -1901,14 +1873,14 @@ BYTE CDetourDis::CopyB_or_Bl(BYTE* pSource, BYTE* pDest, ULONG instruction, bool
     // output as B or BRL
     if (delta >= -(1 << 27) && (delta < (1 << 27)))
     {
-        EmitInstruction(pDstInst, Branch26::Assemble(link, (LONG)delta));
+        EmitInstruction(pDstInst, Branch26::Assemble(decoded.s.Link, (LONG)delta));
     }
 
     // output as MOV x17, Target; BR or BRL x17 (BIG assumption that x17 isn't being used for anything!!)
     else
     {
         EmitMovImmediate(pDstInst, 17, (ULONG_PTR)pTarget);
-        EmitInstruction(pDstInst, Br::Assemble(17, link));
+        EmitInstruction(pDstInst, Br::Assemble(17, decoded.s.Link != 0));
     }
 
     return (BYTE)((BYTE*)pDstInst - pDest);
@@ -2023,9 +1995,9 @@ BYTE CDetourDis::CopyLdrLiteral(BYTE* pSource, BYTE* pDest, ULONG instruction)
     return (BYTE)((BYTE*)pDstInst - pDest);
 }
 
-static PVOID WINAPI DetourCopyInstruction(PVOID pDst, PVOID pSrc, LONG* plExtra)
+static PBYTE DetourCopyInstruction(PBYTE pDst, PBYTE pSrc, LONG& extra)
 {
-    return (PVOID)CDetourDis::CopyInstruction((PBYTE)pDst, (PBYTE)pSrc, plExtra);
+    return CDetourDis::CopyInstruction(pDst, pSrc, extra);
 }
 
 #endif // _M_ARM64
@@ -2131,26 +2103,7 @@ inline ULONG_PTR detour_2gb_above(ULONG_PTR address)
 #endif
 }
 
-///////////////////////////////////////////////////////////////////////// X86.
-//
-#ifdef _M_IX86
-
-struct _DETOUR_TRAMPOLINE
-{
-    BYTE            rbCode[30];     // target code + jmp to pbRemain
-    BYTE            cbRestore;      // size of original target code.
-    BYTE            alignCount;     // populated instruction alignment entries.
-    DETOUR_ALIGN    rAlign[8];      // target/trampoline instruction boundaries.
-    PBYTE           pbRemain;       // first instruction after moved code. [free list]
-    PBYTE           pbDetour;       // first instruction of detour function.
-};
-
-static_assert(sizeof(_DETOUR_TRAMPOLINE) == 56);
-
-enum {
-    SIZE_OF_JMP = 5,
-    SIZE_OF_TRAMPOLINE_JMP = 5
-};
+#if defined(_M_IX86) || defined(_M_X64)
 
 inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE pbJmpVal)
 {
@@ -2158,88 +2111,6 @@ inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE pbJmpVal)
     *pbCode++ = 0xE9;   // jmp +imm32
     *((INT32*&)pbCode)++ = (INT32)(pbJmpVal - pbJmpSrc);
     return pbCode;
-}
-
-inline PBYTE detour_skip_jmp(PBYTE pbCode)
-{
-    PBYTE pbCodeOriginal;
-
-    if (pbCode == NULL) {
-        return NULL;
-    }
-
-    // First, skip over the import vector if there is one.
-    if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [imm32]
-        // Looks like an import alias jump, then get the code it points to.
-        PBYTE pbTarget = *(UNALIGNED PBYTE *)&pbCode[2];
-        if (detour_is_imported(pbCode, pbTarget)) {
-            PBYTE pbNew = *(UNALIGNED PBYTE *)pbTarget;
-            pbCode = pbNew;
-        }
-    }
-
-    // Then, skip over a patch jump
-    if (pbCode[0] == 0xeb) {   // jmp +imm8
-        PBYTE pbNew = pbCode + 2 + *(CHAR *)&pbCode[1];
-        pbCode = pbNew;
-        pbCodeOriginal = pbCode;
-
-        // First, skip over the import vector if there is one.
-        if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [imm32]
-            // Looks like an import alias jump, then get the code it points to.
-            PBYTE pbTarget = *(UNALIGNED PBYTE *)&pbCode[2];
-            if (detour_is_imported(pbCode, pbTarget)) {
-                pbNew = *(UNALIGNED PBYTE *)pbTarget;
-                pbCode = pbNew;
-            }
-        }
-        // Finally, skip over a long jump if it is the target of the patch jump.
-        else if (pbCode[0] == 0xe9) {   // jmp +imm32
-            pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
-            pbCode = pbNew;
-
-            // Patches applied by the OS will jump through an HPAT page to get
-            // the target function in the patch image. The jump is always performed
-            // to the target function found at the current instruction pointer +
-            // PAGE_SIZE - 6 (size of jump).
-            // If this is an OS patch, we want to detour at the point of the target function
-            // padding in the base image. Ideally, we would detour at the target function, but
-            // since it's patched it begins with a short jump (to padding) which isn't long
-            // enough to hold the detour code bytes.
-            if (pbCode[0] == 0xff &&
-                pbCode[1] == 0x25 &&
-                *(UNALIGNED INT32 *)&pbCode[2] == (UNALIGNED INT32)(pbCode + 0x1000)) {   // jmp [eip+PAGE_SIZE-6]
-
-                pbCode = pbCodeOriginal;
-            }
-
-        }
-    }
-    return pbCode;
-}
-
-inline void detour_find_jmp_bounds(PBYTE pbCode,
-                                   PDETOUR_TRAMPOLINE *ppLower,
-                                   PDETOUR_TRAMPOLINE *ppUpper)
-{
-    // We have to place trampolines within +/- 2GB of code.
-    ULONG_PTR lo = detour_2gb_below((ULONG_PTR)pbCode);
-    ULONG_PTR hi = detour_2gb_above((ULONG_PTR)pbCode);
-
-    // And, within +/- 2GB of relative jmp targets.
-    if (pbCode[0] == 0xe9) {   // jmp +imm32
-        PBYTE pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
-
-        if (pbNew < pbCode) {
-            hi = detour_2gb_above((ULONG_PTR)pbNew);
-        }
-        else {
-            lo = detour_2gb_below((ULONG_PTR)pbNew);
-        }
-    }
-
-    *ppLower = (PDETOUR_TRAMPOLINE)lo;
-    *ppUpper = (PDETOUR_TRAMPOLINE)hi;
 }
 
 inline BOOL detour_does_code_end_function(PBYTE pbCode)
@@ -2330,6 +2201,111 @@ inline ULONG detour_is_code_filler(PBYTE pbCode)
     return 0;
 }
 
+#endif
+
+///////////////////////////////////////////////////////////////////////// X86.
+//
+#ifdef _M_IX86
+
+struct _DETOUR_TRAMPOLINE
+{
+    BYTE            rbCode[30];     // target code + jmp to pbRemain
+    BYTE            cbRestore;      // size of original target code.
+    BYTE            alignCount;     // populated instruction alignment entries.
+    DETOUR_ALIGN    rAlign[8];      // target/trampoline instruction boundaries.
+    PBYTE           pbRemain;       // first instruction after moved code. [free list]
+    PBYTE           pbDetour;       // first instruction of detour function.
+};
+
+static_assert(sizeof(_DETOUR_TRAMPOLINE) == 56);
+
+enum {
+    SIZE_OF_JMP = 5,
+    SIZE_OF_TRAMPOLINE_JMP = 5
+};
+
+inline PBYTE detour_skip_jmp(PBYTE pbCode)
+{
+    PBYTE pbCodeOriginal;
+
+    if (pbCode == NULL) {
+        return NULL;
+    }
+
+    // First, skip over the import vector if there is one.
+    if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [imm32]
+        // Looks like an import alias jump, then get the code it points to.
+        PBYTE pbTarget = *(UNALIGNED PBYTE *)&pbCode[2];
+        if (detour_is_imported(pbCode, pbTarget)) {
+            PBYTE pbNew = *(UNALIGNED PBYTE *)pbTarget;
+            pbCode = pbNew;
+        }
+    }
+
+    // Then, skip over a patch jump
+    if (pbCode[0] == 0xeb) {   // jmp +imm8
+        PBYTE pbNew = pbCode + 2 + *(CHAR *)&pbCode[1];
+        pbCode = pbNew;
+        pbCodeOriginal = pbCode;
+
+        // First, skip over the import vector if there is one.
+        if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [imm32]
+            // Looks like an import alias jump, then get the code it points to.
+            PBYTE pbTarget = *(UNALIGNED PBYTE *)&pbCode[2];
+            if (detour_is_imported(pbCode, pbTarget)) {
+                pbNew = *(UNALIGNED PBYTE *)pbTarget;
+                pbCode = pbNew;
+            }
+        }
+        // Finally, skip over a long jump if it is the target of the patch jump.
+        else if (pbCode[0] == 0xe9) {   // jmp +imm32
+            pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
+            pbCode = pbNew;
+
+            // Patches applied by the OS will jump through an HPAT page to get
+            // the target function in the patch image. The jump is always performed
+            // to the target function found at the current instruction pointer +
+            // PAGE_SIZE - 6 (size of jump).
+            // If this is an OS patch, we want to detour at the point of the target function
+            // padding in the base image. Ideally, we would detour at the target function, but
+            // since it's patched it begins with a short jump (to padding) which isn't long
+            // enough to hold the detour code bytes.
+            if (pbCode[0] == 0xff &&
+                pbCode[1] == 0x25 &&
+                *(UNALIGNED INT32 *)&pbCode[2] == (UNALIGNED INT32)(pbCode + 0x1000)) {   // jmp [eip+PAGE_SIZE-6]
+
+                pbCode = pbCodeOriginal;
+            }
+
+        }
+    }
+    return pbCode;
+}
+
+inline void detour_find_jmp_bounds(PBYTE pbCode,
+                                   PDETOUR_TRAMPOLINE *ppLower,
+                                   PDETOUR_TRAMPOLINE *ppUpper)
+{
+    // We have to place trampolines within +/- 2GB of code.
+    ULONG_PTR lo = detour_2gb_below((ULONG_PTR)pbCode);
+    ULONG_PTR hi = detour_2gb_above((ULONG_PTR)pbCode);
+
+    // And, within +/- 2GB of relative jmp targets.
+    if (pbCode[0] == 0xe9) {   // jmp +imm32
+        PBYTE pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
+
+        if (pbNew < pbCode) {
+            hi = detour_2gb_above((ULONG_PTR)pbNew);
+        }
+        else {
+            lo = detour_2gb_below((ULONG_PTR)pbNew);
+        }
+    }
+
+    *ppLower = (PDETOUR_TRAMPOLINE)lo;
+    *ppUpper = (PDETOUR_TRAMPOLINE)hi;
+}
+
 #endif // _M_IX86
 
 ///////////////////////////////////////////////////////////////////////// X64.
@@ -2355,14 +2331,6 @@ enum {
     SIZE_OF_JMP = 5,
     SIZE_OF_TRAMPOLINE_JMP = 6
 };
-
-inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE pbJmpVal)
-{
-    PBYTE pbJmpSrc = pbCode + 5;
-    *pbCode++ = 0xE9;   // jmp +imm32
-    *((INT32*&)pbCode)++ = (INT32)(pbJmpVal - pbJmpSrc);
-    return pbCode;
-}
 
 inline PBYTE detour_gen_jmp_indirect(PBYTE pbCode, PBYTE *ppbJmpVal)
 {
@@ -2462,94 +2430,6 @@ inline void detour_find_jmp_bounds(PBYTE pbCode,
 
     *ppLower = (PDETOUR_TRAMPOLINE)lo;
     *ppUpper = (PDETOUR_TRAMPOLINE)hi;
-}
-
-inline BOOL detour_does_code_end_function(PBYTE pbCode)
-{
-    if (pbCode[0] == 0xeb ||    // jmp +imm8
-        pbCode[0] == 0xe9 ||    // jmp +imm32
-        pbCode[0] == 0xe0 ||    // jmp eax
-        pbCode[0] == 0xc2 ||    // ret +imm8
-        pbCode[0] == 0xc3 ||    // ret
-        pbCode[0] == 0xcc) {    // brk
-        return TRUE;
-    }
-    else if (pbCode[0] == 0xf3 && pbCode[1] == 0xc3) {  // rep ret
-        return TRUE;
-    }
-    else if (pbCode[0] == 0xff && pbCode[1] == 0x25) {  // jmp [+imm32]
-        return TRUE;
-    }
-    else if ((pbCode[0] == 0x26 ||      // jmp es:
-              pbCode[0] == 0x2e ||      // jmp cs:
-              pbCode[0] == 0x36 ||      // jmp ss:
-              pbCode[0] == 0x3e ||      // jmp ds:
-              pbCode[0] == 0x64 ||      // jmp fs:
-              pbCode[0] == 0x65) &&     // jmp gs:
-             pbCode[1] == 0xff &&       // jmp [+imm32]
-             pbCode[2] == 0x25) {
-        return TRUE;
-    }
-    return FALSE;
-}
-
-inline ULONG detour_is_code_filler(PBYTE pbCode)
-{
-    // 1-byte through 11-byte NOPs.
-    if (pbCode[0] == 0x90) {
-        return 1;
-    }
-    if (pbCode[0] == 0x66 && pbCode[1] == 0x90) {
-        return 2;
-    }
-    if (pbCode[0] == 0x0F && pbCode[1] == 0x1F && pbCode[2] == 0x00) {
-        return 3;
-    }
-    if (pbCode[0] == 0x0F && pbCode[1] == 0x1F && pbCode[2] == 0x40 &&
-        pbCode[3] == 0x00) {
-        return 4;
-    }
-    if (pbCode[0] == 0x0F && pbCode[1] == 0x1F && pbCode[2] == 0x44 &&
-        pbCode[3] == 0x00 && pbCode[4] == 0x00) {
-        return 5;
-    }
-    if (pbCode[0] == 0x66 && pbCode[1] == 0x0F && pbCode[2] == 0x1F &&
-        pbCode[3] == 0x44 && pbCode[4] == 0x00 && pbCode[5] == 0x00) {
-        return 6;
-    }
-    if (pbCode[0] == 0x0F && pbCode[1] == 0x1F && pbCode[2] == 0x80 &&
-        pbCode[3] == 0x00 && pbCode[4] == 0x00 && pbCode[5] == 0x00 &&
-        pbCode[6] == 0x00) {
-        return 7;
-    }
-    if (pbCode[0] == 0x0F && pbCode[1] == 0x1F && pbCode[2] == 0x84 &&
-        pbCode[3] == 0x00 && pbCode[4] == 0x00 && pbCode[5] == 0x00 &&
-        pbCode[6] == 0x00 && pbCode[7] == 0x00) {
-        return 8;
-    }
-    if (pbCode[0] == 0x66 && pbCode[1] == 0x0F && pbCode[2] == 0x1F &&
-        pbCode[3] == 0x84 && pbCode[4] == 0x00 && pbCode[5] == 0x00 &&
-        pbCode[6] == 0x00 && pbCode[7] == 0x00 && pbCode[8] == 0x00) {
-        return 9;
-    }
-    if (pbCode[0] == 0x66 && pbCode[1] == 0x66 && pbCode[2] == 0x0F &&
-        pbCode[3] == 0x1F && pbCode[4] == 0x84 && pbCode[5] == 0x00 &&
-        pbCode[6] == 0x00 && pbCode[7] == 0x00 && pbCode[8] == 0x00 &&
-        pbCode[9] == 0x00) {
-        return 10;
-    }
-    if (pbCode[0] == 0x66 && pbCode[1] == 0x66 && pbCode[2] == 0x66 &&
-        pbCode[3] == 0x0F && pbCode[4] == 0x1F && pbCode[5] == 0x84 &&
-        pbCode[6] == 0x00 && pbCode[7] == 0x00 && pbCode[8] == 0x00 &&
-        pbCode[9] == 0x00 && pbCode[10] == 0x00) {
-        return 11;
-    }
-
-    // int 3.
-    if (pbCode[0] == 0xcc) {
-        return 1;
-    }
-    return 0;
 }
 
 #endif // _M_X64
@@ -3145,13 +3025,6 @@ static LONG s_nPendingError = NO_ERROR;
 static ULONG s_nPendingOperationCount = 0;
 static DetourOperation s_rPendingOperations[DETOUR_PENDING_OPERATION_CAPACITY];
 
-//////////////////////////////////////////////////////////////////////////////
-//
-static PBYTE detour_code_from_pointer(PVOID pPointer)
-{
-    return detour_skip_jmp((PBYTE)pPointer);
-}
-
 #pragma warning(push)
 #pragma warning(disable:4324)
 struct DetourSuspendedThread
@@ -3659,8 +3532,8 @@ extern "C" LONG WINAPI DetourAttach(_Inout_ PVOID *ppPointer,
         return s_nPendingError = ERROR_INVALID_HANDLE;
     }
 
-    PBYTE pbTarget = detour_code_from_pointer(*ppPointer);
-    pDetour = detour_code_from_pointer(pDetour);
+    PBYTE pbTarget = detour_skip_jmp((PBYTE)*ppPointer);
+    pDetour = detour_skip_jmp((PBYTE)pDetour);
 
     if (pDetour == (PVOID)pbTarget) {
         return NO_ERROR;
@@ -3699,7 +3572,7 @@ extern "C" LONG WINAPI DetourAttach(_Inout_ PVOID *ppPointer,
         PBYTE pbOp = pbSrc;
         LONG lExtra = 0;
 
-        pbSrc = (PBYTE)DetourCopyInstruction(pbTrampoline, pbSrc, &lExtra);
+        pbSrc = DetourCopyInstruction(pbTrampoline, pbSrc, lExtra);
         if (lExtra < 0) {
             return fail(ERROR_INVALID_BLOCK);
         }

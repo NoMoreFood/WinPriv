@@ -3,7 +3,8 @@
 BeforeAll {
     . (Join-Path $PSScriptRoot 'TestCommon.ps1')
     $documentedSwitches = @(
-        '/AdminImpersonate', '/AmsiOff', '/AmsiOn', '/AskMessage', '/BreakRemoteLocks', '/BypassFileSecurity',
+        '/AdminImpersonate', '/AllowCreateProcessAsSystem', '/AmsiOff', '/AmsiOn', '/AskMessage',
+        '/BreakRemoteLocks', '/BypassFileSecurity',
         '/ClearDenyRights', '/ClmOn', '/ClmOff', '/ExtractLibrary', '/FileRedirect',
         '/FipsOff', '/FipsOn', '/GrantAllRights', '/GrantRight', '/Help', '/HostOverride', '/KillProcess',
         '/ListPrivileges', '/LoadCommands', '/MacOverride', '/MeasureTime', '/MediumPlus', '/MockTime',
@@ -76,7 +77,8 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
             $help.StdOut | Should -Match 'Optional Switches'
 
             $window = Invoke-WinPrivProbe -Architecture $Architecture `
-                -WinPrivArguments @('/wInDoWsTyLe', 'hIdDeN') -Operation window -Arguments @{} `
+                -WinPrivArguments @('/aLlOwCrEaTePrOcEsSaSsYsTeM', '/wInDoWsTyLe', 'hIdDeN') `
+                -Operation window -Arguments @{} `
                 -Sandbox $sandbox -TimeoutSeconds 20
             Assert-WinPrivInvocationSucceeded $window
             $window.ProbeResult.result.showWindow | Should -Be 0
