@@ -15,6 +15,8 @@
 
 static BOOLEAN (WINAPI* TrueWinStationGetCurrentSessionCapabilities)(DWORD, DWORD*) = nullptr;
 static auto TrueNCryptSignHash = &NCryptSignHash;
+static auto TrueNCryptFinalizeKey = &NCryptFinalizeKey;
+static auto TrueNCryptSetProperty = &NCryptSetProperty;
 
 static BOOLEAN WINAPI DetourWinStationGetCurrentSessionCapabilities(DWORD iCapability, DWORD* pValue)
 {
@@ -57,17 +59,15 @@ static bool IsRemoteSession()
 		iSize >= sizeof(USHORT) && *pProtocol != 0;
 }
 
-static SECURITY_STATUS WINAPI DetourNCryptSignHash(NCRYPT_KEY_HANDLE hKey, VOID* pPaddingInfo,
-	PBYTE pHash, DWORD iHashSize, PBYTE pSignature, DWORD iSignatureSize, DWORD* pResultSize, DWORD iFlags)
+template <typename Function>
+static SECURITY_STATUS WithSmartCardPin(NCRYPT_KEY_HANDLE hKey, DWORD iFlags, const Function& function)
 {
-	// Local sessions, other providers, and explicitly silent requests keep their normal signing behavior.
+	// Local sessions, other providers, and explicitly silent requests keep their normal behavior.
 	if ((iFlags & NCRYPT_SILENT_FLAG) != 0 || !IsSmartCardKey(hKey) || !IsRemoteSession())
-		return TrueNCryptSignHash(hKey, pPaddingInfo, pHash, iHashSize,
-			pSignature, iSignatureSize, pResultSize, iFlags);
+		return function(iFlags);
 
 	// The normal smart-card credential provider validates the PIN in a separate, unhooked process.
-	SECURITY_STATUS iStatus = TrueNCryptSignHash(hKey, pPaddingInfo, pHash, iHashSize,
-		pSignature, iSignatureSize, pResultSize, iFlags | NCRYPT_SILENT_FLAG);
+	SECURITY_STATUS iStatus = function(iFlags | NCRYPT_SILENT_FLAG);
 	if (iStatus != NTE_SILENT_CONTEXT) return iStatus;
 
 	CREDUI_INFOW tInfo{ sizeof(tInfo) };
@@ -82,7 +82,7 @@ static SECURITY_STATUS WINAPI DetourNCryptSignHash(NCRYPT_KEY_HANDLE hKey, VOID*
 	if (!CredPackAuthenticationBufferW(CRED_PACK_GENERIC_CREDENTIALS, sUser, sPin, aInput, &iInputSize))
 		return HRESULT_FROM_WIN32(GetLastError());
 
-	// Generic credentials leave PIN validation in the hooked signing process.
+	// Generic credentials leave PIN validation in the hooked calling process.
 	ULONG iAuthPackage = 0;
 	ULONG iOutputSize = 0;
 	SmartPointer<PVOID> pOutput([&](PVOID p) { SecureZeroMemory(p, iOutputSize); CoTaskMemFree(p); }, nullptr);
@@ -97,15 +97,45 @@ static SECURITY_STATUS WINAPI DetourNCryptSignHash(NCRYPT_KEY_HANDLE hKey, VOID*
 		sUser, &iUserLength, nullptr, nullptr, sPin, &iPinLength)) iPromptStatus = GetLastError();
 	pOutput.Cleanup();
 	iStatus = iPromptStatus == ERROR_SUCCESS
-		? NCryptSetProperty(hKey, NCRYPT_PIN_PROPERTY, reinterpret_cast<PBYTE>(sPin),
+		? TrueNCryptSetProperty(hKey, NCRYPT_PIN_PROPERTY, reinterpret_cast<PBYTE>(sPin),
 			static_cast<DWORD>((wcslen(sPin) + 1) * sizeof(WCHAR)), NCRYPT_SILENT_FLAG)
 		: iPromptStatus == ERROR_CANCELLED ? NTE_USER_CANCELLED : HRESULT_FROM_WIN32(iPromptStatus);
 	SecureZeroMemory(sPin, sizeof(sPin));
 	if (iStatus != ERROR_SUCCESS) return iStatus;
 
 	// Make one authenticated attempt; a wrong PIN must not trigger automatic retries.
-	return TrueNCryptSignHash(hKey, pPaddingInfo, pHash, iHashSize,
-		pSignature, iSignatureSize, pResultSize, iFlags | NCRYPT_SILENT_FLAG);
+	return function(iFlags | NCRYPT_SILENT_FLAG);
+}
+
+static SECURITY_STATUS WINAPI DetourNCryptSignHash(NCRYPT_KEY_HANDLE hKey, VOID* pPaddingInfo,
+	PBYTE pHash, DWORD iHashSize, PBYTE pSignature, DWORD iSignatureSize, DWORD* pResultSize, DWORD iFlags)
+{
+	return WithSmartCardPin(hKey, iFlags, [&](DWORD iCallFlags)
+	{
+		return TrueNCryptSignHash(hKey, pPaddingInfo, pHash, iHashSize,
+			pSignature, iSignatureSize, pResultSize, iCallFlags);
+	});
+}
+
+static SECURITY_STATUS WINAPI DetourNCryptFinalizeKey(NCRYPT_KEY_HANDLE hKey, DWORD iFlags)
+{
+	// Smart-card key generation authenticates when the configured key is finalized.
+	return WithSmartCardPin(hKey, iFlags, [&](DWORD iCallFlags)
+	{
+		return TrueNCryptFinalizeKey(hKey, iCallFlags);
+	});
+}
+
+static SECURITY_STATUS WINAPI DetourNCryptSetProperty(NCRYPT_HANDLE hObject, LPCWSTR sProperty,
+	PBYTE pInput, DWORD iInputSize, DWORD iFlags)
+{
+	// Enrollment can install the issued certificate through a newly opened key handle.
+	if (sProperty == nullptr || wcscmp(sProperty, NCRYPT_CERTIFICATE_PROPERTY) != 0)
+		return TrueNCryptSetProperty(hObject, sProperty, pInput, iInputSize, iFlags);
+	return WithSmartCardPin(hObject, iFlags, [&](DWORD iCallFlags)
+	{
+		return TrueNCryptSetProperty(hObject, sProperty, pInput, iInputSize, iCallFlags);
+	});
 }
 
 bool AttachSmartCardHooks(winpriv::detours::transaction& transaction)
@@ -123,5 +153,7 @@ bool AttachSmartCardHooks(winpriv::detours::transaction& transaction)
 	// shortcut: WinSCard's capability query is undocumented, recheck it if Windows changes reader routing.
 	transaction.attach(TrueWinStationGetCurrentSessionCapabilities, DetourWinStationGetCurrentSessionCapabilities);
 	transaction.attach(TrueNCryptSignHash, DetourNCryptSignHash, L"ncrypt.dll", "NCryptSignHash");
+	transaction.attach(TrueNCryptFinalizeKey, DetourNCryptFinalizeKey, L"ncrypt.dll", "NCryptFinalizeKey");
+	transaction.attach(TrueNCryptSetProperty, DetourNCryptSetProperty, L"ncrypt.dll", "NCryptSetProperty");
 	return true;
 }

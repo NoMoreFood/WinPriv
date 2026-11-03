@@ -253,8 +253,9 @@ Optional Switches
    Uses locally attached smart cards and hardware keys through the Windows
    smart-card APIs, including from a Remote Desktop session. Applies to the
    target and its child processes.
-   Signing through Microsoft's Smart Card Key Storage Provider prompts for a
-   PIN without saving it. Enter the PIN in the Windows dialog's password field.
+   Key creation, signing, and certificate installation through Microsoft's
+   Smart Card Key Storage Provider prompt for a PIN when needed. Enter the PIN
+   in the Windows dialog's password field. WinPriv does not save the PIN.
    The token's normal PIN validation and permissions still apply.
 
 /RecordCrypto <Directory>

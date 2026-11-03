@@ -33,6 +33,7 @@
         @{ Id = 'smartcard.propagation'; Surface = '/UseConsoleToken descendants and custom environments'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
         @{ Id = 'smartcard.signing-pass-through'; Surface = '/UseConsoleToken software signing and silent requests'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
         @{ Id = 'smartcard.session-routing'; Surface = '/UseConsoleToken signing across console and remote reconnects'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'smartcard.enrollment'; Surface = '/UseConsoleToken key creation and certificate installation PIN handling'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
         # Wall clock offsets and their process propagation.
         @{ Id = 'time.mock-clock'; Surface = '/MockTime native, Win32, CRT, and managed wall clocks'; Profile = 'Safe'; Test = 'Time'; Required = $true }

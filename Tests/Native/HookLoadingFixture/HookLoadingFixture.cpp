@@ -16,6 +16,7 @@
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
 #include "../../../WinPrivLibrary/WinPrivDetoursFork.h"
 int TestSmartCardSessionRouting();
+int TestSmartCardEnrollment();
 int TestProcessLogon();
 #endif
 
@@ -1030,6 +1031,8 @@ int wmain(const int argumentCount, wchar_t* arguments[])
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
     if (argumentCount == 2 && wcscmp(arguments[1], L"--smartcard-session-routing") == 0)
         return TestSmartCardSessionRouting();
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--smartcard-enrollment") == 0)
+        return TestSmartCardEnrollment();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--process-logon") == 0) return TestProcessLogon();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--rejected-detours") == 0) return TestRejectedDetours();
 #endif

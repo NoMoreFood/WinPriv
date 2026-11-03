@@ -32,6 +32,12 @@ namespace WinPrivProbe
         private static extern int NCryptSignHash(IntPtr key, IntPtr paddingInfo, byte[] hash, int hashSize,
             byte[] signature, int signatureSize, out int resultSize, uint flags);
 
+        [DllImport("ncrypt.dll")]
+        private static extern int NCryptFinalizeKey(IntPtr key, uint flags);
+
+        [DllImport("ncrypt.dll", CharSet = CharSet.Unicode)]
+        private static extern int NCryptSetProperty(IntPtr key, string property, byte[] input, int size, uint flags);
+
         public static Dictionary<string, object> GetSoftwareSigning()
         {
             Dictionary<string, object> result = new Dictionary<string, object>();
@@ -39,6 +45,9 @@ namespace WinPrivProbe
             int size;
             result["invalidHandleStatus"] = unchecked((uint)NCryptSignHash(IntPtr.Zero, IntPtr.Zero,
                 hash, hash.Length, null, 0, out size, 0));
+            result["invalidFinalizeStatus"] = unchecked((uint)NCryptFinalizeKey(IntPtr.Zero, 0));
+            result["invalidCertificateStatus"] = unchecked((uint)NCryptSetProperty(IntPtr.Zero,
+                "SmartCardKeyCertificate", new byte[] { 0x30, 0 }, 2, 0));
 
             // Exercise silent and interactive signing without persisting a key.
             List<Dictionary<string, object>> signatures = new List<Dictionary<string, object>>();

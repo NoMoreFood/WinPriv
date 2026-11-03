@@ -47,15 +47,34 @@ Describe 'WinPriv local hardware tokens (<Architecture>)' -Tag 'Safe' -ForEach $
         }
     }
 
-    It 'preserves software-key signing, silent flags, and invalid-handle errors without prompting' {
+    It 'handles enrollment PINs, cancellation, and failures without displaying UI or retrying wrong PINs' {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'smartcard.enrollment' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+        Invoke-WinPrivCapability -Id 'smartcard.enrollment' -Architecture $Architecture -Body {
+            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--smartcard-enrollment')
+            Assert-WinPrivInvocationSucceeded $result
+            $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+            $payload.enrollmentScenarios | Should -Be 41
+            return $payload
+        }
+    }
+
+    It 'preserves software-key operations, silent flags, and invalid-handle errors without prompting' {
         Invoke-WinPrivCapability -Id 'smartcard.signing-pass-through' -Architecture $Architecture -Body {
             $native = Invoke-WinPrivProbe -Architecture $Architecture -Sandbox $sandbox -Operation software-signing
             $local = Invoke-WinPrivProbe -Architecture $Architecture -Sandbox $sandbox -Operation software-signing `
                 -WinPrivArguments @('/UseConsoleToken')
             Assert-WinPrivInvocationSucceeded $native
             Assert-WinPrivInvocationSucceeded $local
-            $local.ProbeResult.result.invalidHandleStatus | Should -Not -Be 0
-            $local.ProbeResult.result.invalidHandleStatus | Should -Be $native.ProbeResult.result.invalidHandleStatus
+            foreach ($property in @('invalidHandleStatus', 'invalidFinalizeStatus', 'invalidCertificateStatus')) {
+                $local.ProbeResult.result.$property | Should -Not -Be 0
+                $local.ProbeResult.result.$property | Should -Be $native.ProbeResult.result.$property
+            }
             foreach ($invocation in @($native, $local)) {
                 @($invocation.ProbeResult.result.signatures) | Should -HaveCount 2
                 foreach ($signature in $invocation.ProbeResult.result.signatures) {
