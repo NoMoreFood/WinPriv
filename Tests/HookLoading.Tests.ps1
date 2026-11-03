@@ -51,7 +51,7 @@ Describe 'WinPriv process logon (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinP
                 -WorkingDirectory $Sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--process-logon')
             Assert-WinPrivInvocationSucceeded $result
             $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
-            $payload.logonCases | Should -Be 42
+            $payload.logonCases | Should -Be 98
             return $payload
         }
     }
@@ -61,23 +61,26 @@ Describe 'WinPriv optional hook dependencies (<Architecture>)' -Tag 'Safe' -ForE
     BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'optional-hook-libraries' }
     AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
 
-    It 'loads the SQL library only when its hooks are enabled (<EnableSql>)' -ForEach @(
-        @{ EnableSql = $false }, @{ EnableSql = $true }
-    ) {
+    It 'loads the SQL library only when its hooks are enabled' {
         $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
         if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
-            Skip-WinPrivCapability -Id 'detour.loadlibrary-getprocaddress' -Architecture $Architecture `
+            Skip-WinPrivCapability -Id 'detour.optional-hook-libraries' -Architecture $Architecture `
                 -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
             return
         }
-        $options = if ($EnableSql) { @('/SqlConnectSearchReplace', 'ORIGINAL', 'REPLACED') } else { @() }
-        $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
-            -Arguments (@($options) + @($fixture, '--optional-hook-libraries'))
-        Assert-WinPrivInvocationSucceeded $result
-        $libraries = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
-        $libraries.odbc | Should -Be $EnableSql
-        $libraries.amsi | Should -BeFalse
-        $libraries.wldp | Should -BeFalse
+        Invoke-WinPrivCapability -Id 'detour.optional-hook-libraries' -Architecture $Architecture -Body {
+            foreach ($enableSql in @($false, $true)) {
+                $options = if ($enableSql) { @('/SqlConnectSearchReplace', 'ORIGINAL', 'REPLACED') } else { @() }
+                $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
+                    -Arguments (@($options) + @($fixture, '--optional-hook-libraries'))
+                Assert-WinPrivInvocationSucceeded $result
+                $libraries = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+                $libraries.odbc | Should -Be $enableSql -Because "SQL hooks enabled: $enableSql"
+                $libraries.amsi | Should -BeFalse
+                $libraries.wldp | Should -BeFalse
+                $libraries
+            }
+        }
     }
 }
 

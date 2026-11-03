@@ -130,8 +130,9 @@ namespace winpriv::detours
 
         DynamicCodeScope dynamicCode_;
 
-        // Hook staging must remain usable while a peer holds the process heap lock.
-        std::array<operation, 128> operations_;
+        // Hook staging must remain usable while a peer holds the process heap lock. Only one transaction is live at
+        // a time, so staged operations share static storage instead of enlarging every caller's stack frame.
+        inline static std::array<operation, 128> operations_;
         std::size_t operationCount_ = 0;
         LONG error_ = NO_ERROR;
         bool active_ = false;

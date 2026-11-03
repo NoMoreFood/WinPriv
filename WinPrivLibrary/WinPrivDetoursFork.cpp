@@ -2855,35 +2855,43 @@ static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
 {
     PVOID pbTry = NULL;
 
+    // The region searches honor only their own arguments, so clamp every window to the jump bounds.
+    const auto fromLo = [&](PBYTE pbLo, PBYTE pbHi) {
+        return detour_alloc_region_from_lo(std::max<PBYTE>(pbLo, pLo), std::min<PBYTE>(pbHi, pHi), error);
+    };
+    const auto fromHi = [&](PBYTE pbLo, PBYTE pbHi) {
+        return detour_alloc_region_from_hi(std::max<PBYTE>(pbLo, pLo), std::min<PBYTE>(pbHi, pHi), error);
+    };
+
     // NB: We must always also start the search at an offset from pbTarget
     //     in order to maintain ASLR entropy.
 
 #if defined(_WIN64)
     // Try looking 1GB below or lower.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
-        pbTry = detour_alloc_region_from_hi(pLo, pbTarget - 0x40000000, error);
+        pbTry = fromHi(pLo, pbTarget - 0x40000000);
     }
     // Try looking 1GB above or higher.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = detour_alloc_region_from_lo(pbTarget + 0x40000000, pHi, error);
+        pbTry = fromLo(pbTarget + 0x40000000, pHi);
     }
     // Try looking 1GB below or higher.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
-        pbTry = detour_alloc_region_from_lo(pbTarget - 0x40000000, pbTarget, error);
+        pbTry = fromLo(pbTarget - 0x40000000, pbTarget);
     }
     // Try looking 1GB above or lower.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = detour_alloc_region_from_hi(pbTarget, pbTarget + 0x40000000, error);
+        pbTry = fromHi(pbTarget, pbTarget + 0x40000000);
     }
 #endif
 
     // Try anything below.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
-        pbTry = detour_alloc_region_from_hi(pLo, pbTarget, error);
+        pbTry = fromHi(pLo, pbTarget);
     }
     // try anything above.
     if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
-        pbTry = detour_alloc_region_from_lo(pbTarget, pHi, error);
+        pbTry = fromLo(pbTarget, pHi);
     }
 
     return pbTry;
@@ -2910,7 +2918,6 @@ static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget, LONG& error)
     // Allocate a region when every existing region is full or outside the jump bounds.
     if (s_pRegion == NULL) {
         // Round pbTarget down to 64KB block.
-        // /RTCc RuntimeChecks breaks PtrToUlong.
         pbTarget = detour_alloc_round_down_to_region(pbTarget);
         s_pRegion = (DETOUR_REGION*)detour_alloc_trampoline_allocate_new(pbTarget, pLo, pHi, error);
         if (s_pRegion == NULL) {
@@ -3149,6 +3156,9 @@ static LONG detour_suspend_other_threads(
                 retryEnumeration = true;
                 retryError = error;
                 detour_resume_and_close_threads(threads);
+
+                // Give an exiting peer time to finish before enumerating again.
+                if (error == ERROR_ACCESS_DENIED) WaitForSingleObject(thread.get(), 10);
                 continue;
             }
 
@@ -3175,6 +3185,7 @@ static LONG detour_suspend_other_threads(
                 retryEnumeration = true;
                 retryError = error;
                 detour_resume_and_close_threads(threads);
+                if (error == ERROR_ACCESS_DENIED) WaitForSingleObject(thread.get(), 10);
                 continue;
             }
             threads.push_back(candidate);

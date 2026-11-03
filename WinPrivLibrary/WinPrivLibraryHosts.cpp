@@ -225,8 +225,10 @@ bool AttachHostHooks(winpriv::detours::transaction& transaction)
 		return false;
 	}
 
-	transaction.attach(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW, L"ws2_32.dll", "WSALookupServiceBeginW");
-	transaction.attach(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA, L"ws2_32.dll", "WSALookupServiceBeginA");
+	transaction.attach(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW,
+		L"ws2_32.dll", "WSALookupServiceBeginW");
+	transaction.attach(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA,
+		L"ws2_32.dll", "WSALookupServiceBeginA");
 	transaction.attach(TrueGetAddrInfoW, DetourGetAddrInfoW, L"ws2_32.dll", "GetAddrInfoW");
 	transaction.attach(TrueGetAddrInfoA, DetourGetAddrInfoA, L"ws2_32.dll", "getaddrinfo");
 	transaction.attach(TrueGetHostByName, DetourGetHostByName, L"ws2_32.dll", "gethostbyname");

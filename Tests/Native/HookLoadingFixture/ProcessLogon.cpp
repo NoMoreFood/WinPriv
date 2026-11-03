@@ -9,18 +9,23 @@ static struct
 {
     DWORD firstError, retryError;
     NTSTATUS enumerateStatus, grantStatus, revokeStatus;
-    bool assigned, createFails, extended, explicitDesktop, parametersValid;
-    DWORD logons, grants, revokes, creates, closes;
+    bool assigned, createFails, extended, explicitDesktop, noDomain, parametersValid;
+    DWORD logons, grants, revokes, creates, closes, tokens;
 } state{};
 
 static BOOL WINAPI TestLogon(LPCWSTR user, LPCWSTR domain, LPCWSTR password, DWORD type,
     DWORD provider, PHANDLE token)
 {
-    state.parametersValid &= wcscmp(user, L"user") == 0 && wcscmp(domain, L"domain") == 0 &&
+    state.parametersValid &= wcscmp(user, L"user") == 0 &&
+        (state.noDomain ? domain == nullptr : domain != nullptr && wcscmp(domain, L"domain") == 0) &&
         wcscmp(password, L"password") == 0 && type == LOGON32_LOGON_INTERACTIVE &&
         provider == LOGON32_PROVIDER_DEFAULT;
     const DWORD error = ++state.logons == 1 ? state.firstError : state.retryError;
-    if (error == ERROR_SUCCESS) *token = reinterpret_cast<HANDLE>(1);
+    if (error == ERROR_SUCCESS)
+    {
+        *token = reinterpret_cast<HANDLE>(1);
+        ++state.tokens;
+    }
     SetLastError(error);
     return error == ERROR_SUCCESS;
 }
@@ -28,7 +33,7 @@ static BOOL WINAPI TestLogon(LPCWSTR user, LPCWSTR domain, LPCWSTR password, DWO
 static BOOL WINAPI TestLookup(LPCWSTR, LPCWSTR account, PSID sid, LPDWORD sidSize,
     LPWSTR domain, LPDWORD domainSize, PSID_NAME_USE)
 {
-    state.parametersValid &= wcscmp(account, L"domain\\user") == 0;
+    state.parametersValid &= wcscmp(account, state.noDomain ? L"user" : L"domain\\user") == 0;
     *sidSize = SECURITY_MAX_SID_SIZE;
     *domainSize = 2;
     if (sid != nullptr && domain != nullptr) return TRUE;
@@ -134,7 +139,7 @@ int TestProcessLogon()
         { 0, 0, 0, 0, 0, false, false, 0, 1, 0, 0, 1 },
         { ERROR_LOGON_FAILURE, 0, 0, 0, 0, false, false, ERROR_LOGON_FAILURE, 1, 0, 0, 0 },
         { ERROR_LOGON_TYPE_NOT_GRANTED, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0,
-            false, false, 0, 2, 1, 0, 1 },
+            false, false, 0, 2, 1, 1, 1 },
         { ERROR_LOGON_TYPE_NOT_GRANTED, ERROR_LOGON_TYPE_NOT_GRANTED, 0, 0, 0,
             false, false, ERROR_LOGON_TYPE_NOT_GRANTED, 2, 1, 1, 0 },
         { ERROR_LOGON_TYPE_NOT_GRANTED, 0, 0, 0, 0, true, false, ERROR_LOGON_TYPE_NOT_GRANTED, 1, 0, 0, 0 },
@@ -147,15 +152,19 @@ int TestProcessLogon()
         { ERROR_LOGON_TYPE_NOT_GRANTED, ERROR_LOGON_TYPE_NOT_GRANTED, 0, 0, STATUS_ACCESS_DENIED,
             false, false, ERROR_ACCESS_DENIED, 2, 1, 1, 0 },
         { 0, 0, 0, 0, 0, false, true, ERROR_FILE_NOT_FOUND, 1, 0, 0, 1 },
+        { ERROR_LOGON_TYPE_NOT_GRANTED, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0,
+            false, true, ERROR_FILE_NOT_FOUND, 2, 1, 1, 1 },
+        { ERROR_LOGON_TYPE_NOT_GRANTED, 0, 0, 0, STATUS_ACCESS_DENIED,
+            false, false, ERROR_ACCESS_DENIED, 2, 1, 1, 0 },
     };
 
-    // Cover ordinary and extended startup information, plus inherited and explicit desktops.
+    // Cover ordinary and extended startup information, inherited and explicit desktops, and accounts with no domain.
     for (const auto& test : cases)
     {
-        for (DWORD mode = 0; mode < 4; ++mode)
+        for (DWORD mode = 0; mode < 8; ++mode)
         {
             state = { test.firstError, test.retryError, test.enumerateStatus, test.grantStatus, test.revokeStatus,
-                test.assigned, test.createFails, (mode & 1) != 0, (mode & 2) != 0, true };
+                test.assigned, test.createFails, (mode & 1) != 0, (mode & 2) != 0, (mode & 4) != 0, true };
             STARTUPINFOEXW startup{};
             startup.StartupInfo.cb = static_cast<DWORD>(state.extended ? sizeof(startup) : sizeof(STARTUPINFOW));
             startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
@@ -165,13 +174,13 @@ int TestProcessLogon()
             startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(4);
             PROCESS_INFORMATION process{};
             WCHAR command[] = L"command";
-            const BOOL created = DetourCreateProcessWithLogonW(L"user", L"domain", L"password",
-                LOGON_WITH_PROFILE, L"application", command, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT |
-                (state.extended ? EXTENDED_STARTUPINFO_PRESENT : 0u), reinterpret_cast<PVOID>(3), L"directory",
-                &startup.StartupInfo, &process);
+            const BOOL created = DetourCreateProcessWithLogonW(L"user", state.noDomain ? nullptr : L"domain",
+                L"password", LOGON_WITH_PROFILE, L"application", command,
+                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | (state.extended ? EXTENDED_STARTUPINFO_PRESENT : 0u),
+                reinterpret_cast<PVOID>(3), L"directory", &startup.StartupInfo, &process);
             if (created != (test.expectedError == 0) || GetLastError() != test.expectedError ||
                 !state.parametersValid || state.logons != test.logons || state.grants != test.grants ||
-                state.revokes != test.revokes || state.creates != test.creates || state.closes != test.creates ||
+                state.revokes != test.revokes || state.creates != test.creates || state.closes != state.tokens ||
                 startup.StartupInfo.lpDesktop != (state.explicitDesktop ? desktop : nullptr))
             {
                 std::fwprintf(stderr, L"Process logon failed: first error %lu, mode %lu, last error %lu.\n",
@@ -191,6 +200,6 @@ int TestProcessLogon()
     if (DetourCreateProcessWithLogonW(L"user", nullptr, nullptr, 0, nullptr, nullptr,
         EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup, &process) ||
         GetLastError() != ERROR_INVALID_PARAMETER || state.logons != 0) return 1;
-    std::wprintf(L"{\"schemaVersion\":1,\"logonCases\":%zu}\n", ARRAYSIZE(cases) * 4 + 2);
+    std::wprintf(L"{\"schemaVersion\":1,\"logonCases\":%zu}\n", ARRAYSIZE(cases) * 8 + 2);
     return 0;
 }

@@ -392,9 +392,9 @@ Optional Switches
 
    Allows CreateProcessWithLogonW calls from LocalSystem processes using the
    supplied user's credentials. Supports ordinary logon and LOGON_WITH_PROFILE.
-   Grants the user the local interactive-logon right if missing, retaining it
-   after successful logon. Explicit deny-logon policy still applies. Uses a
-   private default desktop when none is specified.
+   Temporarily grants the user the local interactive-logon right if missing,
+   removing it as soon as the logon completes. Explicit deny-logon policy
+   still applies. Uses a private default desktop when none is specified.
 
 /RunAsConsoleUser, /RunAsConsoleUserNoWait
 

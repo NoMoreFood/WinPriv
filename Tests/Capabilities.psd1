@@ -75,6 +75,7 @@
         @{ Id = 'detour.load-time-import'; Surface = 'RegQueryValueExW through a normal PE import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.delay-load-import'; Surface = 'RegQueryValueExW through an MSVC delay-load import'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.loadlibrary-getprocaddress'; Surface = 'RegQueryValueExW through LoadLibraryW/GetProcAddress'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
+        @{ Id = 'detour.optional-hook-libraries'; Surface = 'optional hook libraries load only when their hooks are enabled'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.thread-churn'; Surface = 'transactions during thread creation and exit with file hooks active'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.thread-heap-lock'; Surface = 'transactions while a peer holds the process heap lock'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'detour.thread-inaccessible'; Surface = 'transaction rollback when a peer cannot be suspended'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
@@ -86,7 +87,7 @@
         @{ Id = 'mitigation.dynamic-code-allocation'; Surface = 'ACG trampoline allocation error and rollback'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
 
         @{ Id = 'mitigation.dynamic-code-optout-propagation'; Surface = 'ACG opt-out launchers, injected targets, descendants, and restored thread policy'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
-        @{ Id = 'mitigation.dynamic-code-optout-transactions'; Surface = 'ACG scoped opt-out attach, abort, failed commit, nesting, existing permission, and C bridge'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
+        @{ Id = 'mitigation.dynamic-code-optout-transactions'; Surface = 'ACG scoped opt-out attach, abort, failed commit, nesting, and existing permission'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
 
         # Network, identity, OS, AMSI, crypto, and SQL hooks.
         @{ Id = 'network.mac-adapters-info'; Surface = '/MacOverride GetAdaptersInfo'; Profile = 'Safe'; Test = 'Hooks'; Gate = 'NetworkAdapter'; Required = $true }

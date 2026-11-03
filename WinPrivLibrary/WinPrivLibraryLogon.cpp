@@ -52,11 +52,11 @@ static DWORD LogonInteractiveUser(LPCWSTR sUser, LPCWSTR sDomain, LPCWSTR sPassw
 	}
 	iStatus = LsaAddAccountRights(hPolicy, vSid.data(), &tRight, 1);
 	if (iStatus < 0) return LsaNtStatusToWinError(iStatus);
-	if (LogonUserW(sUser, sDomain, sPassword, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, pToken))
-		return ERROR_SUCCESS;
+	const bool bLogon = LogonUserW(sUser, sDomain, sPassword, LOGON32_LOGON_INTERACTIVE,
+		LOGON32_PROVIDER_DEFAULT, pToken) != FALSE;
+	const DWORD iRetryError = bLogon ? ERROR_SUCCESS : GetLastError();
 
-	// Undo only our new assignment when it does not enable this logon.
-	const DWORD iRetryError = GetLastError();
+	// The token already carries the logon, so remove our assignment now instead of leaving a policy change behind.
 	iStatus = LsaRemoveAccountRights(hPolicy, vSid.data(), FALSE, &tRight, 1);
 	return iStatus < 0 ? LsaNtStatusToWinError(iStatus) : iRetryError;
 }
@@ -68,7 +68,8 @@ static BOOL WINAPI DetourCreateProcessWithLogonW(LPCWSTR sUser, LPCWSTR sDomain,
 	// Network-only credentials are outside this replacement's supported logon modes.
 	if (sUser == nullptr || pStartup == nullptr || pProcess == nullptr ||
 		(iLogonFlags != 0 && iLogonFlags != LOGON_WITH_PROFILE) ||
-		pStartup->cb < ((iCreationFlags & EXTENDED_STARTUPINFO_PRESENT) ? sizeof(STARTUPINFOEXW) : sizeof(STARTUPINFOW)))
+		pStartup->cb < ((iCreationFlags & EXTENDED_STARTUPINFO_PRESENT) ?
+			sizeof(STARTUPINFOEXW) : sizeof(STARTUPINFOW)))
 	{
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
@@ -90,7 +91,7 @@ static BOOL WINAPI DetourCreateProcessWithLogonW(LPCWSTR sUser, LPCWSTR sDomain,
 				tStartup.StartupInfo.lpDesktop = sDesktop;
 			bCreated = CreateProcessWithTokenW(hToken, iLogonFlags, sApplication, sCommandLine, iCreationFlags,
 				pEnvironment, sDirectory, &tStartup.StartupInfo, pProcess);
-			iError = GetLastError();
+			iError = bCreated ? ERROR_SUCCESS : GetLastError();
 		}
 
 		// Native cleanup must not replace the logon or process-creation error.
@@ -117,7 +118,6 @@ bool AttachLogonHooks(winpriv::detours::transaction& transaction)
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) ||
 		!GetTokenInformation(hToken, TokenUser, pUser, static_cast<DWORD>(vBuffer.size()), &iSize)) return false;
 	if (IsWellKnownSid(pUser->User.Sid, WinLocalSystemSid))
-		transaction.attach(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW,
-			L"advapi32.dll", "CreateProcessWithLogonW");
+		transaction.attach(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW);
 	return true;
 }
