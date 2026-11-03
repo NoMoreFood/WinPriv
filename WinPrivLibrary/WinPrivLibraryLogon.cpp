@@ -117,6 +117,7 @@ bool AttachLogonHooks(winpriv::detours::transaction& transaction)
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) ||
 		!GetTokenInformation(hToken, TokenUser, pUser, static_cast<DWORD>(vBuffer.size()), &iSize)) return false;
 	if (IsWellKnownSid(pUser->User.Sid, WinLocalSystemSid))
-		transaction.attach(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW);
+		transaction.attach(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW,
+			L"advapi32.dll", "CreateProcessWithLogonW");
 	return true;
 }

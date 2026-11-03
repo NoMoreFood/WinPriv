@@ -225,16 +225,16 @@ bool AttachHostHooks(winpriv::detours::transaction& transaction)
 		return false;
 	}
 
-	transaction.attach(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW);
-	transaction.attach(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA);
-	transaction.attach(TrueGetAddrInfoW, DetourGetAddrInfoW);
-	transaction.attach(TrueGetAddrInfoA, DetourGetAddrInfoA);
-	transaction.attach(TrueGetHostByName, DetourGetHostByName);
-	transaction.attach(TrueGetAddrInfoExW, DetourGetAddrInfoExW);
-	transaction.attach(TrueGetAddrInfoExA, DetourGetAddrInfoExA);
-	transaction.attach(TrueDnsQueryW, DetourDnsQueryW);
-	transaction.attach(TrueDnsQueryA, DetourDnsQueryA);
-	transaction.attach(TrueDnsQueryUtf8, DetourDnsQueryUtf8);
-	transaction.attach(TrueDnsQueryEx, DetourDnsQueryEx);
+	transaction.attach(TrueWSALookupServiceBeginW, DetourWSALookupServiceBeginW, L"ws2_32.dll", "WSALookupServiceBeginW");
+	transaction.attach(TrueWSALookupServiceBeginA, DetourWSALookupServiceBeginA, L"ws2_32.dll", "WSALookupServiceBeginA");
+	transaction.attach(TrueGetAddrInfoW, DetourGetAddrInfoW, L"ws2_32.dll", "GetAddrInfoW");
+	transaction.attach(TrueGetAddrInfoA, DetourGetAddrInfoA, L"ws2_32.dll", "getaddrinfo");
+	transaction.attach(TrueGetHostByName, DetourGetHostByName, L"ws2_32.dll", "gethostbyname");
+	transaction.attach(TrueGetAddrInfoExW, DetourGetAddrInfoExW, L"ws2_32.dll", "GetAddrInfoExW");
+	transaction.attach(TrueGetAddrInfoExA, DetourGetAddrInfoExA, L"ws2_32.dll", "GetAddrInfoExA");
+	transaction.attach(TrueDnsQueryW, DetourDnsQueryW, L"dnsapi.dll", "DnsQuery_W");
+	transaction.attach(TrueDnsQueryA, DetourDnsQueryA, L"dnsapi.dll", "DnsQuery_A");
+	transaction.attach(TrueDnsQueryUtf8, DetourDnsQueryUtf8, L"dnsapi.dll", "DnsQuery_UTF8");
+	transaction.attach(TrueDnsQueryEx, DetourDnsQueryEx, L"dnsapi.dll", "DnsQueryEx");
 	return true;
 }

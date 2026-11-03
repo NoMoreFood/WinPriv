@@ -837,7 +837,7 @@ int TestRejectedDetours()
 {
     // A rejected operation must abort every staged hook and preserve the original code and pointer.
     DWORD cases = 0;
-    for (DWORD invalid = 0; invalid < 2; ++invalid)
+    for (DWORD invalid = 0; invalid < 4; ++invalid)
     {
         auto target = &MitigationOriginal;
         winpriv::detours::transaction transaction;
@@ -845,13 +845,17 @@ int TestRejectedDetours()
         const LONG attached = transaction.error();
         decltype(target) missing = nullptr;
         if (invalid == 0) transaction.attach(target, static_cast<decltype(target)>(nullptr));
-        else transaction.attach(missing, MitigationReplacement);
+        else if (invalid == 1) transaction.attach(missing, MitigationReplacement);
+        else transaction.attach(target, MitigationReplacement,
+            invalid == 2 ? L"WinPrivMissingHookLibrary.dll" : L"kernel32.dll", "WinPrivMissingHookExport");
         const LONG rejected = transaction.error();
         auto skipped = ThreadOriginals[0];
         transaction.attach(skipped, MitigationReplacement);
         const LONG committed = transaction.commit();
         auto volatile call = &MitigationOriginal;
-        if (attached != NO_ERROR || rejected != (invalid == 0 ? ERROR_INVALID_PARAMETER : ERROR_INVALID_HANDLE) ||
+        constexpr LONG errors[]{
+            ERROR_INVALID_PARAMETER, ERROR_INVALID_HANDLE, ERROR_MOD_NOT_FOUND, ERROR_PROC_NOT_FOUND };
+        if (attached != NO_ERROR || rejected != errors[invalid] ||
             committed != rejected || transaction.error() != rejected || target != &MitigationOriginal ||
             skipped != ThreadOriginals[0] || call(11) != 40 || skipped(11) != 40)
             return Fail(L"invalid-transaction", ERROR_INVALID_DATA);
@@ -1014,6 +1018,15 @@ int TestDynamicCodeOptOut(const wchar_t* scenario)
 
 int wmain(const int argumentCount, wchar_t* arguments[])
 {
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--optional-hook-libraries") == 0)
+    {
+        // Inspect dependencies before the fixture invokes any optional feature APIs.
+        std::wprintf(L"{\"odbc\":%ls,\"amsi\":%ls,\"wldp\":%ls}\n",
+            GetModuleHandleW(L"odbc32.dll") != nullptr ? L"true" : L"false",
+            GetModuleHandleW(L"amsi.dll") != nullptr ? L"true" : L"false",
+            GetModuleHandleW(L"wldp.dll") != nullptr ? L"true" : L"false");
+        return 0;
+    }
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
     if (argumentCount == 2 && wcscmp(arguments[1], L"--smartcard-session-routing") == 0)
         return TestSmartCardSessionRouting();

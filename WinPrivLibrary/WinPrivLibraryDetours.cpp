@@ -1583,9 +1583,9 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 	if (VariableNotEmpty(WINPRIV_EV_MAC_OVERRIDE))
 	{
 		(void)GetMacOverrideInfo();
-		transaction.attach(TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum);
-		transaction.attach(TrueGetAdaptersInfo, DetourGetAdaptersInfo);
-		transaction.attach(TrueGetAdaptersAddresses, DetourGetAdaptersAddresses);
+		transaction.attach(TrueNetWkstaTransportEnum, DetourNetWkstaTransportEnum, L"netapi32.dll", "NetWkstaTransportEnum");
+		transaction.attach(TrueGetAdaptersInfo, DetourGetAdaptersInfo, L"iphlpapi.dll", "GetAdaptersInfo");
+		transaction.attach(TrueGetAdaptersAddresses, DetourGetAdaptersAddresses, L"iphlpapi.dll", "GetAdaptersAddresses");
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_REG_OVERRIDE))
@@ -1598,19 +1598,20 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 
 	if (VariableIsSet(WINPRIV_EV_DISABLE_AMSI, 1))
 	{
-		transaction.attach(TrueAmsiScanBuffer, DetourAmsiScanBuffer);
-		transaction.attach(TrueAmsiScanString, DetourAmsiScanString);
+		transaction.attach(TrueAmsiScanBuffer, DetourAmsiScanBuffer, L"amsi.dll", "AmsiScanBuffer");
+		transaction.attach(TrueAmsiScanString, DetourAmsiScanString, L"amsi.dll", "AmsiScanString");
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_CLM))
 	{
-		transaction.attach(TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy);
+		transaction.attach(TrueWldpGetLockdownPolicy, DetourWldpGetLockdownPolicy, L"wldp.dll", "WldpGetLockdownPolicy");
 		TrueWldpCanExecuteFile = reinterpret_cast<decltype(TrueWldpCanExecuteFile)>(
 			GetProcAddress(GetModuleHandleW(L"wldp.dll"), "WldpCanExecuteFile"));
 		if (TrueWldpCanExecuteFile != nullptr)
 			transaction.attach(TrueWldpCanExecuteFile, DetourWldpCanExecuteFile);
-		transaction.attach(TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList);
-		transaction.attach(TrueSaferIdentifyLevel, DetourSaferIdentifyLevel);
+		transaction.attach(TrueWldpIsClassInApprovedList, DetourWldpIsClassInApprovedList,
+			L"wldp.dll", "WldpIsClassInApprovedList");
+		transaction.attach(TrueSaferIdentifyLevel, DetourSaferIdentifyLevel, L"advapi32.dll", "SaferIdentifyLevel");
 	}
 
 	if (!AttachHostHooks(transaction)) return false;
@@ -1624,8 +1625,8 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
 		(void)GetLocalAdministratorsGroup();
-		transaction.attach(TrueIsUserAnAdmin, DetourIsUserAnAdmin);
-		transaction.attach(TrueCheckTokenMembership, DetourCheckTokenMembership);
+		transaction.attach(TrueIsUserAnAdmin, DetourIsUserAnAdmin, L"shell32.dll", "IsUserAnAdmin");
+		transaction.attach(TrueCheckTokenMembership, DetourCheckTokenMembership, L"advapi32.dll", "CheckTokenMembership");
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SERVER_EDITION, 1))
@@ -1637,18 +1638,18 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 
 	if (VariableNotEmpty(WINPRIV_EV_RECORD_CRYPTO))
 	{
-		transaction.attach(TrueBCryptEncrypt, DetourBCryptEncrypt);
-		transaction.attach(TrueBCryptDecrypt, DetourBCryptDecrypt);
-		transaction.attach(TrueCryptEncrypt, DetourCryptEncrypt);
-		transaction.attach(TrueCryptDecrypt, DetourCryptDecrypt);
-		transaction.attach(TrueRtlEncryptMemory, DetourRtlEncryptMemory);
-		transaction.attach(TrueRtlDecryptMemory, DetourRtlDecryptMemory);
+		transaction.attach(TrueBCryptEncrypt, DetourBCryptEncrypt, L"bcrypt.dll", "BCryptEncrypt");
+		transaction.attach(TrueBCryptDecrypt, DetourBCryptDecrypt, L"bcrypt.dll", "BCryptDecrypt");
+		transaction.attach(TrueCryptEncrypt, DetourCryptEncrypt, L"advapi32.dll", "CryptEncrypt");
+		transaction.attach(TrueCryptDecrypt, DetourCryptDecrypt, L"advapi32.dll", "CryptDecrypt");
+		transaction.attach(TrueRtlEncryptMemory, DetourRtlEncryptMemory, L"advapi32.dll", "SystemFunction040");
+		transaction.attach(TrueRtlDecryptMemory, DetourRtlDecryptMemory, L"advapi32.dll", "SystemFunction041");
 	}
 
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
 		if (!InitializeHookThreadState()) return false;
-		transaction.attach(TrueSQLDriverConnectW, DetourSQLDriverConnectW);
+		transaction.attach(TrueSQLDriverConnectW, DetourSQLDriverConnectW, L"odbc32.dll", "SQLDriverConnectW");
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
@@ -1663,10 +1664,10 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 	// special handling for com-based detours
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		transaction.attach(TrueCoInitializeEx, DetourCoInitializeEx);
-		transaction.attach(TrueCoInitialize, DetourCoInitialize);
-		transaction.attach(TrueCoCreateInstance, DetourCoCreateInstance);
-		transaction.attach(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx);
+		transaction.attach(TrueCoInitializeEx, DetourCoInitializeEx, L"ole32.dll", "CoInitializeEx");
+		transaction.attach(TrueCoInitialize, DetourCoInitialize, L"ole32.dll", "CoInitialize");
+		transaction.attach(TrueCoCreateInstance, DetourCoCreateInstance, L"ole32.dll", "CoCreateInstance");
+		transaction.attach(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx, L"ole32.dll", "CoCreateInstanceEx");
 	}
 	return true;
 }

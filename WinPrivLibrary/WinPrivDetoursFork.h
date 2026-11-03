@@ -86,6 +86,33 @@ namespace winpriv::detours
             }
         }
 
+        template <function_pointer Function>
+        void attach(Function& target, Function replacement, LPCWSTR library, LPCSTR name) noexcept
+        {
+            if (error_ != NO_ERROR) return;
+            if (!active_)
+            {
+                error_ = ERROR_INVALID_OPERATION;
+                return;
+            }
+
+            // Resolve the exported entry point instead of patching a private delay-load thunk.
+            const HMODULE module = LoadLibraryExW(library, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (module == nullptr)
+            {
+                error_ = GetLastError();
+                return;
+            }
+            const auto procedure = reinterpret_cast<Function>(GetProcAddress(module, name));
+            if (procedure == nullptr)
+            {
+                error_ = GetLastError();
+                return;
+            }
+            target = procedure;
+            attach(target, replacement);
+        }
+
         [[nodiscard]] LONG error() const noexcept { return error_; }
         [[nodiscard]] LONG commit() noexcept;
 

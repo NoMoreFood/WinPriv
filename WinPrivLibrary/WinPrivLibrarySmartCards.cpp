@@ -122,6 +122,6 @@ bool AttachSmartCardHooks(winpriv::detours::transaction& transaction)
 
 	// shortcut: WinSCard's capability query is undocumented, recheck it if Windows changes reader routing.
 	transaction.attach(TrueWinStationGetCurrentSessionCapabilities, DetourWinStationGetCurrentSessionCapabilities);
-	transaction.attach(TrueNCryptSignHash, DetourNCryptSignHash);
+	transaction.attach(TrueNCryptSignHash, DetourNCryptSignHash, L"ncrypt.dll", "NCryptSignHash");
 	return true;
 }

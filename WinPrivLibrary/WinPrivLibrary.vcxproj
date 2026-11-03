@@ -186,6 +186,10 @@
     <ClCompile>
       <AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <DelayLoadDLLs>user32.dll;ws2_32.dll;iphlpapi.dll;netapi32.dll;advapi32.dll;shell32.dll;ole32.dll;oleaut32.dll;odbc32.dll;bcrypt.dll;amsi.dll;wldp.dll;api-ms-win-core-handle-l1-1-0.dll;dnsapi.dll;ncrypt.dll;wtsapi32.dll;api-ms-win-core-localization-l1-2-0.dll;credui.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="WinPrivDetoursFork.cpp">

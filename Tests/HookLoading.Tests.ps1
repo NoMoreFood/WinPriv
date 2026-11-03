@@ -57,6 +57,30 @@ Describe 'WinPriv process logon (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinP
     }
 }
 
+Describe 'WinPriv optional hook dependencies (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'optional-hook-libraries' }
+    AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
+
+    It 'loads the SQL library only when its hooks are enabled (<EnableSql>)' -ForEach @(
+        @{ EnableSql = $false }, @{ EnableSql = $true }
+    ) {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'detour.loadlibrary-getprocaddress' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+        $options = if ($EnableSql) { @('/SqlConnectSearchReplace', 'ORIGINAL', 'REPLACED') } else { @() }
+        $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
+            -Arguments (@($options) + @($fixture, '--optional-hook-libraries'))
+        Assert-WinPrivInvocationSucceeded $result
+        $libraries = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+        $libraries.odbc | Should -Be $EnableSql
+        $libraries.amsi | Should -BeFalse
+        $libraries.wldp | Should -BeFalse
+    }
+}
+
 $loadingCases = foreach ($architectureCase in Get-WinPrivArchitectureCases) {
     foreach ($mode in @(
         @{ Name = 'normal-import'; Executable = 'WinPrivHookImport.exe'; Capability = 'detour.load-time-import' },
@@ -451,7 +475,7 @@ Describe 'WinPriv detour rejection (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
             $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
                 -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--rejected-detours')
             Assert-WinPrivInvocationSucceeded $result
-            ($result.StdOut | ConvertFrom-Json).rejectedCases | Should -Be $(if ($Architecture -eq 'ARM64') { 3 } else { 5 })
+            ($result.StdOut | ConvertFrom-Json).rejectedCases | Should -Be $(if ($Architecture -eq 'ARM64') { 5 } else { 7 })
         }
     }
 }
