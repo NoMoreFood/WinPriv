@@ -30,7 +30,7 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 {
 	// construct a command line containing just the argument passed this executable
 	const std::wstring sCommand = L"/RelaunchComplete " + ArgvToCommandLine(2, iArgc - 1,
-		std::vector<LPWSTR>({ aArgv, aArgv + iArgc }));
+		{ aArgv, static_cast<size_t>(iArgc) });
 
 	// get the current working directory to pass to the child process
 	WCHAR sCurrentDir[MAX_PATH + 1];
@@ -143,7 +143,7 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	PROCESS_INFORMATION o_ProcessInfo{};
 
 	// reconstruct a command line with a flag to indicate relaunch
-	const std::vector<LPWSTR> sArgs({ aArgv, aArgv + iArgc });
+	const std::span<LPWSTR const> sArgs(aArgv, static_cast<size_t>(iArgc));
 	std::wstring sCommand = ArgvToCommandLine(0, 0, sArgs) +
 		L" /RelaunchElevated " + ArgvToCommandLine(1, iArgc - 1, sArgs);
 

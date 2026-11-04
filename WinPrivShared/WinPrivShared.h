@@ -7,19 +7,22 @@
 #include <string>
 #include <string_view>
 #include <functional>
+#include <optional>
 #include <ranges>
+#include <span>
 
 //
 // Shared Functions
 //
 
 std::vector<std::wstring> EnablePrivs(const std::vector<std::wstring>& vRequestedPrivs);
+std::optional<std::vector<std::wstring>> GetPrivilegeNames();
 BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, BOOL bAddRights,
 	std::vector<std::wstring>* pAddedPrivs = nullptr);
 BOOL ModifyAccountRights(const std::wstring& sAccountName, const std::vector<std::wstring>& vRights, BOOL bGrant);
 BOOL ClearDenyRights(const std::wstring& sAccountName = L"");
 BOOL GrantAllRights(const std::wstring& sAccountName);
-std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, const std::vector<LPWSTR>& vArgs);
+std::wstring ArgvToCommandLine(unsigned int iStart, unsigned int iEnd, std::span<LPWSTR const> vArgs);
 void KillProcesses(const std::vector<std::wstring>& vProcessNames, DWORD iSessionId = MAXDWORD);
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset);
 std::wstring ResolveFileRulePath(std::wstring path);

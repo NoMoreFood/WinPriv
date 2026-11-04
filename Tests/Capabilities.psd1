@@ -11,6 +11,7 @@
         @{ Id = 'cli.help'; Surface = '/Help, /?, no arguments'; Profile = 'Safe'; Test = 'CliAndConfig'; Required = $true }
         @{ Id = 'cli.gui-help'; Surface = 'WinPriv.exe /Help, /?, and no arguments'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'InteractiveDesktop'; Required = $true }
         @{ Id = 'cli.list-privileges'; Surface = '/ListPrivileges'; Profile = 'Safe'; Test = 'CliAndConfig'; Required = $true }
+        @{ Id = 'cli.privilege-enumeration'; Surface = 'privilege enumeration failure and cleanup'; Profile = 'Safe'; Test = 'CliAndConfig'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'cli.case-insensitive'; Surface = 'case-insensitive switches and values'; Profile = 'Safe'; Test = 'CliAndConfig'; Required = $true }
         @{ Id = 'cli.argument-errors'; Surface = 'unknown and incomplete switches'; Profile = 'Safe'; Test = 'CliAndConfig'; Required = $true }
         @{ Id = 'cli.argument-roundtrip'; Surface = 'target argv, cwd, environment, Unicode'; Profile = 'Safe'; Test = 'CliAndConfig'; Required = $true }
@@ -143,6 +144,7 @@
         @{ Id = 'filesystem.break-locks-pass-through'; Surface = '/BreakRemoteLocks local pass-through'; Profile = 'Safe'; Test = 'ProcessAndUi'; Required = $true }
         @{ Id = 'filesystem.break-locks-remote'; Surface = '/BreakRemoteLocks remote close/retry'; Profile = 'External'; Test = 'Scope'; Gate = 'RemoteSmbFixture'; DefaultStatus = 'Unavailable'; Reason = 'Requires a second SMB host and is outside the local-admin profile.'; Required = $true }
         @{ Id = 'process.kill'; Surface = '/KillProcess'; Profile = 'Safe'; Test = 'ProcessAndUi'; Required = $true }
+        @{ Id = 'process.kill-identity'; Surface = '/KillProcess process identity revalidation'; Profile = 'Safe'; Test = 'ProcessAndUi'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'process.window-style'; Surface = '/WindowStyle all documented values'; Profile = 'Safe'; Test = 'ProcessAndUi'; Required = $true }
         @{ Id = 'process.measure-time'; Surface = '/MeasureTime'; Profile = 'Safe'; Test = 'ProcessAndUi'; Required = $true }
         @{ Id = 'process.launch-failure'; Surface = 'target executable launch failure'; Profile = 'Safe'; Test = 'ProcessAndUi'; Required = $true }

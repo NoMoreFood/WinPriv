@@ -4,14 +4,22 @@
 using PNTSTATUS = NTSTATUS*;
 #include <NTSecAPI.h>
 #include <cstdio>
+#include <atomic>
+#include <barrier>
+#include <thread>
 
-static struct
+static thread_local struct
 {
     DWORD firstError, retryError;
     NTSTATUS enumerateStatus, grantStatus, revokeStatus;
     bool assigned, createFails, extended, explicitDesktop, noDomain, parametersValid;
     DWORD logons, grants, revokes, creates, closes, tokens;
 } state{};
+
+static bool concurrentScenario;
+static std::atomic<bool> policyAssigned, overlappingGrants;
+static std::atomic<unsigned> policyOwners;
+static std::barrier logonBarrier(2);
 
 static BOOL WINAPI TestLogon(LPCWSTR user, LPCWSTR domain, LPCWSTR password, DWORD type,
     DWORD provider, PHANDLE token)
@@ -21,6 +29,7 @@ static BOOL WINAPI TestLogon(LPCWSTR user, LPCWSTR domain, LPCWSTR password, DWO
         wcscmp(password, L"password") == 0 && type == LOGON32_LOGON_INTERACTIVE &&
         provider == LOGON32_PROVIDER_DEFAULT;
     const DWORD error = ++state.logons == 1 ? state.firstError : state.retryError;
+    if (concurrentScenario && state.logons == 1) logonBarrier.arrive_and_wait();
     if (error == ERROR_SUCCESS)
     {
         *token = reinterpret_cast<HANDLE>(1);
@@ -53,8 +62,9 @@ static NTSTATUS NTAPI TestEnumerate(LSA_HANDLE, PSID, PLSA_UNICODE_STRING* right
 {
     static WCHAR name[] = L"seinteractivelogonright";
     static LSA_UNICODE_STRING right{ sizeof(name) - sizeof(WCHAR), sizeof(name), name };
-    *rights = state.assigned ? &right : nullptr;
-    *count = state.assigned ? 1u : 0u;
+    const bool assigned = concurrentScenario ? policyAssigned.load() : state.assigned;
+    *rights = assigned ? &right : nullptr;
+    *count = assigned ? 1u : 0u;
     return state.enumerateStatus;
 }
 
@@ -62,6 +72,12 @@ static NTSTATUS NTAPI TestGrant(LSA_HANDLE, PSID, PLSA_UNICODE_STRING right, ULO
 {
     state.parametersValid &= count == 1 && wcscmp(right->Buffer, SE_INTERACTIVE_LOGON_NAME) == 0;
     ++state.grants;
+    if (concurrentScenario)
+    {
+        policyAssigned = true;
+        if (++policyOwners > 1) overlappingGrants = true;
+        Sleep(50);
+    }
     return state.grantStatus;
 }
 
@@ -69,6 +85,11 @@ static NTSTATUS NTAPI TestRevoke(LSA_HANDLE, PSID, BOOLEAN all, PLSA_UNICODE_STR
 {
     state.parametersValid &= !all && count == 1 && wcscmp(right->Buffer, SE_INTERACTIVE_LOGON_NAME) == 0;
     ++state.revokes;
+    if (concurrentScenario)
+    {
+        policyAssigned = false;
+        --policyOwners;
+    }
     return state.revokeStatus;
 }
 
@@ -78,8 +99,9 @@ static NTSTATUS NTAPI TestPolicyCleanup(PVOID)
     return STATUS_SUCCESS;
 }
 
-static BOOL WINAPI TestClose(HANDLE)
+static BOOL WINAPI TestClose(HANDLE handle)
 {
+    if (handle != reinterpret_cast<HANDLE>(1)) return CloseHandle(handle);
     ++state.closes;
     SetLastError(ERROR_INVALID_HANDLE);
     return TRUE;
@@ -200,6 +222,28 @@ int TestProcessLogon()
     if (DetourCreateProcessWithLogonW(L"user", nullptr, nullptr, 0, nullptr, nullptr,
         EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup, &process) ||
         GetLastError() != ERROR_INVALID_PARAMETER || state.logons != 0) return 1;
-    std::wprintf(L"{\"schemaVersion\":1,\"logonCases\":%zu}\n", ARRAYSIZE(cases) * 8 + 2);
+
+    // Overlapping requests must finish their own logon before either removes the temporary assignment.
+    concurrentScenario = true;
+    std::array<DWORD, 2> errors{};
+    std::array<std::thread, 2> workers;
+    for (size_t index = 0; index < workers.size(); ++index)
+        workers[index] = std::thread([&, index]
+        {
+            state = {};
+            state.firstError = ERROR_LOGON_TYPE_NOT_GRANTED;
+            state.parametersValid = true;
+            HANDLE token = nullptr;
+            errors[index] = LogonInteractiveUser(L"user", L"domain", L"password", &token);
+        });
+    for (auto& worker : workers) worker.join();
+    concurrentScenario = false;
+    if (errors[0] != ERROR_SUCCESS || errors[1] != ERROR_SUCCESS || overlappingGrants || policyAssigned || policyOwners)
+    {
+        std::fwprintf(stderr, L"Concurrent logons failed: %lu, %lu; overlapping grants: %d.\n",
+            errors[0], errors[1], static_cast<int>(overlappingGrants.load()));
+        return 1;
+    }
+    std::wprintf(L"{\"schemaVersion\":1,\"logonCases\":%zu}\n", ARRAYSIZE(cases) * 8 + 4);
     return 0;
 }

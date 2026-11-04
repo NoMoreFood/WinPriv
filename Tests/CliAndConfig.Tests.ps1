@@ -69,6 +69,23 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
         }
     }
 
+    It 'rejects incomplete privilege enumeration and releases policy resources' {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'cli.privilege-enumeration' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+        Invoke-WinPrivCapability -Id 'cli.privilege-enumeration' -Architecture $Architecture -Body {
+            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                -WorkingDirectory $sandbox.Working -TimeoutSeconds 20 -ArgumentList @('--privilege-enumeration')
+            Assert-WinPrivInvocationSucceeded $result
+            $payload = ($result.StdOut.Trim() -split '\r?\n')[-1] | ConvertFrom-Json
+            $payload.privilegeEnumerationCases | Should -Be 3
+            return $payload
+        }
+    }
+
     It 'treats switch names and enumerated values case-insensitively' {
         Invoke-WinPrivCapability -Id 'cli.case-insensitive' -Architecture $Architecture -Body {
             $help = Invoke-WinPriv -Architecture $Architecture -Arguments @('/hElP') `

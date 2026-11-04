@@ -207,7 +207,7 @@ namespace WinPrivProbe
             ref uint enumerationContext, out IntPtr buffer, uint preferredMaximumLength,
             out uint countReturned);
 
-        public static Dictionary<string, object> RunCrypto(byte[] plaintext)
+        public static Dictionary<string, object> RunCrypto(byte[] plaintext, string collisionDirectory)
         {
             Dictionary<string, object> result = MethodResult(true, false, null);
             if (plaintext == null || plaintext.Length == 0 || plaintext.Length % 16 != 0)
@@ -218,6 +218,17 @@ namespace WinPrivProbe
             result["plaintextBase64"] = Convert.ToBase64String(plaintext);
             result["processId"] = GetCurrentProcessId();
             result["threadId"] = GetCurrentThreadId();
+
+            // Preserve an existing capture even when process and thread IDs are reused.
+            string collisionPath = null;
+            byte[] retainedCapture = Encoding.ASCII.GetBytes("Existing capture");
+            if (!string.IsNullOrEmpty(collisionDirectory))
+            {
+                collisionPath = Path.Combine(collisionDirectory, string.Format(CultureInfo.InvariantCulture,
+                    "00000-PID{0:D5}-TID{1:D5}-BCryptEncrypt.bin", GetCurrentProcessId(), GetCurrentThreadId()));
+                File.WriteAllBytes(collisionPath, retainedCapture);
+                result["collisionPath"] = collisionPath;
+            }
             byte[] key = new byte[16];
             byte[] iv = new byte[16];
             for (int i = 0; i < key.Length; i++)
@@ -250,6 +261,8 @@ namespace WinPrivProbe
             }
             result["cryptoApi"] = RunCryptoApi(plaintext, key, iv);
             result["rtl"] = RunRtlCrypto(plaintext);
+            result["collisionPreserved"] = collisionPath == null ||
+                BytesEqual(File.ReadAllBytes(collisionPath), retainedCapture);
             result["success"] = true;
             return result;
         }
@@ -337,6 +350,22 @@ namespace WinPrivProbe
                 Marshal.Copy(input, 0, inputPointer, input.Length);
                 Marshal.Copy(iv, 0, ivPointer, iv.Length);
                 int returned;
+
+                // Buffer sizing must succeed without recording an encryption that has not happened.
+                if (encrypt)
+                {
+                    string directory = Environment.GetEnvironmentVariable("_WINPRIV_EV_RECORD_CRYPTO_");
+                    string pattern = string.Format(CultureInfo.InvariantCulture,
+                        "*-PID{0:D5}-TID{1:D5}-BCryptEncrypt.bin", GetCurrentProcessId(), GetCurrentThreadId());
+                    int before = Directory.Exists(directory) ? Directory.GetFiles(directory, pattern).Length : 0;
+                    int queryStatus = BCryptEncrypt(key, inputPointer, input.Length, IntPtr.Zero,
+                        ivPointer, iv.Length, IntPtr.Zero, 0, out returned, 0);
+                    if (queryStatus != 0 || returned != input.Length)
+                        throw new InvalidOperationException("BCryptEncrypt size query failed: " + Hex32(queryStatus));
+                    if (Directory.Exists(directory) && Directory.GetFiles(directory, pattern).Length != before)
+                        throw new InvalidOperationException("BCryptEncrypt recorded a size query.");
+                    Marshal.Copy(iv, 0, ivPointer, iv.Length);
+                }
                 int status = encrypt
                     ? BCryptEncrypt(key, inputPointer, input.Length, IntPtr.Zero, ivPointer, iv.Length,
                         outputPointer, input.Length, out returned, 0)

@@ -237,14 +237,13 @@ Describe 'WinPriv release package' -Tag 'Safe' {
                 $stage = Join-Path $build 'PackageStage'
                 New-Item -ItemType Directory -Path $stage | Out-Null
                 $sentinel = Join-Path $stage 'another-build.txt'
-                Set-Content -LiteralPath $sentinel -Value 'preserved staging'
-                $busyPackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
+                Set-Content -LiteralPath $sentinel -Value 'stale staging'
+                $repackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
                     -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
-                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 20
-                Assert-WinPrivInvocationFailedCleanly $busyPackaging
-                (Get-Content -LiteralPath $sentinel) | Should -Be 'preserved staging'
-                Remove-Item -LiteralPath $sentinel
-                Remove-Item -LiteralPath $stage
+                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
+                Assert-WinPrivInvocationSucceeded $repackaging
+                $sentinel | Should -Not -Exist
+                $stage | Should -Not -Exist
 
                 $intermediate = Join-Path $build 'x64\WinPrivLibrary.dll'
                 $extraArchive = Join-Path $build 'unrelated.zip'

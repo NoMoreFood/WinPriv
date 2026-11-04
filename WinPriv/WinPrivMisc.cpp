@@ -3,57 +3,11 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 //
 
-#define UMDF_USING_NTSTATUS
-#include <ntstatus.h>
-
-#include <Windows.h>
-#include <winternl.h>
 #include <WinPrivShared.h>
-
-#include <map>
-#include <string>
-
-#include <ntlsa.h>
-
-std::map<std::wstring, std::wstring> GetPrivilegeList()
-{
-	// get a handle to the policy object; the list is empty if it cannot be opened
-	std::map<std::wstring, std::wstring> tPrivilegeList;
-	LSA_OBJECT_ATTRIBUTES tAttributes{};
-	SmartPointer<LSA_HANDLE> hPolicy(LsaClose, nullptr);
-	if (LsaOpenPolicy(nullptr, &tAttributes, POLICY_VIEW_LOCAL_INFORMATION, &hPolicy) != STATUS_SUCCESS)
-		return tPrivilegeList;
-
-	// enumerate the settable privileges with their display names when available
-	SmartPointer<PPOLICY_PRIVILEGE_DEFINITION> pBuffer(LsaFreeMemory, nullptr);
-	LSA_ENUMERATION_HANDLE hEnumeration = 0;
-	ULONG iCount = 0;
-	NTSTATUS iResult = 0;
-	while ((iResult = LsaEnumeratePrivileges(hPolicy, &hEnumeration, reinterpret_cast<PVOID*>(&pBuffer),
-		INFINITE, &iCount)) == STATUS_SUCCESS || iResult == STATUS_MORE_ENTRIES)
-	{
-		for (ULONG iIndex = 0; iIndex < iCount; iIndex++)
-		{
-			const std::wstring sName(pBuffer[iIndex].Name.Buffer, pBuffer[iIndex].Name.Length / sizeof(WCHAR));
-			DWORD iSize = 0;
-			DWORD iLanguage = 0;
-			LookupPrivilegeDisplayName(nullptr, sName.c_str(), nullptr, &iSize, &iLanguage);
-			std::wstring sDisplayName(++iSize, L'\0');
-			if (LookupPrivilegeDisplayName(nullptr, sName.c_str(), sDisplayName.data(), &iSize, &iLanguage))
-				sDisplayName.resize(iSize);
-			else sDisplayName = sName;
-			tPrivilegeList[sName] = sDisplayName;
-		}
-		pBuffer.Cleanup();
-	}
-
-	return tPrivilegeList;
-}
 
 std::wstring GetWinPrivHelp()
 {
-	// a messagebox will garble this help information so simply the help
-	// for the non-commandline version and defer to commandline for help
+	// Keep the message box brief and direct readers to the console switch reference.
 	if (!WinPrivUsesConsoleSubsystem())
 	{
 		return std::wstring(PROJECT_NAME) +
@@ -102,8 +56,10 @@ Optional Switches
 
 /WithPrivs <Privilege>[,<Privilege>,...]
 
-   Enables one or more named Windows privileges for the target process. Use a
-   comma-delimited list when enabling multiple privileges.
+   Requests named Windows privileges for the target process. Separate names
+   with commas. Missing privileges require local policy access, credentials
+   for the current account, and an elevated relaunch. Only account assignments
+   added by WinPriv are removed afterward. Console relaunches pause at exit.
 
    Example:
 
@@ -111,8 +67,8 @@ Optional Switches
 
 /WithAllPrivs
 
-   Attempts to enable every privilege available to the current account for
-   the target process.
+   Requests every privilege defined in local security policy, using the same
+   acquisition and relaunch behavior as /WithPrivs.
 
 /RegOverride <Registry Key Path> <Value Name> <Data Type> <Data Value>
 
@@ -149,12 +105,14 @@ Optional Switches
 
 /HostOverride <Target HostName> <Replacement HostName>
 
-   Specifies that any request to obtain the IP address for the specified target
-   will instead receive the specified replacement IP address. This is done by
-   intercepting calls to WSALookupServiceNext(), through which nearly all
-   address lookups ultimately occur. Be aware that, due to special security
-   protections, this will not work for Internet Explorer or programs that use
-   its libraries, but it should work for most other processes.
+   Resolves matching host names through the replacement host or IP address.
+   Hooks cover WSALookupServiceBegin, getaddrinfo/GetAddrInfoW, gethostbyname,
+   GetAddrInfoEx, and address queries through DnsQuery and DnsQueryEx.
+   Matching ignores case and a terminal dot and normalizes internationalized
+   names. The first matching rule wins; replacements do not cascade.
+   The replacement must resolve before launch. Windows resolves it again for
+   each request, preserving IPv4/IPv6 selection and asynchronous behavior.
+   Private DNS implementations are outside these hooks.
 
    Examples:
 
@@ -163,16 +121,14 @@ Optional Switches
 
 /FipsOn, /FipsOff
 
-   These options cause the system to report that Federal Information
-   Processing Standards (FIPS) enforcement is enabled or disabled, regardless
-   of the current system setting. They use /RegOverride on the FIPS-related
-   registry key.
+   Overrides the Enabled DWORD under the FipsAlgorithmPolicy registry key
+   for hooked reads. The machine's FIPS policy is unchanged.
 
 /PolicyBlock
 
-   This option will cause all registry queries to HKCU\Software\Policies and
-   HKLM\Software\Policies to be blocked. This is a convenience option that
-   actually uses the /RegBlock functionality.
+   Applies /RegBlock to Software\Policies and
+   Software\Microsoft\Windows\CurrentVersion\Policies under HKCU and HKLM.
+   It hides registry values without disabling all Group Policy enforcement.
 
 /FileRedirect <Source Path> <Destination Path>
 
@@ -186,15 +142,10 @@ Optional Switches
 
 /BypassFileSecurity
 
-   This option causes the target process to enable the backup and restore
-   privileges and alters the way the program accesses files to take advantage
-   of these extra privileges. When these privileges are enabled, all access
-   control lists on the file system are ignored. This allows an administrator
-   to inspect and alter files without changing permissions or taking ownership.
-
-   Effective uses of this option include using command-line utilities such as
-   icacls.exe to inspect or alter permissions. Using this with cmd.exe or
-   powershell.exe also provides a means to interact with secured areas.
+   Requests backup, restore, take-ownership, and change-notify privileges and
+   adds backup intent to file opens. Access depends on the privileges Windows
+   grants; sharing rules and other process or file protections still apply.
+   Missing privileges use the acquisition behavior described under /WithPrivs.
 
    Example:
 
@@ -205,31 +156,28 @@ Optional Switches
 		LR"(
 /BreakRemoteLocks
 
-   This option attempts to break remote file locks if a file cannot be accessed
-   because it is open in a program on a remote system. For example, this can
-   allow programs such as robocopy to mirror an area where the destination
-   system has a file in use. This option has no effect if the file is in use
-   by a program on the same system as WinPriv.
+   Tries to close matching SMB server file handles and retries an open that
+   failed with sharing-violation or access-denied status. Requires permission
+   to enumerate and close files on the server. It can close remote clients'
+   handles to locally shared files, but not ordinary local process handles.
 
 /MediumPlus
 
-   This option launches the target process using the plus variant of the
-   current user token's mandatory integrity level. For example, a process
-   running at Medium integrity will be launched at Medium Plus integrity.
-   This can be useful when an application requires a higher integrity level
-   than the current user's token provides without fully elevating to High.
+   Sets the duplicated session-user token to Medium Plus integrity. Place
+   this before a /RunAs... switch. It has no effect on normal hooked launches.
 
 /AdminImpersonate
 
-   This option causes any local administrator check using IsUserAnAdmin() or
-   CheckTokenMembership() to unconditionally succeed, regardless of whether
-   the user is actually a member of the local Administrators group.
+   Makes IsUserAnAdmin report true and successful CheckTokenMembership calls
+   report membership in the built-in Administrators group. Other group queries
+   retain their normal results. It grants no access and does not change token
+   membership. The target also receives the RunAsInvoker compatibility setting.
 
 /ServerEdition
 
-   This option causes the most common operating system version information
-   functions to indicate that the system is running a server edition of the
-   operating system.
+   Makes extended GetVersionExA/W queries report a server product type and
+   adjusts VerifyVersionInfoW product-type checks. The installed Windows
+   edition is unchanged.
 
 /AmsiOn
 
@@ -253,29 +201,31 @@ Optional Switches
    Uses locally attached smart cards and hardware keys through the Windows
    smart-card APIs, including from a Remote Desktop session. Applies to the
    target and its child processes.
-   Key creation, signing, and certificate installation through Microsoft's
-   Smart Card Key Storage Provider prompt for a PIN when needed. Enter the PIN
-   in the Windows dialog's password field. WinPriv does not save the PIN.
+   In remote sessions, key creation, signing, and certificate installation
+   through Microsoft's Smart Card Key Storage Provider prompt for a PIN when
+   needed. Enter it in the Windows dialog's password field. WinPriv does not
+   save the PIN. Explicitly silent requests remain silent.
    The token's normal PIN validation and permissions still apply.
 
 /RecordCrypto <Directory>
 
-   This option records the input to common Windows encryption functions and
-   the output from common Windows decryption functions. A separate file is
-   created for each operation in the specified directory. If 'SHOW' is
-   specified instead of a directory path, information is output to the
-   console or message boxes, depending on the type of application.
+   Records plaintext input to BCryptEncrypt, CryptEncrypt, and RtlEncryptMemory,
+   and output from their decryption counterparts. Nonempty buffers are written
+   to separate files without overwriting existing captures. Size-only queries
+   produce no capture. Use SHOW to display text through the target's console
+   or message boxes instead.
 
 /SqlConnectShow
 
-   This option displays the ODBC connection parameters immediately before a
-   connection operation occurs.
+   Displays intercepted ODBC and ADO connection strings after any successful
+   /SqlConnectSearchReplace rewrite.
 
 /SqlConnectSearchReplace <SearchString> <ReplaceString>
 
-   This option searches for and replaces text in an ODBC connection string
-   before passing it to the connection's Open() function. The search string
-   is parsed as a regular expression.
+   Rewrites ODBC and ADO connection strings before opening the connection,
+   including ADO's stored ConnectionString when Open omits it. The search is
+   a case-sensitive regular expression; replacement captures use $1, $2, etc.
+   An invalid pattern leaves the original string in use.
 
    Example:
 
@@ -284,10 +234,9 @@ Optional Switches
 
 /KillProcess <ProcessName>
 
-   Terminates the process with the specified name before running the target.
-   This is useful when the target prevents multiple instances and an existing
-   instance must be stopped before a new instance can run with WinPriv's
-   settings.
+   Attempts to terminate every matching executable in the caller's session
+   before launch, or the selected session when placed before a run-as command.
+   Matching ignores case. Termination failures do not stop the target launch.
 
 /ExtractLibrary
 
@@ -335,9 +284,10 @@ Optional Switches
    This option measures the execution time of the target process and displays
    it to the user.
 
-/ListPrivileges
+/ListPrivileges, /ListPrivs
 
-   This option displays a list of available privilege names and descriptions.
+   Lists the privilege names and descriptions defined in local security policy,
+   rather than the privileges enabled in the current token, then exits.
 
 /GrantRight <Right> <UserName>
 
@@ -366,8 +316,8 @@ Optional Switches
 
 /ClearDenyRights [UserName]
 
-   Removes all deny-logon rights from the named user or group account,
-   lifting any explicit LSA-level blocks on how the account may log on.
+   Removes deny-logon rights assigned directly to the named user or group.
+   A user's group assignments remain in effect.
    If no UserName is specified, deny-logon rights are removed from every
    account on the local machine. Accounts that have none of those rights
    are silently skipped. Administrator rights are required.
@@ -394,24 +344,27 @@ Optional Switches
    supplied user's credentials. Supports ordinary logon and LOGON_WITH_PROFILE.
    Temporarily grants the user the local interactive-logon right if missing,
    removing it as soon as the logon completes. Explicit deny-logon policy
-   still applies. Uses a private default desktop when none is specified.
+   still applies. Uses the Default desktop name when none is specified.
+   Non-SYSTEM callers retain the native behavior. Network-only logons are
+   unsupported by the replacement.
 
 /RunAsConsoleUser, /RunAsConsoleUserNoWait
 
-   Runs the specified program as the user logged in at the console. If no
-   user is logged in at the console, the first active remote user session
-   is used. This can be useful when WinPriv runs in a system context, such
-   as a scheduled task or system management agent.
+   Requires LocalSystem. Uses the active console user's token, falling back
+   to the first active non-SYSTEM user session. Disconnected sessions are
+   not selected. Waits for the target and returns its exit code.
    With /RunAsConsoleUserNoWait, WinPriv returns immediately after the
    process starts.
 
-/RunAsUser [UserName], /RunAsUserNoWait [UserName]
+/RunAsUser <UserName>, /RunAsUserNoWait <UserName>
 
-   Runs the specified program as the specified user. The user must be logged
-   in to the system at the console or remotely. This can be useful when WinPriv
-   runs in a system context, such as a scheduled task or system management
-   agent. With /RunAsUserNoWait, WinPriv returns immediately after the
-   process starts.
+   Requires LocalSystem. Selects an active session for the named account,
+   or a disconnected session if no active one exists. Waits for the target
+   and returns its exit code. /RunAsUserNoWait returns zero after creation.
+
+   Run-as launches use the session user's environment and interactive desktop.
+   They do not apply hook options, /WithPrivs, /WindowStyle, /UseShellExecute,
+   or /MeasureTime. To apply hooks, launch another WinPriv invocation there.
 
 Other Notes
 ===========

@@ -15,6 +15,23 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
         Remove-WinPrivSandbox -Sandbox $sandbox
     }
 
+    It 'rechecks process names and sessions before terminating a reused process ID' {
+        $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'process.kill-identity' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+        Invoke-WinPrivCapability -Id 'process.kill-identity' -Architecture $Architecture -Body {
+            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                -WorkingDirectory $sandbox.Working -TimeoutSeconds 20 -ArgumentList @('--process-control')
+            Assert-WinPrivInvocationSucceeded $result
+            $payload = $result.StdOut | ConvertFrom-Json
+            $payload.processControlCases | Should -Be 4
+            return $payload
+        }
+    }
+
     It 'kills only same-name processes in the current session before launching the target' {
         Invoke-WinPrivCapability -Id 'process.kill' -Architecture $Architecture -Body {
             $killName = "wpk-$([guid]::NewGuid().ToString('N').Substring(0, 10)).exe"

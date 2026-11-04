@@ -864,16 +864,21 @@ static void RecordCryptoData(LPCWSTR sFunction, PUCHAR pData, DWORD iDataLen) no
 		}
 		else
 		{
-			// formulate the file name to write to
+			// Reserve a new capture without overwriting files left by reused process and thread IDs.
 			static std::atomic<int> iOrder = 0;
-			const std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
-				+ IntToString(GetCurrentProcessId()) + L"-TID" + IntToString(GetCurrentThreadId())
-				+ L"-" + sFunction + L".bin";
+			HANDLE hCreated = INVALID_HANDLE_VALUE;
+			do
+			{
+				const std::wstring sFilePath = std::wstring(sCryptoValue) + L"\\" + IntToString(iOrder++) + L"-PID"
+					+ IntToString(GetCurrentProcessId()) + L"-TID" + IntToString(GetCurrentThreadId())
+					+ L"-" + sFunction + L".bin";
+				hCreated = CreateFile(sFilePath.c_str(), GENERIC_WRITE,
+					FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			} while (hCreated == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_EXISTS);
 
-			// create the crypto data file
+			// Write the plaintext to the reserved file.
 			DWORD iSizeWritten = 0;
-			SmartPointer<HANDLE> hFile(CloseHandle, CreateFile(sFilePath.c_str(), GENERIC_ALL,
-				FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+			SmartPointer<HANDLE> hFile(CloseHandle, hCreated);
 			if (hFile == INVALID_HANDLE_VALUE ||
 				WriteFile(hFile, pData, iDataLen, &iSizeWritten, nullptr) == 0 ||
 				iDataLen != iSizeWritten)
@@ -892,7 +897,7 @@ static decltype(&BCryptEncrypt) TrueBCryptEncrypt = BCryptEncrypt;
 
 static NTSTATUS WINAPI DetourBCryptEncrypt(_Inout_ BCRYPT_KEY_HANDLE hKey, _In_reads_bytes_opt_(cbInput) PUCHAR pbInput, _In_ ULONG cbInput, _In_opt_ VOID* pPaddingInfo, _Inout_updates_bytes_opt_(cbIV) PUCHAR pbIV, _In_ ULONG cbIV, _Out_writes_bytes_to_opt_(cbOutput, *pcbResult) PUCHAR pbOutput, _In_ ULONG cbOutput, _Out_ ULONG* pcbResult, _In_ ULONG dwFlags)
 {
-	RecordCryptoData(__FUNCTIONW__, pbInput, cbInput);
+	if (pbOutput != nullptr) RecordCryptoData(__FUNCTIONW__, pbInput, cbInput);
 	return TrueBCryptEncrypt(hKey, pbInput, cbInput, pPaddingInfo, pbIV, cbIV, pbOutput, cbOutput, pcbResult, dwFlags);
 }
 
@@ -996,7 +1001,7 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 												 SQLSMALLINT cchConnStrIn, _Out_writes_opt_(cchConnStrOutMax) SQLWCHAR* szConnStrOut, SQLSMALLINT cchConnStrOutMax,
 												 _Out_opt_ SQLSMALLINT* pcchConnStrOut, SQLUSMALLINT fDriverCompletion)
 {
-	LPWSTR szAllocatedConnStr = nullptr;
+	std::wstring sModifiedConnection;
 	const SQLWCHAR* const szOriginalConnStr = szConnStrIn;
 	const SQLSMALLINT cchOriginalConnStr = cchConnStrIn;
 	const bool bInspectableInput = szConnStrIn != nullptr &&
@@ -1012,18 +1017,13 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 			// handle search and replace
 			if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 			{
-				std::wstring sModifiedConnection;
 				if (TryRegexReplace(sPassedConnection,
 					_wgetenv(WINPRIV_EV_SQL_CONNECT_SEARCH),
 					GetSqlConnectReplacement(),
 					sModifiedConnection))
 				{
-					szAllocatedConnStr = _wcsdup(sModifiedConnection.c_str());
-					if (szAllocatedConnStr != nullptr)
-					{
-						szConnStrIn = szAllocatedConnStr;
-						cchConnStrIn = SQL_NTS;
-					}
+					szConnStrIn = sModifiedConnection.data();
+					cchConnStrIn = SQL_NTS;
 				}
 			}
 
@@ -1039,16 +1039,12 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 	}
 	catch (...)
 	{
-		free(szAllocatedConnStr);
-		szAllocatedConnStr = nullptr;
 		szConnStrIn = const_cast<SQLWCHAR*>(szOriginalConnStr);
 		cchConnStrIn = cchOriginalConnStr;
 	}
 
-	const SQLRETURN iResult = TrueSQLDriverConnectW(hdbc, hwnd, szConnStrIn, cchConnStrIn, szConnStrOut,
+	return TrueSQLDriverConnectW(hdbc, hwnd, szConnStrIn, cchConnStrIn, szConnStrOut,
 		cchConnStrOutMax, pcchConnStrOut, fDriverCompletion);
-	free(szAllocatedConnStr);
-	return iResult;
 }
 
 //   __   __            __   ___ ___  __        __   __
@@ -1653,6 +1649,10 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 	{
 		if (!InitializeHookThreadState()) return false;
 		transaction.attach(TrueSQLDriverConnectW, DetourSQLDriverConnectW, L"odbc32.dll", "SQLDriverConnectW");
+		transaction.attach(TrueCoInitializeEx, DetourCoInitializeEx, L"ole32.dll", "CoInitializeEx");
+		transaction.attach(TrueCoInitialize, DetourCoInitialize, L"ole32.dll", "CoInitialize");
+		transaction.attach(TrueCoCreateInstance, DetourCoCreateInstance, L"ole32.dll", "CoCreateInstance");
+		transaction.attach(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx, L"ole32.dll", "CoCreateInstanceEx");
 	}
 
 	if (VariableNotEmpty(WINPRIV_EV_PRIVLIST))
@@ -1664,13 +1664,5 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 		if (!EnablePrivs(vPrivs).empty()) PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.\n");
 	}
 
-	// special handling for com-based detours
-	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
-	{
-		transaction.attach(TrueCoInitializeEx, DetourCoInitializeEx, L"ole32.dll", "CoInitializeEx");
-		transaction.attach(TrueCoInitialize, DetourCoInitialize, L"ole32.dll", "CoInitialize");
-		transaction.attach(TrueCoCreateInstance, DetourCoCreateInstance, L"ole32.dll", "CoCreateInstance");
-		transaction.attach(TrueCoCreateInstanceEx, DetourCoCreateInstanceEx, L"ole32.dll", "CoCreateInstanceEx");
-	}
 	return true;
 }

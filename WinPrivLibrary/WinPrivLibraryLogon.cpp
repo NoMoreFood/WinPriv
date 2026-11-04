@@ -21,6 +21,17 @@ static DWORD LogonInteractiveUser(LPCWSTR sUser, LPCWSTR sDomain, LPCWSTR sPassw
 	const DWORD iLogonError = GetLastError();
 	if (iLogonError != ERROR_LOGON_TYPE_NOT_GRANTED) return iLogonError;
 
+	// Serialize temporary assignments across SYSTEM processes until the logon and policy cleanup finish.
+	SmartPointer<HANDLE> hMutex([](HANDLE hHandle)
+	{
+		ReleaseMutex(hHandle);
+		CloseHandle(hHandle);
+	}, CreateMutexW(nullptr, FALSE, L"Global\\WinPrivInteractiveLogon"));
+	if (!hMutex) return GetLastError();
+	const DWORD iWait = WaitForSingleObject(hMutex, 30000);
+	if (iWait != WAIT_OBJECT_0 && iWait != WAIT_ABANDONED)
+		return iWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+
 	// Resolve the account before granting rights in the local security policy.
 	const std::wstring sAccount = sDomain != nullptr && *sDomain != L'\0'
 		? std::wstring(sDomain) + L"\\" + sUser : sUser;

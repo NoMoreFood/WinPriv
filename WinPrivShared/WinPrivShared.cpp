@@ -154,14 +154,14 @@ std::wstring ResolveFileRulePath(std::wstring path)
 	return { name.Buffer, name.Length / sizeof(WCHAR) };
 }
 
-std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEnd, const std::vector<LPWSTR>& vArgs)
+std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEnd, std::span<LPWSTR const> vArgs)
 {
 	std::wstring sResult;
 	if (iStart > iEnd || iEnd >= vArgs.size()) return sResult;
 
 	for (unsigned int iCurrent = iStart; iCurrent <= iEnd; iCurrent++)
 	{
-		const std::wstring sArg(vArgs.at(iCurrent));
+		const std::wstring_view sArg(vArgs[iCurrent]);
 		if (!sResult.empty()) sResult += L' ';
 
 		// CommandLineToArgvW and the Microsoft C runtime give backslashes
@@ -464,12 +464,12 @@ BOOL ClearDenyRights(const std::wstring& sAccountName)
 	return bSuccessful;
 }
 
-BOOL GrantAllRights(const std::wstring& sAccountName)
+std::optional<std::vector<std::wstring>> GetPrivilegeNames()
 {
 	// enumerate all privileges defined on the system
 	SmartPointer<LSA_HANDLE> hPolicy(LsaClose, OpenLocalPolicy(POLICY_VIEW_LOCAL_INFORMATION));
-	if (!hPolicy) return FALSE;
-	std::vector<std::wstring> vRightsToGrant;
+	if (!hPolicy) return std::nullopt;
+	std::vector<std::wstring> vPrivileges;
 	LSA_ENUMERATION_HANDLE hEnum = 0;
 	ULONG iCount = 0;
 	NTSTATUS iResult = STATUS_SUCCESS;
@@ -478,18 +478,26 @@ BOOL GrantAllRights(const std::wstring& sAccountName)
 		reinterpret_cast<PVOID*>(&pPrivs), ULONG_MAX, &iCount)) == STATUS_SUCCESS || iResult == STATUS_MORE_ENTRIES)
 	{
 		for (ULONG i = 0; i < iCount; i++)
-			vRightsToGrant.emplace_back(pPrivs[i].Name.Buffer, pPrivs[i].Name.Length / sizeof(WCHAR));
+			vPrivileges.emplace_back(pPrivs[i].Name.Buffer, pPrivs[i].Name.Length / sizeof(WCHAR));
 		pPrivs.Cleanup();
 	}
 	if (iResult != STATUS_NO_MORE_ENTRIES)
 	{
 		PrintMessage(L"ERROR: Could not enumerate system privileges: %lu\n", LsaNtStatusToWinError(iResult));
-		return FALSE;
+		return std::nullopt;
 	}
+	std::ranges::sort(vPrivileges);
+	return vPrivileges;
+}
+
+BOOL GrantAllRights(const std::wstring& sAccountName)
+{
+	auto vRightsToGrant = GetPrivilegeNames();
+	if (!vRightsToGrant) return FALSE;
 
 	// append all allow-logon rights (these are not returned by LsaEnumeratePrivileges)
-	vRightsToGrant.insert(vRightsToGrant.end(), g_vLogonRights.begin(), g_vLogonRights.end());
-	return ModifyAccountRights(sAccountName, vRightsToGrant, TRUE);
+	vRightsToGrant->insert(vRightsToGrant->end(), g_vLogonRights.begin(), g_vLogonRights.end());
+	return ModifyAccountRights(sAccountName, *vRightsToGrant, TRUE);
 }
 
 void KillProcesses(const std::vector<std::wstring>& vProcessNames, DWORD iSessionId)
@@ -533,10 +541,23 @@ void KillProcesses(const std::vector<std::wstring>& vProcessNames, DWORD iSessio
 	std::ranges::stable_sort(vProcesses, {}, &std::pair<DWORD, size_t>::second);
 
 	// attempt termination silently and wait only when it succeeds
+	std::wstring sImage(32768, L'\0');
 	for (const auto& [iProcessId, iDepth] : vProcesses)
 	{
-		SmartPointer<HANDLE> hProcess(CloseHandle, OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, iProcessId));
-		if (!hProcess || TerminateProcess(hProcess, 1) == 0) continue;
+		SmartPointer<HANDLE> hProcess(CloseHandle,
+			OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, iProcessId));
+		if (!hProcess) continue;
+
+		// Recheck identity with the handle held so a reused process ID cannot select an unrelated process.
+		DWORD iImageSize = static_cast<DWORD>(sImage.size()), iProcessSessionId = 0;
+		if (!QueryFullProcessImageNameW(hProcess, 0, sImage.data(), &iImageSize) ||
+			!ProcessIdToSessionId(iProcessId, &iProcessSessionId) || iProcessSessionId != iSessionId) continue;
+		const WCHAR* sName = wcsrchr(sImage.c_str(), L'\\');
+		if (sName == nullptr || !std::ranges::any_of(vProcessNames, [&](const std::wstring& sProcessName)
+		{
+			return _wcsicmp(sName + 1, sProcessName.c_str()) == 0;
+		})) continue;
+		if (TerminateProcess(hProcess, 1) == 0) continue;
 		WaitForSingleObject(hProcess, INFINITE);
 	}
 }

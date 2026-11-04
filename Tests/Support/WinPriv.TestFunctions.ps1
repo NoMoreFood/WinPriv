@@ -155,6 +155,7 @@ function New-WinPrivLocalPrincipal {
             # interruption after this first SetInfo leaves a non-logon-capable
             # object that the pre-creation journal can identify exactly.
             [void]$entry.Put('UserFlags', 0x0203) # UF_NORMAL_ACCOUNT | UF_SCRIPT | UF_ACCOUNTDISABLE
+            [void]$entry.SetPassword($password)
         }
         [void]$entry.Put('Description', $description)
         [void]$entry.SetInfo()
@@ -180,7 +181,6 @@ function New-WinPrivLocalPrincipal {
             # locale-independent builtin Users alias so an ordinary standalone
             # workstation grants the fixture the same logon boundary as a
             # normal non-administrator local user.
-            [void]$resolved.SetPassword($password)
             $usersGroup = Get-WinPrivBuiltinUsersGroupEntry -MachineName $machineName
             [void]$usersGroup.Add("WinNT://$machineName/$name,user")
             [void]$resolved.Put('UserFlags', 0x0201) # UF_NORMAL_ACCOUNT | UF_SCRIPT

@@ -602,7 +602,8 @@ try {
             else {
                 $bytes = [Convert]::FromBase64String([string]$base64)
             }
-            $result = [WinPrivProbe.Native]::RunCrypto($bytes)
+            $result = [WinPrivProbe.Native]::RunCrypto($bytes,
+                [string](Get-ArgumentValue -Name 'collisionDirectory'))
         }
         'odbc' {
             $result = [WinPrivProbe.Native]::RunOdbc(

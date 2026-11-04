@@ -18,6 +18,8 @@
 int TestSmartCardSessionRouting();
 int TestSmartCardEnrollment();
 int TestProcessLogon();
+int TestProcessControl();
+int TestPrivilegeEnumeration();
 #endif
 
 #if (defined(WINPRIV_LOADING_MODE_IMPORT) + defined(WINPRIV_LOADING_MODE_DELAY) + defined(WINPRIV_LOADING_MODE_DYNAMIC)) != 1
@@ -1034,6 +1036,8 @@ int wmain(const int argumentCount, wchar_t* arguments[])
     if (argumentCount == 2 && wcscmp(arguments[1], L"--smartcard-enrollment") == 0)
         return TestSmartCardEnrollment();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--process-logon") == 0) return TestProcessLogon();
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--process-control") == 0) return TestProcessControl();
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--privilege-enumeration") == 0) return TestPrivilegeEnumeration();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--rejected-detours") == 0) return TestRejectedDetours();
 #endif
     if (argumentCount == 2 && wcscmp(arguments[1], L"--memory-exceptions") == 0)

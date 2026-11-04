@@ -1,5 +1,6 @@
 @ECHO OFF
 SETLOCAL ENABLEEXTENSIONS DISABLEDELAYEDEXPANSION
+SET COPYCMD=/Y
 TITLE Building WinPriv...
 SET PATH=%WINDIR%\system32;%WINDIR%\system32\WindowsPowerShell\v1.0;%PATH%
 SET PSModulePath=%WINDIR%\system32\WindowsPowerShell\v1.0\Modules;%PSModulePath%
@@ -31,9 +32,10 @@ IF ERRORLEVEL 1 (
     ECHO ERROR: 7-Zip is required to create the release archive.
     EXIT /B 1
 )
+IF EXIST "%STAGEDIR%" RD /S /Q "%STAGEDIR%"
 MD "%STAGEDIR%" 2>NUL
 IF ERRORLEVEL 1 (
-    ECHO ERROR: Cannot create "%STAGEDIR%". Check for another build or retained recovery files.
+    ECHO ERROR: Cannot create a clean staging folder at "%STAGEDIR%".
     EXIT /B 1
 )
 IF NOT DEFINED PACKAGEONLY (
@@ -107,7 +109,7 @@ FOR %%A IN (x86 x64 ARM64) DO (
 
 PUSHD "%STAGEDIR%"
 IF ERRORLEVEL 1 EXIT /B 1
-"%SEVENZIP%" a -tzip -mm=Deflate -mx=9 WinPriv.zip x86 x64 ARM64
+"%SEVENZIP%" a -y -tzip -mm=Deflate -mx=9 WinPriv.zip x86 x64 ARM64
 SET ZIPRESULT=%ERRORLEVEL%
 POPD
 IF NOT "%ZIPRESULT%"=="0" EXIT /B 1

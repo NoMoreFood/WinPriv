@@ -9,17 +9,13 @@ import, an MSVC delay-load import, and `LoadLibraryW`/`GetProcAddress`. No test
 executable is checked in. The dynamic fixture also launches WinPriv with strict
 Control Flow Guard (CFG) on the launcher and injected target, or Arbitrary Code
 Guard (ACG). It checks allocation errors against the production Detours source.
-Mitigation settings apply only to the fixture processes and disappear when those
-processes exit. Strict ACG cases verify rejection and accurate errors. Cases with
-thread opt-out permission verify registry hooks in protected targets and descendants,
-plus successful attach/detach, destructor abort, failed commit, nested transaction
-failure, preservation of an already opted-out thread, and the C attachment bridge.
-Assertions check that process ACG remains enabled and the original thread policy
-is restored.
+Mitigation settings apply only to the fixture processes and disappear when those processes exit. Strict ACG cases verify rejection and accurate errors. Cases with thread opt-out permission verify registry hooks in protected targets and descendants, successful attachment, destructor abort, failed commit, nested transaction failure, and preservation of an already opted-out thread. Assertions check that process ACG remains enabled and the original thread policy is restored.
 An unhooked native fixture first verifies ACG policy enforcement with executable
 allocation. Windows ARM64 emulation can leave ACG disabled for x86/x64 processes;
 those ACG cases are reported as unavailable with baseline evidence, while strict
 CFG and ordinary hooking tests still run.
+
+The dynamic fixture also checks process identity before termination, incomplete privilege enumeration, temporary logon-right concurrency, and smart-card routing using controlled native API failures. It does not require a physical token or create real user logons for those cases.
 
 ## Requirements
 
@@ -31,8 +27,7 @@ CFG and ordinary hooking tests still run.
   tools on the test workstation. A release-only binary tree without the native
   hook-loading fixtures can still be tested; the explicitly gated loading-path
   and mitigation capabilities are reported as unavailable.
-- Network access on the first run so Pester 5.7.1 can be downloaded into
-  `Tests/.tools`; later runs can use `-Offline`.
+- Network access on the first run to download the Pester version pinned in `RequiredModules.psd1` into `Tests/.tools`; later runs can use `-Offline`.
 - The Admin profile must run from an elevated administrator token.
 - Fresh-user Admin cases require the Secondary Logon service and a local policy
   that permits the builtin Users alias to log on locally.
@@ -54,44 +49,41 @@ pairing to exercise x86 -> x64 -> x86 and x64 -> x86 -> x64 process trees.
 PowerShell 7.6. It accepts `-Operation`, `-OutputPath`, and either
 `-ArgumentsJson` or UTF-8 `-ArgumentsBase64`, then writes one atomic JSON
 envelope containing `supported`, `success`, `reason`, `result`, and `error`.
-Operations cover process/token state, arguments, environment/current directory,
-registry Win32 and NT queries, networking, AMSI, identity/version, crypto,
-ODBC/ADO, Win32 and native files, LSA rights, and CreateProcessA/W descendants.
-The harness always invokes it through the architecture-matched host.
+Operations cover process/token state, arguments, environment/current directory, registry Win32 and NT queries, networking, AMSI, identity/version, crypto, ODBC/ADO, Win32 and native file redirection, clock offsets, smart-card routing, LSA rights, and CreateProcessA/W descendants. The harness always invokes it through the architecture-matched host.
 
 ## Running
 
 Build an isolated copy of the current working tree and run safe tests:
 
 ```powershell
-pwsh -NoProfile -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Safe
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Safe
 ```
 
 Use `-Configuration Debug` to build the isolated source copy with the Debug
 configuration and run the same suite against `Build\Debug`:
 
 ```powershell
-pwsh -NoProfile -File .\Tests\Invoke-WinPrivTests.ps1 `
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 `
   -Profile Safe -Configuration Debug
 ```
 
 Run the elevated, machine-state-sensitive tests:
 
 ```powershell
-pwsh -NoProfile -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Admin
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Admin
 ```
 
 Run all local profiles and retain every per-test artifact:
 
 ```powershell
-pwsh -NoProfile -File .\Tests\Invoke-WinPrivTests.ps1 `
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 `
   -Profile Full -Architecture Auto -KeepArtifacts
 ```
 
 Test previously built binaries instead of compiling a staged source copy:
 
 ```powershell
-pwsh -NoProfile -File .\Tests\Invoke-WinPrivTests.ps1 `
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 `
   -Profile Safe -BinaryRoot .\Build -Architecture Auto
 ```
 
@@ -115,8 +107,7 @@ journal; restoration is verified in `finally`. Use it only on a disposable VM.
   into the ACL-scoped sandbox; no repository access or loaded user profile is
   required. Every SID/right/ACL is journaled and restored before the test root
   is removed.
-- **Full** runs Safe followed by Admin. Interactive dialog tests run only when
-  an input desktop is available.
+- **Full** selects both Safe and Admin tests. Interactive dialog tests run only when an input desktop is available.
 
 Every launched process is bounded by a timeout and placed in a Windows Job
 Object when the host permits it. Process cleanup is by recorded PID, image path,
@@ -145,6 +136,4 @@ The results directory contains:
 - `artifacts/` — retained failure evidence, or all evidence with
   `-KeepArtifacts`.
 
-Known WinPriv defects are not allowlisted. A test failure, timeout, unexpected
-skip, missing capability result, or residual-state delta makes the runner and CI
-exit nonzero.
+Known WinPriv defects are not allowlisted. A test failure, timeout, unexpected skip, missing capability result, or residual-state delta makes the runner exit nonzero.

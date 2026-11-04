@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -35,7 +34,6 @@ extern int LaunchNewLogon(int iArgc, wchar_t* aArgv[]);
 extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
 extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait,
 	const std::vector<std::wstring>& vProcessesToKill);
-extern std::map<std::wstring, std::wstring> GetPrivilegeList();
 extern std::wstring GetWinPrivHelp();
 
 // Embedded injection libraries in bundle order with their extracted file names.
@@ -79,11 +77,11 @@ winpriv::memory::LibraryImage LoadLibraryResource(const DWORD iResourceId, std::
 int RunProgram(int iArgc, wchar_t* aArgv[])
 {
 	// Query local policy only when a privilege option needs it.
-	std::optional<std::map<std::wstring, std::wstring>> vPrivMaps;
-	const auto GetPrivileges = [&]() -> const std::map<std::wstring, std::wstring>&
+	std::optional<std::vector<std::wstring>> vPrivilegeNames;
+	const auto LoadPrivileges = [&]()
 	{
-		if (!vPrivMaps) vPrivMaps = GetPrivilegeList();
-		return *vPrivMaps;
+		if (!vPrivilegeNames) vPrivilegeNames = GetPrivilegeNames();
+		return vPrivilegeNames.has_value();
 	};
 
 	// Validate settings against the private CRT's limit before passing them to injected processes.
@@ -217,7 +215,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		const auto IsSwitch = [&sArg](LPCWSTR sName) { return _wcsicmp(sArg.c_str(), sName) == 0; };
 		const auto JoinArgs = [&](int iFirst, int iLast)
 		{
-			return ArgvToCommandLine(iFirst, iLast, std::vector<LPWSTR>(aArgv, aArgv + iArgc));
+			return ArgvToCommandLine(iFirst, iLast, { aArgv, static_cast<size_t>(iArgc) });
 		};
 		const auto HasArgs = [&](int iCount)
 		{
@@ -305,7 +303,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// enable every privilege defined on the system
 		else if (IsSwitch(L"/WithAllPrivs"))
 		{
-			for (const std::wstring& sPriv : GetPrivileges() | std::views::keys) vPrivsToEnable.push_back(sPriv);
+			if (!LoadPrivileges()) return __LINE__;
+			vPrivsToEnable.insert(vPrivsToEnable.end(), vPrivilegeNames->begin(), vPrivilegeNames->end());
 		}
 
 		// kill processes with the specified name before launch
@@ -339,16 +338,24 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// display the system's privilege names and descriptions
 		else if (IsSwitch(L"/ListPrivileges") || IsSwitch(L"/ListPrivs"))
 		{
-			const auto& vPrivileges = GetPrivileges();
+			if (!LoadPrivileges()) return __LINE__;
 			size_t iColumnSize = 0;
-			for (const std::wstring& sPriv : vPrivileges | std::views::keys)
+			for (const std::wstring& sPriv : *vPrivilegeNames)
 				iColumnSize = (std::max)(iColumnSize, sPriv.length());
 			const int iWidth = static_cast<int>(iColumnSize) + 1;
 			std::wstringstream ss;
 			ss << std::left << std::setw(iWidth) << L"Privilege Constant" << L" Privilege Description\n";
 			ss << std::setw(iWidth) << L"==================" << L" =====================\n";
-			for (const auto& [sName, sDescription] : vPrivileges)
+			for (const std::wstring& sName : *vPrivilegeNames)
+			{
+				DWORD iSize = 0, iLanguage = 0;
+				LookupPrivilegeDisplayName(nullptr, sName.c_str(), nullptr, &iSize, &iLanguage);
+				std::wstring sDescription(++iSize, L'\0');
+				if (LookupPrivilegeDisplayName(nullptr, sName.c_str(), sDescription.data(), &iSize, &iLanguage))
+					sDescription.resize(iSize);
+				else sDescription = sName;
 				ss << std::setw(iWidth) << sName << L" " << sDescription << L"\n";
+			}
 			PrintMessage(L"%s", ss.str().c_str());
 			return 0;
 		}
@@ -375,7 +382,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				PrintMessage(L"ERROR: Invalid file path specified for: %s\n", sArg.c_str());
 				return __LINE__;
 			}
-			sFileRules += ArgvToCommandLine(0, 1, { sSource.data(), sDestination.data() }) + L" ";
+			const std::array aPaths{ sSource.data(), sDestination.data() };
+			sFileRules += ArgvToCommandLine(0, 1, aPaths) + L" ";
 			iArg += 2;
 		}
 
@@ -645,10 +653,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// sort privs, remove duplicate privs, and pass the validated list to child processes
 	std::ranges::sort(vPrivsToEnable);
 	vPrivsToEnable.erase(std::ranges::unique(vPrivsToEnable).begin(), vPrivsToEnable.end());
+	if (!vPrivsToEnable.empty() && !LoadPrivileges()) return __LINE__;
 	std::wstring sPrivsToSetList;
 	for (const std::wstring& sPrivToSet : vPrivsToEnable)
 	{
-		if (!GetPrivileges().contains(sPrivToSet))
+		if (!std::ranges::binary_search(*vPrivilegeNames, sPrivToSet))
 		{
 			PrintMessage(L"ERROR: Invalid privilege specified: %s\n", sPrivToSet.c_str());
 			return __LINE__;
@@ -696,17 +705,19 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// kill any processes requested
 	KillProcesses(vProcessesToKill);
 
-	// Load the embedded library directly and retain all architecture images for descendant processes.
-	std::array<std::vector<BYTE>, 3> vLibraryBytes;
-	std::array<winpriv::memory::LibraryImage, 3> vImages{};
-	for (size_t iIndex = 0; iIndex < vImages.size(); ++iIndex)
-		vImages[iIndex] = LoadLibraryResource(vLibraryResources[iIndex].first, vLibraryBytes[iIndex]);
-	std::vector<BYTE> vBundle;
-	if (!winpriv::memory::CreateBundle(vImages, vBundle) ||
-		!winpriv::memory::LoadBundle(reinterpret_cast<const winpriv::memory::LibraryBundle*>(vBundle.data())))
+	// Release staging buffers once the loader owns the persistent images used by descendant processes.
 	{
-		PrintMessage(L"ERROR: Could not load injection library (error %lu).\n", GetLastError());
-		return __LINE__;
+		std::array<std::vector<BYTE>, 3> vLibraryBytes;
+		std::array<winpriv::memory::LibraryImage, 3> vImages{};
+		for (size_t iIndex = 0; iIndex < vImages.size(); ++iIndex)
+			vImages[iIndex] = LoadLibraryResource(vLibraryResources[iIndex].first, vLibraryBytes[iIndex]);
+		std::vector<BYTE> vBundle;
+		if (!winpriv::memory::CreateBundle(vImages, vBundle) ||
+			!winpriv::memory::LoadBundle(reinterpret_cast<const winpriv::memory::LibraryBundle*>(vBundle.data())))
+		{
+			PrintMessage(L"ERROR: Could not load injection library (error %lu).\n", GetLastError());
+			return __LINE__;
+		}
 	}
 
 	// create process with the requested window state and launch method

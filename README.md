@@ -14,14 +14,15 @@ Typical uses include testing security configurations on a per-process basis, wor
 - **Privilege management** — enable individual or all Windows privileges on a process token
 - **Registry interception** — override value reads or hide values under selected keys and subkeys
 - **Network spoofing** — substitute reported MAC addresses and host lookup results
-- **File system bypass** — request backup/restore access when opening files
+- **File system control** — redirect file and directory access; request backup/restore access when opening files
 - **OS and identity spoofing** — report server edition and fake administrator membership checks
 - **FIPS and policy control** — spoof FIPS enforcement state; suppress group policy registry reads
 - **Cryptography recording** — capture plaintext from selected Windows encryption and decryption APIs
 - **Hardware token access** — use smart cards and hardware keys attached to the local computer from Remote Desktop sessions
 - **SQL connection monitoring** — display or rewrite ODBC and ADO connection strings
 - **LSA rights management** — grant, revoke, and clear logon rights and privileges directly
-- **Run-as support** — launch programs in an existing user session from LocalSystem, optionally at Medium Plus integrity
+- **Run-as support** — launch programs in an existing user session from LocalSystem, optionally at Medium Plus integrity; enable credentialed process creation from SYSTEM targets
+- **Clock overrides** — shift the target's wall clock without changing the machine clock or elapsed-time measurements
 - **Process lifecycle utilities** — kill a named process before launch, measure execution time
 
 ## Downloads
@@ -43,7 +44,7 @@ refer to the filenames inside the archive.
 
 ## Requirements
 
-- Windows 10 or later
+- Windows 10, version 1709 or later (required by [IsWow64Process2](https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-iswow64process2))
 - Run elevated for account-rights changes or acquiring missing privileges. Overrides that do not request additional
   privileges can run as an ordinary user.
 - The `/RunAs...` switches require LocalSystem and an existing user session.
@@ -94,9 +95,7 @@ WinPrivCmd.exe [switches] <command to execute>
 WinPriv.exe    [switches] <command to execute>
 ```
 
-Switch names are case-insensitive and are processed from left to right. The first argument that does not start
-with `/` begins the target command; all following arguments belong to that command. Put WinPriv switches before
-the target. Repeated `/WithPrivs`, `/RegOverride`, `/RegBlock`, `/HostOverride`, and `/KillProcess` options accumulate.
+Switch names are case-insensitive and are processed from left to right. The first argument that does not start with `/` begins the target command; all following arguments belong to that command. Put WinPriv switches before the target. Repeated `/WithPrivs`, `/RegOverride`, `/RegBlock`, `/FileRedirect`, `/HostOverride`, and `/KillProcess` options accumulate.
 
 Normal launches wait for the immediate target process and return its exit code. Hooks propagate to descendants
 created through the intercepted `CreateProcessA/W` calls; WinPriv does not wait for the entire process tree.
@@ -176,9 +175,9 @@ Substitute the reported adapter addresses returned by `GetAdaptersAddresses`, `G
 ```
 
 **`/HostOverride <TargetHost> <ReplacementHost>`**  
-Override matching host lookups through the ANSI and Unicode `WSALookupServiceBegin/Next` APIs. The replacement
-must resolve to an IPv4 address before launch; an IPv4 literal is also accepted. Host names are matched exactly,
-ignoring case. Applications using other resolver paths or their own DNS implementation are outside these hooks.
+Resolve matching host names through the replacement host or IP address. Hooks cover `WSALookupServiceBeginA/W`, `getaddrinfo`/`GetAddrInfoW`, `gethostbyname`, `GetAddrInfoExA/W`, and address queries (`A`, `AAAA`, and `ANY`) through `DnsQuery_A/W/UTF8` and `DnsQueryEx`. Matching ignores case and a terminal dot and normalizes internationalized names. The first matching rule wins; replacement names do not cascade through later rules.
+
+The replacement must resolve before launch. Windows resolves it again for each request, preserving IPv4/IPv6 selection and asynchronous behavior. Applications with private DNS implementations are outside these hooks.
 
 ```
 /HostOverride db.internal 127.0.0.1
@@ -188,6 +187,16 @@ ignoring case. Applications using other resolver paths or their own DNS implemen
 ---
 
 ### File System
+
+**`/FileRedirect <SourcePath> <DestinationPath>`**
+
+Redirect file and directory access from the source to the destination. Directory rules include descendants and new files. Reads, writes, attribute queries, renames, hard links, and deletion use the redirected paths; source contents are not copied and missing destination directories are not created automatically.
+
+Paths are case-insensitive and relative paths resolve from WinPriv's working directory before launch. Repeat the switch for multiple rules. The longest matching source wins, with the last rule winning ties. Each operation applies one redirect, so rules do not cascade. File permissions and sharing rules still apply.
+
+```
+WinPrivCmd.exe /FileRedirect "C:\App\Data" "D:\Test Data" App.exe
+```
 
 **`/BypassFileSecurity`**  
 Request `SeBackupPrivilege`, `SeRestorePrivilege`, `SeTakeOwnershipPrivilege`, and `SeChangeNotifyPrivilege`, and
@@ -238,10 +247,7 @@ input to encryption and output from decryption. Captured nonempty buffers are wr
 in `<Directory>`. Specify `SHOW` to display text using the target process's console or message boxes instead.
 
 **`/UseConsoleToken`**  
-Use smart cards and hardware keys attached to the local computer through the Windows smart-card APIs, including
-from a Remote Desktop session, for the target process and its child processes. Signing through Microsoft's Smart
-Card Key Storage Provider prompts for the PIN in a Windows dialog; enter it in the password field. The PIN is not
-saved, and the token's normal PIN validation and permissions still apply.
+Use smart cards and hardware keys attached to the local computer through the Windows smart-card APIs, including from a Remote Desktop session, for the target process and its child processes. Key creation, signing, and certificate installation through Microsoft's Smart Card Key Storage Provider prompt for a PIN when needed in a remote session; enter it in the Windows dialog's password field. WinPriv does not save the PIN. Explicitly silent requests remain silent, and the token's normal PIN validation and permissions still apply.
 
 **`/SqlConnectShow`**  
 Display connection strings intercepted through ODBC `SQLDriverConnect` and ADO `Connection.Open`, after any
@@ -259,6 +265,17 @@ WinPrivCmd.exe /SqlConnectSearchReplace "Provider=SQLOLEDB" "Provider=SQLNCLI11"
 ---
 
 ### Process Execution Control
+
+**`/AllowCreateProcessAsSystem`**
+
+Allow hooked LocalSystem processes to call `CreateProcessWithLogonW` with user credentials. Ordinary logon and `LOGON_WITH_PROFILE` are supported; network-only logons are not. Non-SYSTEM callers retain native behavior.
+
+If the supplied account lacks the local interactive-logon right, WinPriv temporarily assigns it, retries the logon, and removes only that assignment before returning. Existing rights and explicit deny-logon policy remain in effect. Temporary assignments are serialized across WinPriv processes. When the caller omits a desktop, the replacement uses the `Default` desktop name.
+
+For example, from a SYSTEM-context task:
+```
+WinPrivCmd.exe /AllowCreateProcessAsSystem powershell.exe -File "C:\Tools\CredentialedTask.ps1"
+```
 
 The `/RunAs...` commands use an existing Windows session token and require LocalSystem. They launch with that
 user's environment on the interactive desktop, with a new console for console applications. They do not apply
@@ -281,9 +298,7 @@ for a password or creating a new user logon.
 Use the same account/session selection, returning zero after successful process creation without waiting.
 
 **`/KillProcess <ProcessName>`**  
-Attempt to terminate every matching executable name, such as `notepad.exe`, in the caller's session before launch.
-When placed before a `/RunAs...` command, it instead acts in the selected user's session. Matching ignores case;
-termination failures are reported but do not by themselves stop the target launch.
+Attempt to terminate every matching executable name, such as `notepad.exe`, in the caller's session before launch. When placed before a `/RunAs...` command, it instead acts in the selected user's session. Matching ignores case; termination failures are ignored and do not stop the target launch.
 
 **`/WindowStyle <Style>`**  
 Request an initial window state for a normal or shell launch: `NoActive`, `Hidden`, `Maximized`, `Minimized`, or
@@ -297,6 +312,16 @@ to another process may not pass through WinPriv's process-creation hooks.
 **`/MeasureTime`**  
 Print elapsed wall-clock time in seconds for a normal target launch and wait, including process creation. This
 does not measure all descendants or apply to the `/RunAs...` commands.
+
+**`/MockTime <Delta>`**
+
+Shift the target's wall clock and its descendants by a time delta, without changing the machine clock. Units are `y`/`yr`, `mo`/`mon`, `w`/`wk`, `d`, `h`/`hr`, `m`/`min`, `s`/`sec`, `ms`, and `us`. Abbreviations are case-insensitive; `yrs`, `mons`, `wks`, `hrs`, `mins`, and `secs` are also accepted.
+
+Combine components such as `+1y2mo-3d` or `"-2w 4h 30min"`. Components apply from left to right, and a sign applies to following components until changed; unsigned deltas are positive. Years and months are whole calendar units with month-end dates clamped. Other units accept decimal fractions down to 100 ns. The offset is fixed at launch, and the last `/MockTime` wins. Uptime, stopwatches, and relative waits retain their normal behavior.
+
+```
+WinPrivCmd.exe /MockTime +2d App.exe
+```
 
 ---
 

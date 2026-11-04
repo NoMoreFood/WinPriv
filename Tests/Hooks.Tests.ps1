@@ -645,11 +645,15 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
         [void](New-Item -ItemType Directory -Path $targetDirectory)
         $result = Invoke-WinPrivProbe -Architecture $Architecture `
             -WinPrivArguments @('/RecordCrypto', 'crypto records') -Operation crypto `
-            -Arguments @{ plaintextBase64 = [Convert]::ToBase64String($plaintext); workingDirectory = $targetDirectory } `
+            -Arguments @{ plaintextBase64 = [Convert]::ToBase64String($plaintext); workingDirectory = $targetDirectory
+                collisionDirectory = $directory } `
             -Sandbox $sandbox -TimeoutSeconds 30
         Assert-WinPrivInvocationSucceeded $result
 		$result.StdOut | Should -Not -Match 'Problem committing data'
 		$result.ProbeResult.result.cryptoApi.sizeQuerySuccess | Should -BeTrue
+        $result.ProbeResult.result.collisionPreserved | Should -BeTrue
+        $result.ProbeResult.result.bcryptSeparate.success | Should -BeTrue
+        $result.ProbeResult.result.bcryptInPlace.success | Should -BeTrue
         $recordingProcessId = '{0:D5}' -f [uint32]$result.ProbeResult.result.processId
         $recordingThreadId = '{0:D5}' -f [uint32]$result.ProbeResult.result.threadId
         $functions = @{
@@ -664,7 +668,8 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
         foreach ($entry in $functions.GetEnumerator()) {
             try {
                 Invoke-WinPrivCapability -Id $entry.Key -Architecture $Architecture -Body {
-                    $files = @(Get-ChildItem -LiteralPath $directory -Filter "*-$($entry.Value).bin" -File)
+                    $files = @(Get-ChildItem -LiteralPath $directory -Filter "*-$($entry.Value).bin" -File |
+                        Where-Object FullName -NE $result.ProbeResult.result.collisionPath)
                     $files.Count | Should -BeGreaterThan 0
                     foreach ($file in $files) {
                         $file.Name | Should -Match ("^[0-9]{{5}}-PID{0}-TID{1}-{2}\.bin$" -f `

@@ -143,11 +143,11 @@ Describe 'WinPriv local-principal fixture contract' -Tag 'Safe', 'Admin' {
         $script:fakeDirectory.UsersGroup.AddCalls[0] | Should -Be `
             "WinNT://$([Environment]::MachineName)/$($result[0].Name),user"
         @($script:fakeDirectory.Events.Method) | Should -Be @(
-            'Put', 'Put', 'SetInfo', 'SetPassword', 'GroupAdd', 'Put', 'SetInfo'
+            'Put', 'SetPassword', 'Put', 'SetInfo', 'GroupAdd', 'Put', 'SetInfo'
         )
         $script:fakeDirectory.Events[0].Name | Should -Be 'UserFlags'
         $script:fakeDirectory.Events[0].Value | Should -Be 0x0203
-        $script:fakeDirectory.Events[1].Name | Should -Be 'Description'
+        $script:fakeDirectory.Events[2].Name | Should -Be 'Description'
         $script:fakeDirectory.Events[5].Name | Should -Be 'UserFlags'
         $script:fakeDirectory.Events[5].Value | Should -Be 0x0201
         $script:fakeDirectory.Computer.DeleteCalls | Should -HaveCount 0

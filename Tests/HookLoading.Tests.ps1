@@ -51,7 +51,7 @@ Describe 'WinPriv process logon (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinP
                 -WorkingDirectory $Sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--process-logon')
             Assert-WinPrivInvocationSucceeded $result
             $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
-            $payload.logonCases | Should -Be 98
+            $payload.logonCases | Should -Be 100
             return $payload
         }
     }
