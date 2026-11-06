@@ -6,6 +6,8 @@
 #include "WinPrivLibrary.h"
 #include "WinPrivMemoryLoader.h"
 #include <array>
+#include <fcntl.h>
+#include <io.h>
 #include <vector>
 
 namespace winpriv::library
@@ -181,6 +183,7 @@ EXTERN_C BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 		}
 
 		// The private CRT has no loader shutdown callback to flush buffered diagnostic output.
+		if (const int output = _fileno(stdout); output >= 0) _setmode(output, _O_U8TEXT);
 		setvbuf(stdout, nullptr, _IONBF, 0);
 
 		// Install feature and child-process hooks in one transaction; the image remains loaded until process exit.

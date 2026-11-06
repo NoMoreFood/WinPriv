@@ -10,4 +10,5 @@ Build/*-hash.txt
 Build/*/*.lib
 Build/*/*.dll
 Build/*/Temp/
+/Build/Temp/
 Tests/Native/Build/

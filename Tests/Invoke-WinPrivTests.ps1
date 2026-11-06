@@ -362,27 +362,43 @@ function Build-WinPrivStage {
     $solution = Join-Path $SourceRoot 'WinPriv.sln'
     if (-not (Test-Path -LiteralPath $solution -PathType Leaf)) { throw "Staged solution is missing: '$solution'." }
     $msbuild = Find-WinPrivMSBuild
+    # Complete every payload before any launcher embeds it, including Debug images with unique PDB signatures.
+    $projects = @(
+        'WinPrivShared\WinPrivShared.vcxproj',
+        'WinPrivLibrary\WinPrivLibrary.vcxproj',
+        'WinPriv\WinPriv.vcxproj',
+        'WinPrivCmd\WinPrivCmd.vcxproj',
+        'Tests\Native\HookLoadingFixture\HookLoadingFixture.Import.vcxproj',
+        'Tests\Native\HookLoadingFixture\HookLoadingFixture.DelayLoad.vcxproj',
+        'Tests\Native\HookLoadingFixture\HookLoadingFixture.Dynamic.vcxproj'
+    )
+    foreach ($project in $projects) {
+        foreach ($platform in @('Win32', 'x64', 'ARM64')) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($project)
+            $logPath = Join-Path $LogRoot "build-$name-$platform.log"
+            Write-Host "Building $name $Configuration|$platform with v145..."
+            $arguments = @(
+                (Join-Path $SourceRoot $project),
+                '/nologo', '/m:1', '/t:Rebuild', '/v:minimal',
+                "/p:Configuration=$Configuration",
+                "/p:Platform=$platform",
+                '/p:PlatformToolset=v145',
+                '/p:SkipCodeSigning=true',
+                '/p:BuildProjectReferences=false',
+                '/p:WinPrivPayloadChildBuild=true'
+            )
+            & $msbuild @arguments 2>&1 | Tee-Object -FilePath $logPath | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "$name $Configuration|$platform build failed with exit code $LASTEXITCODE. See '$logPath'."
+            }
+        }
+    }
+    $binaryRoot = if ($Configuration -eq 'Debug') {
+        Join-Path (Join-Path $SourceRoot 'Build') 'Debug'
+    } else {
+        Join-Path $SourceRoot 'Build'
+    }
     foreach ($platform in @('x86', 'x64', 'ARM64')) {
-        $logPath = Join-Path $LogRoot "build-$platform.log"
-        Write-Host "Building WinPriv $Configuration|$platform with v145..."
-        $arguments = @(
-            $solution,
-            '/nologo', '/m:1', '/t:Rebuild', '/v:minimal',
-            "/p:Configuration=$Configuration",
-            "/p:Platform=$platform",
-            '/p:PlatformToolset=v145',
-            '/p:SkipCodeSigning=true',
-            '/p:BuildProjectReferences=true'
-        )
-        & $msbuild @arguments 2>&1 | Tee-Object -FilePath $logPath | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "WinPriv $Configuration|$platform build failed with exit code $LASTEXITCODE. See '$logPath'."
-        }
-        $binaryRoot = if ($Configuration -eq 'Debug') {
-            Join-Path (Join-Path $SourceRoot 'Build') 'Debug'
-        } else {
-            Join-Path $SourceRoot 'Build'
-        }
         $output = Join-Path $binaryRoot $platform
         foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll')) {
             if (-not (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf)) {

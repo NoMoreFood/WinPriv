@@ -175,8 +175,12 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
                 @{ Arguments = [string[]]@('/GrantAllRights') },
                 @{ Arguments = [string[]]@('/ShowMessage') },
                 @{ Arguments = [string[]]@('/AskMessage') },
+                @{ Arguments = [string[]]@('/RunAsConsoleUser') },
+                @{ Arguments = [string[]]@('/RunAsConsoleUserNoWait') },
                 @{ Arguments = [string[]]@('/RunAsUser') },
-                @{ Arguments = [string[]]@('/RunAsUserNoWait') }
+                @{ Arguments = [string[]]@('/RunAsUser', 'unused-user') },
+                @{ Arguments = [string[]]@('/RunAsUserNoWait') },
+                @{ Arguments = [string[]]@('/RunAsUserNoWait', 'unused-user') }
             )
             foreach ($case in $cases) {
                 $result = Invoke-WinPriv -Architecture $Architecture -Arguments $case.Arguments `
@@ -184,6 +188,17 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
                 Assert-WinPrivInvocationFailedCleanly $result
             }
             return @{ NegativeCases = $cases.Count }
+        }
+    }
+
+    It 'rejects empty named run-as accounts before selecting a session' {
+        foreach ($switch in '/RunAsUser', '/RunAsUserNoWait') {
+            $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox `
+                -Arguments @($switch, '', 'cmd.exe', '/c', 'exit', '0') -TimeoutSeconds 10
+            Assert-WinPrivInvocationFailedCleanly $result
+            $result.ExitCode | Should -Be 87
+            $result.StdOut | Should -Match 'A user name is required'
+            $result.StdOut | Should -Not -Match 'Launching process'
         }
     }
 

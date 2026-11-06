@@ -263,6 +263,27 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
         }
     }
 
+    It 'overrides and blocks registry keys containing quotes in the first rule' {
+        $quotedKey = $subKey + '\quoted" key'
+        $quotedPath = "Registry::HKEY_CURRENT_USER\$quotedKey"
+        New-Item -Path $quotedPath -Force | Out-Null
+        New-ItemProperty -Path $quotedPath -Name Value -PropertyType DWord -Value 7 -Force | Out-Null
+        $arguments = @{ root = 'HKCU'; key = $quotedKey; valueName = 'Value'; method = 'win32' }
+
+        $overridden = Invoke-WinPrivProbe -Architecture $Architecture -Sandbox $sandbox `
+            -WinPrivArguments @('/RegOverride', "HKCU\$quotedKey", 'Value', 'REG_DWORD', '42') `
+            -Operation registry-worker -Arguments $arguments -TimeoutSeconds 30
+        Assert-WinPrivInvocationSucceeded $overridden
+        $overridden.ProbeResult.result.displayValue | Should -Be 42
+
+        $blocked = Invoke-WinPrivProbe -Architecture $Architecture -Sandbox $sandbox `
+            -WinPrivArguments @('/RegBlock', "HKCU\$quotedKey") `
+            -Operation registry-worker -Arguments $arguments -TimeoutSeconds 30
+        Assert-WinPrivInvocationFailedCleanly $blocked
+        $blocked.ProbeResult.result.status | Should -Be 2
+        Get-ItemPropertyValue -LiteralPath $quotedPath -Name Value | Should -Be 7
+    }
+
     It 'processes multiple ordered rules without an earlier invalid rule suppressing later valid rules' {
         Invoke-WinPrivCapability -Id 'registry.multiple-rules' -Architecture $Architecture -Body {
             $valueName = 'OrderedValue'
@@ -752,6 +773,21 @@ Describe 'WinPriv crypto and SQL hooks (<Architecture>)' -Tag 'Safe' -ForEach $a
         }
         if ($failures.Count -gt 0) {
             throw ($failures -join [Environment]::NewLine)
+        }
+    }
+
+    It 'preserves Unicode in injected diagnostics from ANSI and Unicode SQL calls' {
+        $replacement = '東京 café'
+        $connection = 'Driver={WinPrivMissing};Server=ORIGINAL;Marker=after-unicode;'
+        $result = Invoke-WinPrivProbe -Architecture $Architecture -Sandbox $sandbox `
+            -WinPrivArguments @('/SqlConnectShow', '/SqlConnectSearchReplace', 'ORIGINAL', $replacement) `
+            -Operation odbc -Arguments @{ connectionString = $connection } -TimeoutSeconds 30
+        Assert-WinPrivInvocationSucceeded $result
+        $result.ProbeResult.success | Should -BeTrue
+        $messages = @($result.StdOut -split '\r?\n' | Where-Object { $_ -like 'SQL Connection String:*' })
+        $messages | Should -HaveCount 2
+        foreach ($message in $messages) {
+            $message | Should -Be ('SQL Connection String: ' + $connection.Replace('ORIGINAL', $replacement))
         }
     }
 

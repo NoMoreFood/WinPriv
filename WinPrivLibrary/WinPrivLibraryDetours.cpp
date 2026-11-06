@@ -242,11 +242,12 @@ static bool bRegInterceptBlocks = false;
 
 static void InitializeRegistryOverrides()
 {
-	// parse the parameters to create the intercept list
+	// Prefix a program name so the first key receives normal argument quote escaping.
 	int iParams = 0;
-	SmartPointer<LPWSTR*> sParams(LocalFree, CommandLineToArgvW(_wgetenv(WINPRIV_EV_REG_OVERRIDE), &iParams));
+	const std::wstring sCommand = std::wstring(L"WinPriv ") + _wgetenv(WINPRIV_EV_REG_OVERRIDE);
+	SmartPointer<LPWSTR*> sParams(LocalFree, CommandLineToArgvW(sCommand.c_str(), &iParams));
 	if (sParams == nullptr) return;
-	for (int iParam = 0; iParam + 3 < iParams; iParam += 4)
+	for (int iParam = 1; iParam + 3 < iParams; iParam += 4)
 	{
 		// entries that cannot be fully decoded are released and skipped
 		std::unique_ptr<RegInterceptInfo, decltype(&FreeRegInterceptInfo)> tInterceptInfo(

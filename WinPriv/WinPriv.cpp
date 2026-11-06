@@ -256,8 +256,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		{
 			const bool bNamedUser = IsSwitch(L"/RunAsUser") || IsSwitch(L"/RunAsUserNoWait");
 			const bool bWait = !IsSwitch(L"/RunAsConsoleUserNoWait") && !IsSwitch(L"/RunAsUserNoWait");
-			if (bNamedUser && !HasArgs(1)) return __LINE__;
+			if (!HasArgs(bNamedUser ? 2 : 1)) return __LINE__;
 			const std::wstring sUser = bNamedUser ? aArgv[++iArg] : L"";
+			if (bNamedUser && sUser.empty())
+			{
+				PrintMessage(L"ERROR: A user name is required for: %s\n", sArg.c_str());
+				return ERROR_INVALID_PARAMETER;
+			}
 			sProcessParams = JoinArgs(iArg + 1, iArgc - 1);
 			if (bNamedUser) wprintf(L"INFO: Launching process as user %s: %s\n", sUser.c_str(), sProcessParams.c_str());
 			return LaunchAsUser(sProcessParams, sUser, bWait, vProcessesToKill);
