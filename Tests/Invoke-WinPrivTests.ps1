@@ -368,6 +368,8 @@ function Build-WinPrivStage {
         'WinPrivLibrary\WinPrivLibrary.vcxproj',
         'WinPriv\WinPriv.vcxproj',
         'WinPrivCmd\WinPrivCmd.vcxproj',
+        'Tests\Native\HookLoadingFixture\HookLoadingFixture.Probe.vcxproj',
+        'Tests\Native\HookLoadingFixture\HookLoadingFixture.Lifecycle.vcxproj',
         'Tests\Native\HookLoadingFixture\HookLoadingFixture.Import.vcxproj',
         'Tests\Native\HookLoadingFixture\HookLoadingFixture.DelayLoad.vcxproj',
         'Tests\Native\HookLoadingFixture\HookLoadingFixture.Dynamic.vcxproj'
@@ -406,7 +408,8 @@ function Build-WinPrivStage {
             }
         }
         $fixtureOutput = Join-Path (Join-Path (Join-Path $SourceRoot 'Tests\Native\Build') $Configuration) $platform
-        foreach ($name in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe', 'WinPrivHookDynamic.exe')) {
+        foreach ($name in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe',
+            'WinPrivHookDynamic.exe', 'WinPrivLoadingProbe.dll', 'WinPrivLifecycleProbe.dll')) {
             if (-not (Test-Path -LiteralPath (Join-Path $fixtureOutput $name) -PathType Leaf)) {
                 throw "$Configuration|$platform did not produce native test fixture '$name' in '$fixtureOutput'."
             }
@@ -638,7 +641,8 @@ try {
         }
         if (-not [string]::IsNullOrWhiteSpace($nativeFixtureRoot)) {
             $fixtureDirectory = Join-Path $nativeFixtureRoot $item
-            foreach ($name in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe', 'WinPrivHookDynamic.exe')) {
+            foreach ($name in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe',
+                'WinPrivHookDynamic.exe', 'WinPrivLoadingProbe.dll', 'WinPrivLifecycleProbe.dll')) {
                 $path = Join-Path $fixtureDirectory $name
                 if (Test-Path -LiteralPath $path -PathType Leaf) {
                     $file = Get-Item -LiteralPath $path

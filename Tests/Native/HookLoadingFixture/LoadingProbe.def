@@ -1,0 +1,5 @@
+LIBRARY WinPrivLoadingProbe
+EXPORTS
+    WinPrivLoadingQuery @1
+    WinPrivLoadingAttachCount @2 DATA
+    WinPrivLoadingProcessId=KERNEL32.GetCurrentProcessId @3

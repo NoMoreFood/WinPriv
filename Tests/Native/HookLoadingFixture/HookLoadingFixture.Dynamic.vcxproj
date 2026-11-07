@@ -32,6 +32,8 @@
   <Import Project="HookLoadingFixture.Common.props" />
   <ItemGroup>
     <ClCompile Include="HookLoadingFixture.cpp" />
+    <ClCompile Include="LoadingPaths.cpp" />
+    <ClCompile Include="ManualLoading.cpp" />
     <ClCompile Include="SmartCardRouting.cpp">
       <AdditionalIncludeDirectories>..\..\..\WinPrivShared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -40,6 +42,10 @@
     </ClCompile>
     <ClCompile Include="ProcessControl.cpp" />
     <ClCompile Include="..\..\..\WinPrivLibrary\WinPrivDetoursFork.cpp" />
+    <ProjectReference Include="HookLoadingFixture.Lifecycle.vcxproj">
+      <Project>{C2E4895D-62E4-42C0-A112-ED613D9DF43C}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

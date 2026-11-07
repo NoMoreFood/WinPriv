@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|ARM64"><Configuration>Debug</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64"><Configuration>Release</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C2E4895D-62E4-42C0-A112-ED613D9DF43C}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>WinPrivLifecycleProbe</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>WinPrivLifecycleProbe</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <TargetName>WinPrivLifecycleProbe</TargetName>
+    <WinPrivHookLoadingMode>WINPRIV_LOADING_LIFECYCLE</WinPrivHookLoadingMode>
+    <WinPrivHookAdditionalDependencies>advapi32.lib;delayimp.lib</WinPrivHookAdditionalDependencies>
+    <WinPrivHookDelayLoadDlls>WinPrivLoadingProbe.dll</WinPrivHookDelayLoadDlls>
+  </PropertyGroup>
+  <Import Project="HookLoadingFixture.Common.props" />
+  <ItemDefinitionGroup>
+    <Link>
+      <ModuleDefinitionFile>LifecycleProbe.def</ModuleDefinitionFile>
+      <AdditionalDependencies>$(OutDir)WinPrivLoadingProbe.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <SupportUnloadOfDelayLoadedDLL>true</SupportUnloadOfDelayLoadedDLL>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="LifecycleProbe.cpp" />
+    <ClInclude Include="LoadingProbe.h" />
+    <ProjectReference Include="HookLoadingFixture.Probe.vcxproj">
+      <Project>{51327546-558A-47B9-B58F-734391DC182F}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+    <None Include="LifecycleProbe.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

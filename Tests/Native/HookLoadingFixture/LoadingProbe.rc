@@ -1,0 +1,2 @@
+#include <windows.h>
+1 RCDATA { 0x1234, 0x5678, 0x9abc, 0xdef0 }

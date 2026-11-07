@@ -1,0 +1,4 @@
+LIBRARY WinPrivLifecycleProbe
+EXPORTS
+    WinPrivLifecycleQuery @1
+    WinPrivLifecycleState @2 DATA

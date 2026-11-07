@@ -1031,7 +1031,8 @@ function New-WinPrivSandbox {
             $nativeFixtureRoot = $env:WINPRIV_TEST_NATIVE_FIXTURE_ROOT
             if (-not [string]::IsNullOrWhiteSpace($nativeFixtureRoot)) {
                 $nativeFixtureDirectory = Join-Path ([IO.Path]::GetFullPath($nativeFixtureRoot)) $item
-                foreach ($fixture in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe', 'WinPrivHookDynamic.exe')) {
+                foreach ($fixture in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe',
+                    'WinPrivHookDynamic.exe', 'WinPrivLoadingProbe.dll', 'WinPrivLifecycleProbe.dll')) {
                     $fixturePath = Join-Path $nativeFixtureDirectory $fixture
                     if (Test-Path -LiteralPath $fixturePath -PathType Leaf) {
                         Copy-Item -LiteralPath $fixturePath -Destination $destinationDirectory -Force

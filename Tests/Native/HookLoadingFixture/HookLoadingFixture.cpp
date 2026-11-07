@@ -13,6 +13,9 @@
 #include <type_traits>
 #include <vector>
 
+int TestLibraryLoading(int argumentCount, wchar_t* arguments[]);
+LSTATUS QueryReloadedLibrary(LPCWSTR key, LPCWSTR valueName, DWORD& value);
+
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
 #include "../../../WinPrivLibrary/WinPrivDetoursFork.h"
 int TestSmartCardSessionRouting();
@@ -316,39 +319,7 @@ namespace
         }
         else if (mode == L"reload-library")
         {
-            DWORD firstValue = 0;
-            HMODULE mod1 = LoadLibraryW(L"advapi32.dll");
-            if (mod1 == nullptr) return static_cast<LSTATUS>(GetLastError());
-            auto open1 = reinterpret_cast<RegOpenKeyExWFunction>(GetProcAddress(mod1, "RegOpenKeyExW"));
-            auto query1 = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod1, "RegQueryValueExW"));
-            auto close1 = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod1, "RegCloseKey"));
-            if (!open1 || !query1 || !close1)
-            {
-                FreeLibrary(mod1);
-                return ERROR_PROC_NOT_FOUND;
-            }
-            const LSTATUS st1 = QueryDwordW(open1, query1, close1, subKey.c_str(), valueName.c_str(), firstValue);
-            FreeLibrary(mod1);
-            if (st1 != ERROR_SUCCESS) return st1;
-
-            DWORD secondValue = 0;
-            HMODULE mod2 = LoadLibraryW(L"advapi32.dll");
-            if (mod2 == nullptr) return static_cast<LSTATUS>(GetLastError());
-            auto open2 = reinterpret_cast<RegOpenKeyExWFunction>(GetProcAddress(mod2, "RegOpenKeyExW"));
-            auto query2 = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod2, "RegQueryValueExW"));
-            auto close2 = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod2, "RegCloseKey"));
-            if (!open2 || !query2 || !close2)
-            {
-                FreeLibrary(mod2);
-                return ERROR_PROC_NOT_FOUND;
-            }
-            const LSTATUS st2 = QueryDwordW(open2, query2, close2, subKey.c_str(), valueName.c_str(), secondValue);
-            FreeLibrary(mod2);
-            if (st2 != ERROR_SUCCESS) return st2;
-
-            if (firstValue != secondValue) return ERROR_INVALID_DATA;
-            queriedValue = secondValue;
-            return ERROR_SUCCESS;
+            return QueryReloadedLibrary(subKey.c_str(), valueName.c_str(), queriedValue);
         }
 
         return ERROR_INVALID_PARAMETER;
@@ -1040,6 +1011,8 @@ int wmain(const int argumentCount, wchar_t* arguments[])
     if (argumentCount == 2 && wcscmp(arguments[1], L"--privilege-enumeration") == 0) return TestPrivilegeEnumeration();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--rejected-detours") == 0) return TestRejectedDetours();
 #endif
+    if (argumentCount >= 2 && wcscmp(arguments[1], L"--library-loading") == 0)
+        return TestLibraryLoading(argumentCount, arguments);
     if (argumentCount == 2 && wcscmp(arguments[1], L"--memory-exceptions") == 0)
     {
         // Exercise repeated C++ unwinding inside the hooks while unrelated application exceptions still work.

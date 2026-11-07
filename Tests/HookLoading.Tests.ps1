@@ -153,6 +153,98 @@ Describe 'WinPriv explicit detour loading paths (<Architecture>, <Mode>)' -Tag '
     }
 }
 
+Describe 'WinPriv extended DLL loading (<Architecture>)' -Tag 'Safe', 'LoadingPermutations' `
+    -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll {
+        $launcherArchitectures = @(Get-WinPrivTestArchitectures)
+        $sandbox = New-WinPrivSandbox -Architecture $launcherArchitectures -Purpose 'extended-dll-loading'
+        $subKey = "Software\WinPrivTests\Case$([Guid]::NewGuid().ToString('N'))"
+        $providerPath = "Registry::HKEY_CURRENT_USER\$subKey"
+        Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Registry -Identifier $providerPath `
+            -OriginalState @{ Existed = $false } -Metadata @{ Purpose = 'Extended DLL loading' } | Out-Null
+        New-Item -Path $providerPath -Force | Out-Null
+        New-ItemProperty -Path $providerPath -Name Value -PropertyType DWord -Value 9 | Out-Null
+        $source = Join-Path $sandbox.Working 'source.txt'
+        $redirected = Join-Path $sandbox.Working 'redirected.txt'
+        [IO.File]::WriteAllText($source, 'original')
+        [IO.File]::WriteAllText($redirected, 'redirected-data')
+    }
+
+    AfterAll {
+        Remove-Item -LiteralPath $providerPath -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-WinPrivSandbox -Sandbox $sandbox
+    }
+
+    It 'preserves signatures, TLS, delay imports, and hooks across native and manual reloads' {
+        $library = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivLoadingProbe.dll'
+        if (-not (Test-Path -LiteralPath $library)) {
+            Skip-WinPrivCapability -Id 'detour.library-loading' -Architecture $Architecture `
+                -Reason 'The unloadable native DLL fixture is absent from the supplied binary root.'
+            return
+        }
+
+        Invoke-WinPrivCapability -Id 'detour.library-loading' -Architecture $Architecture -Body {
+            foreach ($fixtureName in @('WinPrivHookImport.exe', 'WinPrivHookDynamic.exe', 'WinPrivHookDelayLoad.exe')) {
+                $fixture = Join-Path $sandbox.Launchers.$Architecture.Root $fixtureName
+                $invocations = @(@{ Architecture = $Architecture; Launcher = 'baseline' })
+                foreach ($launcherArchitecture in $launcherArchitectures) {
+                    foreach ($launcher in @('WinPrivCmd', 'WinPriv')) {
+                        $invocations += @{ Architecture = $launcherArchitecture; Launcher = $launcher }
+                    }
+                }
+                foreach ($invocation in $invocations) {
+                    $output = Join-Path $sandbox.Artifacts ("loading-$([Guid]::NewGuid().ToString('N')).json")
+                    $baseline = $invocation.Launcher -eq 'baseline'
+                    $expectedValue = if ($baseline) { '9' } else { '305419896' }
+                    $expectedSize = if ($baseline) { '8' } else { '15' }
+                    $arguments = @('--library-loading', $library, $subKey, 'Value', $source,
+                        $expectedValue, $expectedSize, $output)
+                    $description = "$fixtureName $Architecture via $($invocation.Architecture) $($invocation.Launcher)"
+                    $result = if ($baseline) {
+                        Invoke-WinPrivContainedProcess -FilePath $fixture -ArgumentList $arguments `
+                            -Sandbox $sandbox -WorkingDirectory $sandbox.Working -TimeoutSeconds 60 -CreateHiddenConsole
+                    }
+                    else {
+                        Invoke-WinPriv -Architecture $invocation.Architecture -Launcher $invocation.Launcher `
+                            -Sandbox $sandbox -TimeoutSeconds 60 -Arguments (@(
+                                '/RegOverride', "HKCU\$subKey", 'Value', 'REG_DWORD', $expectedValue,
+                                '/FileRedirect', $source, $redirected, $fixture
+                            ) + $arguments)
+                    }
+                    $output | Should -Exist -Because $description
+                    $report = Get-Content -LiteralPath $output -Raw
+                    $report | Should -Not -BeNullOrEmpty -Because "$description exited with $($result.ExitCode)"
+                    $payload = $report | ConvertFrom-Json
+                    $payload.success | Should -BeTrue `
+                        -Because "$description`: $($payload | ConvertTo-Json -Compress) $($result.StdErr)"
+                    Assert-WinPrivInvocationSucceeded $result
+                    $payload.executableCases | Should -Be 72
+                    $payload.resourceCases | Should -Be 330
+                    $payload.unresolvedCases | Should -Be 64
+                    $payload.searchCases | Should -Be 12
+                    $payload.signedCases | Should -Be 2
+                    $payload.handleCases | Should -Be 8
+                    $payload.pinCases | Should -Be 4
+                    $payload.signedAccepted | Should -Be 8
+                    $payload.signedTampered | Should -Be 2
+                    $payload.manualCases | Should -Be 8
+                    $payload.lifecycleCases | Should -Be 10
+                    $payload.validationResults | Should -HaveCount 66
+                    $payload.signatureResults | Should -HaveCount 2
+                    $validation = @($payload.validationResults + $payload.signatureResults) -join ','
+                    if ($baseline) { $baselineValidation = $validation }
+                    else { $validation | Should -Be $baselineValidation -Because $description }
+                    $expectedDelayCases = if ($fixtureName -eq 'WinPrivHookDelayLoad.exe') { 3 } else { 0 }
+                    $payload.delayCases | Should -Be $expectedDelayCases
+                    @{ Invocation = $description; Result = $payload }
+                }
+            }
+            (Get-ItemPropertyValue -LiteralPath $providerPath -Name Value) | Should -Be 9
+            [IO.File]::ReadAllText($source) | Should -Be 'original'
+        }
+    }
+}
+
 Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
     BeforeEach {
         $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'process-mitigations'
