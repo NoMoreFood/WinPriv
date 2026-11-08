@@ -27,6 +27,7 @@ void KillProcesses(const std::vector<std::wstring>& vProcessNames, DWORD iSessio
 bool ParseMockTimeOffset(std::wstring_view sDelta, LONGLONG iCurrentTime, LONGLONG& iOffset);
 std::wstring ResolveFileRulePath(std::wstring path);
 std::wstring NormalizeHostName(std::wstring_view name);
+void PrintMessage(_Printf_format_string_ const wchar_t* format, ...);
 
 template <typename Function>
 Function LoadNtFunction(LPCSTR name) noexcept
@@ -38,27 +39,27 @@ Function LoadNtFunction(LPCSTR name) noexcept
 // Environment Variables Used For Interprocess Communication
 //
 
-#define WINPRIV_EV_RELAUNCH_MODE L"_WINPRIV_RELAUNCH_PHASE_"
-#define WINPRIV_EV_REG_OVERRIDE L"_WINPRIV_REG_OVERRIDE_"
-#define WINPRIV_EV_FILE_RULES L"_WINPRIV_FILE_RULES_"
-#define WINPRIV_EV_MAC_OVERRIDE L"_WINPRIV_MAC_OVERRIDE_"
-#define WINPRIV_EV_BACKUP_RESTORE L"_WINPRIV_BACKUP_RESTORE_"
-#define WINPRIV_EV_DISABLE_AMSI L"_WINPRIV_DISABLE_AMSI_"
-#define WINPRIV_EV_BREAK_LOCKS L"_WINPRIV_BREAK_LOCKS_"
-#define WINPRIV_EV_PRIVLIST L"_WINPRIV_PRIVILEGE_LIST_"
-#define WINPRIV_EV_PARENT_PID L"_WINPRIV_EV_PARENT_PID_"
-#define WINPRIV_EV_HOST_OVERRIDE L"_WINPRIV_EV_HOST_OVERRIDE_"
-#define WINPRIV_EV_ADMIN_IMPERSONATE L"_WINPRIV_EV_ADMIN_IMPERSONATE_"
-#define WINPRIV_EV_SERVER_EDITION L"_WINPRIV_EV_SERVER_EDITION_"
-#define WINPRIV_EV_RECORD_CRYPTO L"_WINPRIV_EV_RECORD_CRYPTO_"
-#define WINPRIV_EV_SQL_CONNECT_SHOW L"_WINPRIV_EV_SQL_CONNECT_SHOW_"
-#define WINPRIV_EV_SQL_CONNECT_SEARCH L"_WINPRIV_EV_SQL_CONNECT_SEARCH_"
-#define WINPRIV_EV_SQL_CONNECT_REPLACE L"_WINPRIV_EV_SQL_CONNECT_REPLACE_"
-#define WINPRIV_EV_MEDIUM_PLUS L"_WINPRIV_EV_MEDIUM_PLUS_"
-#define WINPRIV_EV_CLM L"_WINPRIV_EV_CLM_"
-#define WINPRIV_EV_MOCK_TIME L"_WINPRIV_EV_MOCK_TIME_"
-#define WINPRIV_EV_CONSOLE_TOKEN L"_WINPRIV_EV_CONSOLE_TOKEN_"
-#define WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM L"_WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM_"
+inline constexpr wchar_t WINPRIV_EV_RELAUNCH_MODE[] = L"_WINPRIV_RELAUNCH_PHASE_";
+inline constexpr wchar_t WINPRIV_EV_REG_OVERRIDE[] = L"_WINPRIV_REG_OVERRIDE_";
+inline constexpr wchar_t WINPRIV_EV_FILE_RULES[] = L"_WINPRIV_FILE_RULES_";
+inline constexpr wchar_t WINPRIV_EV_MAC_OVERRIDE[] = L"_WINPRIV_MAC_OVERRIDE_";
+inline constexpr wchar_t WINPRIV_EV_BACKUP_RESTORE[] = L"_WINPRIV_BACKUP_RESTORE_";
+inline constexpr wchar_t WINPRIV_EV_DISABLE_AMSI[] = L"_WINPRIV_DISABLE_AMSI_";
+inline constexpr wchar_t WINPRIV_EV_BREAK_LOCKS[] = L"_WINPRIV_BREAK_LOCKS_";
+inline constexpr wchar_t WINPRIV_EV_PRIVLIST[] = L"_WINPRIV_PRIVILEGE_LIST_";
+inline constexpr wchar_t WINPRIV_EV_PARENT_PID[] = L"_WINPRIV_EV_PARENT_PID_";
+inline constexpr wchar_t WINPRIV_EV_HOST_OVERRIDE[] = L"_WINPRIV_EV_HOST_OVERRIDE_";
+inline constexpr wchar_t WINPRIV_EV_ADMIN_IMPERSONATE[] = L"_WINPRIV_EV_ADMIN_IMPERSONATE_";
+inline constexpr wchar_t WINPRIV_EV_SERVER_EDITION[] = L"_WINPRIV_EV_SERVER_EDITION_";
+inline constexpr wchar_t WINPRIV_EV_RECORD_CRYPTO[] = L"_WINPRIV_EV_RECORD_CRYPTO_";
+inline constexpr wchar_t WINPRIV_EV_SQL_CONNECT_SHOW[] = L"_WINPRIV_EV_SQL_CONNECT_SHOW_";
+inline constexpr wchar_t WINPRIV_EV_SQL_CONNECT_SEARCH[] = L"_WINPRIV_EV_SQL_CONNECT_SEARCH_";
+inline constexpr wchar_t WINPRIV_EV_SQL_CONNECT_REPLACE[] = L"_WINPRIV_EV_SQL_CONNECT_REPLACE_";
+inline constexpr wchar_t WINPRIV_EV_MEDIUM_PLUS[] = L"_WINPRIV_EV_MEDIUM_PLUS_";
+inline constexpr wchar_t WINPRIV_EV_CLM[] = L"_WINPRIV_EV_CLM_";
+inline constexpr wchar_t WINPRIV_EV_MOCK_TIME[] = L"_WINPRIV_EV_MOCK_TIME_";
+inline constexpr wchar_t WINPRIV_EV_CONSOLE_TOKEN[] = L"_WINPRIV_EV_CONSOLE_TOKEN_";
+inline constexpr wchar_t WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM[] = L"_WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM_";
 
 inline constexpr std::array<LPCWSTR, 21> WinPrivSettingNames{
 	WINPRIV_EV_RELAUNCH_MODE, WINPRIV_EV_REG_OVERRIDE, WINPRIV_EV_MAC_OVERRIDE, WINPRIV_EV_BACKUP_RESTORE,
@@ -110,21 +111,6 @@ inline bool WinPrivUsesConsoleSubsystem()
 	return pNtHeaders->Signature == IMAGE_NT_SIGNATURE &&
 		pNtHeaders->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI;
 }
-
-// generic print message that resembles printf() syntax with
-// vardiac variables but will also output to a message box
-// if not compiled on a console
-#define PrintMessage(format, ...) do { \
-		const int iLength = _scwprintf(format, __VA_ARGS__); \
-		if (iLength < 0) break; \
-		LPWSTR sString = (LPWSTR) calloc((size_t) iLength + 1, sizeof(WCHAR)); \
-		if (sString == NULL) break; \
-		_snwprintf_s(sString, (size_t) iLength + 1, _TRUNCATE, format, __VA_ARGS__); \
-		if (WinPrivUsesConsoleSubsystem()) wprintf(L"%s", sString); else \
-			MessageBox(NULL, sString, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL); \
-        free(sString); \
-	} while (0)
-
 
 //
 // SmartPointer<>. Custom template for WinAPI resource cleanup.

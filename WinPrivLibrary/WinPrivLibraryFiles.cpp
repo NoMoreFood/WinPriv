@@ -383,6 +383,9 @@ static const std::wregex tRegexUnc(LR"(\\\?\?\\UNC\\([^\\]+?)\\([^\\]+?)\\(.*))"
 
 static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 {
+	if (sFileNameUnicodeString == nullptr || sFileNameUnicodeString->Buffer == nullptr ||
+		sFileNameUnicodeString->Length % sizeof(WCHAR) != 0) return false;
+
 	std::wstring sComputerName;
 	std::wstring sPath;
 
@@ -469,7 +472,8 @@ static NTSTATUS OpenFileWithOptions(POBJECT_ATTRIBUTES attributes, ULONG options
 	return WithFilePath(attributes, options, handle, ioStatus, [&](POBJECT_ATTRIBUTES path) {
 		const NTSTATUS status = operation(path, options);
 		if ((status != STATUS_SHARING_VIOLATION && status != STATUS_ACCESS_DENIED) ||
-			!VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1) || !CloseFileHandle(path->ObjectName)) return status;
+			!VariableIsSet(WINPRIV_EV_BREAK_LOCKS, 1) || path == nullptr ||
+			!CloseFileHandle(path->ObjectName)) return status;
 
 		// try operation again now that file is closed
 		return operation(path, options);
@@ -509,9 +513,10 @@ bool AttachFileHooks(winpriv::detours::transaction& transaction)
 		try
 		{
 			int count = 0;
-			SmartPointer<LPWSTR*> arguments(LocalFree, CommandLineToArgvW(_wgetenv(WINPRIV_EV_FILE_RULES), &count));
-			if (arguments == nullptr || count % 2 != 0) return false;
-			for (int index = 0; index < count; index += 2)
+			const std::wstring command = std::wstring(L"WinPriv ") + _wgetenv(WINPRIV_EV_FILE_RULES);
+			SmartPointer<LPWSTR*> arguments(LocalFree, CommandLineToArgvW(command.c_str(), &count));
+			if (arguments == nullptr || (count - 1) % 2 != 0) return false;
+			for (int index = 1; index < count; index += 2)
 			{
 				std::wstring source = FileMatchPath(arguments[index]);
 				std::wstring destination = arguments[index + 1];

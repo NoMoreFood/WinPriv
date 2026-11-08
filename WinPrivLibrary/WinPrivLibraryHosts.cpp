@@ -208,12 +208,14 @@ bool AttachHostHooks(winpriv::detours::transaction& transaction)
 	try
 	{
 		INT iCount = 0;
-		LPWSTR* pArguments = CommandLineToArgvW(_wgetenv(WINPRIV_EV_HOST_OVERRIDE), &iCount);
+		const std::wstring sCommand = std::wstring(L"WinPriv ") + _wgetenv(WINPRIV_EV_HOST_OVERRIDE);
+		LPWSTR* pArguments = CommandLineToArgvW(sCommand.c_str(), &iCount);
 		SmartPointer<LPWSTR*> tArgumentsCleanup(LocalFree, pArguments);
-		if (pArguments == nullptr) return false;
-		for (int i = 0; i + 1 < iCount; i += 2)
+		if (pArguments == nullptr || (iCount - 1) % 2 != 0) return false;
+		for (int i = 1; i + 1 < iCount; i += 2)
 		{
 			HostOverride tOverride{ NormalizeHostName(pArguments[i]), pArguments[i + 1], {} };
+			if (tOverride.Name.empty() || tOverride.Replacement.empty()) return false;
 			for (wchar_t character : tOverride.Replacement)
 				tOverride.NarrowReplacement += static_cast<char>(character);
 			vHostOverrides.push_back(std::move(tOverride));

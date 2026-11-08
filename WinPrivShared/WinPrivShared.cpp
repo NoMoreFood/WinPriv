@@ -14,6 +14,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cwchar>
 #include <cwctype>
 #include <limits>
 #include <string>
@@ -25,6 +29,25 @@
 
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "normaliz.lib")
+
+void PrintMessage(_Printf_format_string_ const wchar_t* format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	const int length = _vscwprintf(format, args);
+	va_end(args);
+	if (length < 0) return;
+
+	auto* message = static_cast<wchar_t*>(std::calloc(static_cast<size_t>(length) + 1, sizeof(wchar_t)));
+	if (message == nullptr) return;
+
+	va_start(args, format);
+	_vsnwprintf_s(message, static_cast<size_t>(length) + 1, _TRUNCATE, format, args);
+	va_end(args);
+	if (WinPrivUsesConsoleSubsystem()) std::wprintf(L"%s", message);
+	else MessageBoxW(nullptr, message, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL);
+	std::free(message);
+}
 
 std::wstring NormalizeHostName(std::wstring_view name)
 {
@@ -151,7 +174,10 @@ std::wstring ResolveFileRulePath(std::wstring path)
 	UNICODE_STRING name{};
 	SmartPointer<PUNICODE_STRING> cleanup(RtlFreeUnicodeString, &name);
 	if (ConvertFileRulePath(path.c_str(), &name, nullptr, nullptr) < 0) return {};
-	return { name.Buffer, name.Length / sizeof(WCHAR) };
+	std::wstring resolved(name.Buffer, name.Length / sizeof(WCHAR));
+	while (resolved.size() > 1 && resolved.back() == L'\\' && resolved[resolved.size() - 2] != L':')
+		resolved.pop_back();
+	return resolved;
 }
 
 std::wstring ArgvToCommandLine(const unsigned int iStart, const unsigned int iEnd, std::span<LPWSTR const> vArgs)

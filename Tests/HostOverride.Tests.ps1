@@ -15,19 +15,20 @@ Describe 'WinPriv host overrides (<Architecture>)' -Tag 'Safe' -ForEach $archite
         Invoke-WinPrivCapability -Id 'network.host-resolvers' -Architecture $Architecture -Body {
             $name = 'winpriv-' + [Guid]::NewGuid().ToString('N') + '.invalid'
             $result = Invoke-WinPrivProbe -Architecture $Architecture -Operation hosts -Sandbox $sandbox `
-                -WinPrivArguments @('/HostOverride', $name, '127.0.0.2') -Arguments @{ name = $name }
+                -WinPrivArguments @('/HostOverride', $name, '127.0.0.3', '/HostOverride', $name, '127.0.0.2') `
+                -Arguments @{ name = $name }
             Assert-WinPrivInvocationSucceeded $result
             foreach ($api in $addressApis) {
                 $value = $result.ProbeResult.result.$api
                 $value.success | Should -BeTrue
-                $value.canonicalName | Should -Be '127.0.0.2'
-                foreach ($address in $value.addresses) { $address.address | Should -Be '127.0.0.2' }
+                $value.canonicalName | Should -Be '127.0.0.3'
+                foreach ($address in $value.addresses) { $address.address | Should -Be '127.0.0.3' }
             }
             foreach ($api in $dnsApis) {
                 $value = $result.ProbeResult.result.$api
                 $value.success | Should -BeTrue
                 @($value.records).Count | Should -BeGreaterThan 0
-                foreach ($record in $value.records) { $record.address | Should -Be '127.0.0.2' }
+                foreach ($record in $value.records) { $record.address | Should -Be '127.0.0.3' }
                 $value.contextPreserved | Should -BeTrue
             }
             return $result.ProbeResult.result

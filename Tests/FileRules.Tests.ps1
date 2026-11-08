@@ -47,7 +47,7 @@ Describe 'WinPriv file and directory rules (<Architecture>)' -Tag 'Safe' -ForEac
             [IO.File]::ReadAllText($destination) | Should -Be 'changed'
 
             $deleted = Invoke-WinPrivProbe -Architecture $Architecture -Operation file-paths `
-                -WinPrivArguments @('/FileRedirect', $source, $destination) `
+                -WinPrivArguments @('/FileRedirect', $source, ($destination + '\')) `
                 -Arguments @{ requests = @(@{ action = 'NtDeleteFile'; path = $source }) } `
                 -Sandbox $sandbox -TimeoutSeconds 30
             Assert-WinPrivInvocationSucceeded $deleted
