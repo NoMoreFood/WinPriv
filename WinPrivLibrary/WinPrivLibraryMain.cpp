@@ -126,7 +126,15 @@ namespace winpriv::library
 		// Initialize the child's hooks before allowing its primary thread to execute.
 		DWORD error = NO_ERROR;
 		if (!memory::InjectLibrary(process->hProcess, libraryBundle, payload.data(),
-			static_cast<DWORD>(payload.size() * sizeof(WCHAR)))) error = GetLastError();
+			static_cast<DWORD>(payload.size() * sizeof(WCHAR))))
+		{
+			error = GetLastError();
+			if (error == ERROR_DYNAMIC_CODE_BLOCKED)
+			{
+				error = NO_ERROR;
+				SetLastError(NO_ERROR);
+			}
+		}
 		if (error == NO_ERROR && !(creationFlags & CREATE_SUSPENDED) && ResumeThread(process->hThread) == MAXDWORD)
 			error = GetLastError();
 		if (error == NO_ERROR) return TRUE;

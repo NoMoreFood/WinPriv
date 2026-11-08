@@ -245,6 +245,14 @@ namespace winpriv::memory
 			SetLastError(codeScope.Result());
 			return nullptr;
 		}
+		PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamicCodePolicy{};
+		if (!GetProcessMitigationPolicy(process, ProcessDynamicCodePolicy,
+			&dynamicCodePolicy, sizeof(dynamicCodePolicy))) return nullptr;
+		if (dynamicCodePolicy.ProhibitDynamicCode && !dynamicCodePolicy.AllowThreadOptOut)
+		{
+			SetLastError(ERROR_DYNAMIC_CODE_BLOCKED);
+			return nullptr;
+		}
 		// Choose the target machine independently of the launcher's architecture.
 		USHORT machine = 0;
 		USHORT nativeMachine = 0;

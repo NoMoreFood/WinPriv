@@ -426,18 +426,46 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
             -Capability 'mitigation.dynamic-code-diagnostic')) { return }
 
         Invoke-WinPrivCapability -Id 'mitigation.dynamic-code-diagnostic' -Architecture $Architecture -Body {
-            $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
-                -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -CreateHiddenConsole -ArgumentList @(
-                    '--launch-mitigation', 'dynamic-code', $sandbox.Launchers.$Architecture.WinPrivCmd,
-                    $fixture, 'Software\WinPrivTests', 'AbsentValue'
-                )
-            Assert-WinPrivInvocationFailedCleanly $result
-            $result.ExitCode | Should -Be 1655
-            $output = $result.StdOut + $result.StdErr
-            $output | Should -Match '"mitigation":"dynamic-code","enforced":true'
-            $output | Should -Match 'dynamic-code policy \(ACG\) prohibits WinPriv API hooks \(error 1655\)'
-            $output | Should -Not -Match '"mode":"load-library"'
-            return @{ ExitCode = $result.ExitCode; Output = $output }
+            $subKey = "Software\WinPrivTests\Case$([Guid]::NewGuid().ToString('N'))"
+            $providerPath = "Registry::HKEY_CURRENT_USER\$subKey"
+            Add-WinPrivCleanupJournalEntry -Sandbox $sandbox -Kind Registry -Identifier $providerPath `
+                -OriginalState @{ Existed = $false } -Metadata @{ Purpose = 'Strict ACG child launch' } | Out-Null
+            try {
+                New-Item -Path $providerPath -Force | Out-Null
+                New-ItemProperty -Path $providerPath -Name 'MitigationValue' -PropertyType DWord -Value 9 | Out-Null
+                $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                    -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -CreateHiddenConsole -ArgumentList @(
+                        '--launch-mitigation', 'dynamic-code', $sandbox.Launchers.$Architecture.WinPrivCmd,
+                        $fixture, $subKey, 'MitigationValue'
+                    )
+                Assert-WinPrivInvocationFailedCleanly $result
+                $result.ExitCode | Should -Be 1655
+                $output = $result.StdOut + $result.StdErr
+                $output | Should -Match '"mitigation":"dynamic-code","enforced":true'
+                $output | Should -Match 'dynamic-code policy \(ACG\) prohibits WinPriv API hooks \(error 1655\)'
+                $output | Should -Not -Match '"mode":"load-library"'
+
+                $childResult = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
+                    -Arguments @(
+                        '/RegOverride', "HKCU\$subKey", 'MitigationValue', 'REG_DWORD', '305419896',
+                        $fixture, '--launch-mitigation', 'dynamic-code', $fixture, $subKey, 'MitigationValue'
+                    )
+                Assert-WinPrivInvocationSucceeded $childResult
+                $payloads = @($childResult.StdOut -split '\r?\n' | Where-Object {
+                    $_.StartsWith('{"schemaVersion":1,', [StringComparison]::Ordinal)
+                } | ConvertFrom-Json -ErrorAction Stop)
+                $payloads | Should -HaveCount 2
+                $payloads[0].mitigation | Should -Be 'dynamic-code'
+                $payloads[0].enforced | Should -BeTrue
+                $payloads[1].mode | Should -Be 'load-library'
+                [uint32]$payloads[1].value | Should -Be 9
+                $payloads[1].processDynamicCode | Should -Be 1
+                $payloads[1].allowThreadOptOut | Should -Be 0
+                return @{ ExitCode = $result.ExitCode; Output = $output; UnhookedChild = $payloads }
+            }
+            finally {
+                Remove-Item -LiteralPath $providerPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 
