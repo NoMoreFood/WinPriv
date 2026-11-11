@@ -41,7 +41,7 @@
       <AdditionalIncludeDirectories>..\..\..\WinPrivShared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="ProcessControl.cpp" />
-    <ClCompile Include="..\..\..\WinPrivLibrary\WinPrivDetoursFork.cpp" />
+    <ClCompile Include="DetourContextRollback.cpp" />
     <ProjectReference Include="HookLoadingFixture.Lifecycle.vcxproj">
       <Project>{C2E4895D-62E4-42C0-A112-ED613D9DF43C}</Project>
       <LinkLibraryDependencies>false</LinkLibraryDependencies>

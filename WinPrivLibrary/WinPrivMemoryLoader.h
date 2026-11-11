@@ -38,8 +38,9 @@ namespace winpriv::memory
 		ULONGLONG libraryPath;
 		DWORD settingsSize;
 		DWORD error;
+		DWORD unwindRegistered = FALSE;
 	};
-	static_assert(sizeof(Initialization) == 40);
+	static_assert(sizeof(Initialization) == 48);
 
 	bool DecompressLibrary(LibraryImage resource, std::vector<BYTE>& bytes);
 	bool CreateBundle(const std::array<LibraryImage, 3>& resources, std::wstring_view directory,

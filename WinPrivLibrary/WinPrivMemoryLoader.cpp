@@ -31,6 +31,7 @@ namespace winpriv::memory
 		std::vector<BYTE> bytes;
 		std::vector<IMAGE_SECTION_HEADER> sections;
 		IMAGE_DATA_DIRECTORY relocations{};
+		IMAGE_DATA_DIRECTORY unwind{};
 		ULONGLONG preferredBase = 0;
 		DWORD initialize = 0;
 		WORD machine = 0;
@@ -66,6 +67,7 @@ namespace winpriv::memory
 			headerSize = optional->SizeOfHeaders;
 			image.preferredBase = optional->ImageBase;
 			image.relocations = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+			image.unwind = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
 			exports = optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
 			for (const auto& directory : optional->DataDirectory)
 			{
@@ -397,7 +399,7 @@ namespace winpriv::memory
 
 		// Retain initialized hook state, but release the temporary bootstrap used for file-backed child loads.
 		bool started = false;
-		bool finished = false;
+		bool releaseBootstrap = false;
 		DWORD error = NO_ERROR;
 		const DWORD pathSize = fromDisk ? static_cast<DWORD>((path.size() + 1) * sizeof(WCHAR)) : 0;
 		const ULONGLONG dataSize = sizeof(Initialization) + ULONGLONG(bundle->size) + settingsSize + pathSize;
@@ -416,10 +418,13 @@ namespace winpriv::memory
 		std::unique_ptr<void, decltype(releaseData)> dataCleanup(remoteData, releaseData);
 		const auto releaseImage = [&](PVOID image)
 		{
-			if (!started || (fromDisk && finished)) VirtualFreeEx(process, image, 0, MEM_RELEASE);
+			if (!started || releaseBootstrap) VirtualFreeEx(process, image, 0, MEM_RELEASE);
 		};
 		std::unique_ptr<void, decltype(releaseImage)> remoteImage(nullptr, releaseImage);
 		LPTHREAD_START_ROUTINE initialize = nullptr;
+#if defined(_WIN64)
+		IMAGE_DATA_DIRECTORY localUnwind{};
+#endif
 		if (!local || !fromDisk)
 		{
 			MappedImage image;
@@ -464,6 +469,9 @@ namespace winpriv::memory
 			}
 			initialize = reinterpret_cast<LPTHREAD_START_ROUTINE>(
 				static_cast<PBYTE>(remoteImage.get()) + image.initialize);
+#if defined(_WIN64)
+			if (local) localUnwind = image.unwind;
+#endif
 		}
 
 		// Pass settings and the selected DLL path alongside the retained fallback resources.
@@ -486,12 +494,25 @@ namespace winpriv::memory
 		}
 		if (local)
 		{
-			started = true;
-			if (fromDisk)
+			const auto localContext = static_cast<Initialization*>(remoteData);
+#if defined(_WIN64)
+			// Publish unwind metadata from the launcher before entering any private x64 or ARM64 code.
+			if (!fromDisk)
 			{
-				const auto localContext = static_cast<Initialization*>(remoteData);
-				localContext->error = InitializeDiskLibrary(localContext);
+				const auto base = static_cast<PBYTE>(remoteImage.get());
+				const auto table = reinterpret_cast<PRUNTIME_FUNCTION>(base + localUnwind.VirtualAddress);
+				if (localUnwind.Size == 0 || localUnwind.Size % sizeof(RUNTIME_FUNCTION) != 0 ||
+					!RtlAddFunctionTable(table, localUnwind.Size / sizeof(RUNTIME_FUNCTION),
+						reinterpret_cast<DWORD64>(base)))
+				{
+					error = ERROR_DLL_INIT_FAILED;
+					return false;
+				}
+				localContext->unwindRegistered = TRUE;
 			}
+#endif
+			started = true;
+			if (fromDisk) localContext->error = InitializeDiskLibrary(localContext);
 			else initialize(remoteData);
 		}
 		else
@@ -514,12 +535,12 @@ namespace winpriv::memory
 				return false;
 			}
 		}
-		finished = true;
 		if (!ReadProcessMemory(process, remoteData, &context, sizeof(context), nullptr))
 		{
 			error = GetLastError();
 			return false;
 		}
+		releaseBootstrap = fromDisk && !context.unwindRegistered;
 		error = context.error;
 		if (error != NO_ERROR) return false;
 

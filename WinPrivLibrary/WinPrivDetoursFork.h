@@ -123,6 +123,7 @@ namespace winpriv::detours
             PBYTE pbTarget;
             _DETOUR_TRAMPOLINE* pTrampoline;
             DWORD dwPerm;
+            bool retainTrampoline;
         };
 
         LONG stage(PVOID* target, PVOID replacement) noexcept;

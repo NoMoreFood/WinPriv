@@ -220,22 +220,12 @@ namespace winpriv::memory
 	}
 }
 
-#if defined(_M_IX86)
-#pragma comment(linker, "/export:WinPrivInitializeMemory=_WinPrivInitializeMemory@4")
-#else
-#pragma comment(linker, "/export:WinPrivInitializeMemory")
-#endif
-
-extern "C" DWORD WINAPI WinPrivInitializeMemory(winpriv::memory::Initialization* context)
+static __declspec(noinline) DWORD InitializeMemoryImage(winpriv::memory::Initialization* context,
+	PBYTE base, const IMAGE_NT_HEADERS* nt, PBYTE nativeModule)
 {
 	using namespace winpriv::memory;
-	const auto base = reinterpret_cast<PBYTE>(static_cast<ULONG_PTR>(context->image));
-	const auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
-	const auto nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
 
 	// Resolve the native loader functions without depending on this image's uninitialized import table.
-	PBYTE nativeModule = FindNativeModule();
-	if (nativeModule == nullptr) return context->error = ERROR_MOD_NOT_FOUND;
 	const auto loadDll = reinterpret_cast<NTSTATUS(NTAPI*)(PWSTR, PULONG, PUNICODE_STRING, PHANDLE)>(
 		FindNativeExport(nativeModule, "LdrLoadDll"));
 	const auto getProcedure = reinterpret_cast<NTSTATUS(NTAPI*)(PVOID, PANSI_STRING, ULONG, PVOID*)>(
@@ -344,7 +334,7 @@ extern "C" DWORD WINAPI WinPrivInitializeMemory(winpriv::memory::Initialization*
 			return context->error = ERROR_NOT_SUPPORTED;
 	}
 
-	// Finalize page permissions and register unwind information before running any C++ initialization.
+	// Finalize page permissions before running the library's CRT entry point.
 	winpriv::DynamicCodeScope codeScope;
 	if (codeScope.Result() != NO_ERROR) return context->error = codeScope.Result();
 	const auto sections = IMAGE_FIRST_SECTION(nt);
@@ -366,13 +356,7 @@ extern "C" DWORD WINAPI WinPrivInitializeMemory(winpriv::memory::Initialization*
 	if (!VirtualProtect(base, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &previous) ||
 		!FlushInstructionCache(GetCurrentProcess(), base, nt->OptionalHeader.SizeOfImage))
 		return context->error = GetLastError();
-#if defined(_WIN64)
-	const auto& exceptions = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-	const auto functions = reinterpret_cast<PRUNTIME_FUNCTION>(base + exceptions.VirtualAddress);
-	if (exceptions.Size != 0 && !RtlAddFunctionTable(functions,
-		exceptions.Size / sizeof(RUNTIME_FUNCTION), reinterpret_cast<DWORD64>(base)))
-		return context->error = ERROR_DLL_INIT_FAILED;
-#else
+#if defined(_M_IX86)
 	if (nativeUnwind == nullptr || config == nullptr ||
 		config->Size < offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SEHandlerCount) + sizeof(DWORD))
 		return context->error = ERROR_BAD_EXE_FORMAT;
@@ -398,11 +382,54 @@ extern "C" DWORD WINAPI WinPrivInitializeMemory(winpriv::memory::Initialization*
 	if (error != NO_ERROR)
 	{
 		if (attached) entry(instance, DLL_PROCESS_DETACH, nullptr);
-#if defined(_WIN64)
-		if (exceptions.Size != 0) RtlDeleteFunctionTable(functions);
-#else
+#if defined(_M_IX86)
 		RemoveVectoredExceptionHandler(exceptionHandler);
 #endif
 	}
 	return context->error = error;
+}
+
+#if defined(_M_IX86)
+#pragma comment(linker, "/export:WinPrivInitializeMemory=_WinPrivInitializeMemory@4")
+#else
+#pragma comment(linker, "/export:WinPrivInitializeMemory")
+#endif
+
+extern "C" DWORD WINAPI WinPrivInitializeMemory(LPVOID parameter)
+{
+	using namespace winpriv::memory;
+	const auto context = static_cast<Initialization*>(parameter);
+	const auto base = reinterpret_cast<PBYTE>(static_cast<ULONG_PTR>(context->image));
+	const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+	const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+	const auto nativeModule = FindNativeModule();
+	if (nativeModule == nullptr) return context->error = ERROR_MOD_NOT_FOUND;
+
+#if defined(_WIN64)
+	// A child must register its private bootstrap before calling the Windows loader or CRT.
+	const auto& unwind = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+	const auto table = reinterpret_cast<PRUNTIME_FUNCTION>(base + unwind.VirtualAddress);
+	decltype(&RtlDeleteFunctionTable) deleteTable = nullptr;
+	if (context->libraryPath != 0)
+	{
+		deleteTable = reinterpret_cast<decltype(deleteTable)>(FindNativeExport(nativeModule, "RtlDeleteFunctionTable"));
+		if (deleteTable == nullptr) return context->error = ERROR_PROC_NOT_FOUND;
+	}
+	if (!context->unwindRegistered)
+	{
+		const auto addTable = reinterpret_cast<decltype(&RtlAddFunctionTable)>(
+			FindNativeExport(nativeModule, "RtlAddFunctionTable"));
+		if (addTable == nullptr) return context->error = ERROR_PROC_NOT_FOUND;
+		if (unwind.Size == 0 || unwind.Size % sizeof(RUNTIME_FUNCTION) != 0 ||
+			!addTable(table, unwind.Size / sizeof(RUNTIME_FUNCTION), reinterpret_cast<DWORD64>(base)))
+			return context->error = ERROR_DLL_INIT_FAILED;
+		context->unwindRegistered = TRUE;
+	}
+#endif
+	const DWORD error = InitializeMemoryImage(context, base, nt, nativeModule);
+#if defined(_WIN64)
+	// The launcher can release a temporary bootstrap only after its table is gone.
+	if (deleteTable != nullptr && deleteTable(table)) context->unwindRegistered = FALSE;
+#endif
+	return error;
 }

@@ -2966,6 +2966,7 @@ struct DetourSuspendedThread
     HANDLE handle;
     CONTEXT originalContext;
     PBYTE relocatedInstructionPointer;
+    SIZE_T relocationIndex;
 };
 #pragma warning(pop)
 
@@ -3167,6 +3168,7 @@ static LONG detour_suspend_other_threads(
                 .handle = thread.get(),
                 .originalContext = {},
                 .relocatedInstructionPointer = NULL,
+                .relocationIndex = 0,
             };
 #if defined(_M_IX86)
             candidate.originalContext.ContextFlags = CONTEXT_CONTROL;
@@ -3244,24 +3246,22 @@ static LONG detour_relocate_suspended_threads(
     for (auto& thread : threads) {
         const ULONG_PTR instructionPointer =
             detour_context_instruction_pointer(thread.originalContext);
-        PBYTE relocated = NULL;
-
-        for (const auto& operation : std::views::reverse(operations)) {
+        for (SIZE_T index = operations.size(); index-- != 0;) {
+            const auto& operation = operations[index];
             const auto targetBegin = reinterpret_cast<ULONG_PTR>(operation.pbTarget);
             const auto targetEnd = targetBegin + operation.pTrampoline->cbRestore;
             if (instructionPointer >= targetBegin &&
                 instructionPointer < targetEnd) {
 
-                relocated = detour_align_target_to_trampoline(
+                const auto relocated = detour_align_target_to_trampoline(
                     operation.pTrampoline,
                     static_cast<BYTE>(instructionPointer - targetBegin));
+                if (relocated != NULL && reinterpret_cast<ULONG_PTR>(relocated) != instructionPointer) {
+                    thread.relocatedInstructionPointer = relocated;
+                    thread.relocationIndex = index;
+                }
                 break;
             }
-        }
-
-        if (relocated != NULL &&
-            reinterpret_cast<ULONG_PTR>(relocated) != instructionPointer) {
-            thread.relocatedInstructionPointer = relocated;
         }
     }
 
@@ -3285,8 +3285,11 @@ static LONG detour_relocate_suspended_threads(
             const LONG error = GetLastError();
             for (SIZE_T i = 0; i < threadIndex; ++i) {
                 auto& prior = threads[i];
-                if (prior.relocatedInstructionPointer != NULL) {
-                    SetThreadContext(prior.handle, &prior.originalContext);
+                if (prior.relocatedInstructionPointer != NULL &&
+                    !SetThreadContext(prior.handle, &prior.originalContext) &&
+                    WaitForSingleObject(prior.handle, 0) != WAIT_OBJECT_0) {
+                    // A live peer can still execute the relocated instructions after abort.
+                    operations[prior.relocationIndex].retainTrampoline = true;
                 }
             }
             return error;
@@ -3326,11 +3329,11 @@ void winpriv::detours::transaction::abort() noexcept
 {
     if (!active_) return;
 
-    // Return unpublished trampolines and restore every staged target's protection.
+    // Restore every staged target and recycle only trampolines with no remaining users.
     for (auto& o : std::views::reverse(std::span(operations_.data(), operationCount_))) {
         DWORD dwOld;
         VirtualProtect(o.pbTarget, o.pTrampoline->cbRestore, o.dwPerm, &dwOld);
-        detour_free_trampoline(o.pTrampoline);
+        if (!o.retainTrampoline) detour_free_trampoline(o.pTrampoline);
     }
     operationCount_ = 0;
 
@@ -3354,8 +3357,8 @@ LONG winpriv::detours::transaction::commit() noexcept
         }
     }
     if (error_ != NO_ERROR) {
-        detour_resume_and_close_threads(suspendedThreads);
         abort();
+        detour_resume_and_close_threads(suspendedThreads);
         return error_;
     }
 
@@ -3524,6 +3527,7 @@ LONG winpriv::detours::transaction::stage(PVOID* ppPointer, PVOID pDetour) noexc
         .pbTarget = pbTarget,
         .pTrampoline = pTrampoline,
         .dwPerm = dwOld,
+        .retainTrampoline = false,
     };
 
     return NO_ERROR;

@@ -22,6 +22,7 @@ int TestSmartCardSessionRouting();
 int TestSmartCardEnrollment();
 int TestProcessLogon();
 int TestProcessControl();
+DWORD TestDetourContextRollback();
 int TestPrivilegeEnumeration();
 #endif
 
@@ -710,6 +711,9 @@ int TestThreadEnumeration(const wchar_t* scenario)
     using Handle = std::unique_ptr<void, decltype(&CloseHandle)>;
     if (inaccessible)
     {
+        const DWORD rollbackError = TestDetourContextRollback();
+        if (rollbackError != NO_ERROR) return Fail(L"context-rollback", rollbackError);
+
         // Disable inherited debug access so the empty thread DACL is enforced for every runner token.
         std::unique_ptr<std::remove_pointer_t<HMODULE>, decltype(&FreeLibrary)> security(
             LoadLibraryW(L"advapi32.dll"), FreeLibrary);
