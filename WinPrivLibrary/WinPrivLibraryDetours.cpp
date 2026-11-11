@@ -128,6 +128,12 @@ static NTSTATUS WriteRegistryOverride(const RegInterceptInfo& tOverride,
 	KEY_VALUE_INFORMATION_CLASS iInformationClass, PVOID pInformation,
 	ULONG iLength, PULONG iResultLength)
 {
+	// A blocked key hides values regardless of the requested information layout.
+	if (tOverride.RegValueType == REG_BLOCK)
+	{
+		*iResultLength = 0;
+		return STATUS_OBJECT_NAME_NOT_FOUND;
+	}
 	const bool bFull = iInformationClass == KeyValueFullInformation ||
 		iInformationClass == KeyValueFullInformationAlign64;
 	const bool bPartial = iInformationClass == KeyValuePartialInformation ||
@@ -394,11 +400,6 @@ EXTERN_C NTSTATUS WINAPI DetourNtQueryValueKey(_In_ HANDLE KeyHandle,
 
 	// report blocked values as missing and return overrides in the requested layout
 	const RegInterceptInfo* tInfo = FindRegistryIntercept(KeyHandle, ValueName);
-	if (tInfo != nullptr && tInfo->RegValueType == REG_BLOCK)
-	{
-		*ResultLength = 0;
-		return STATUS_OBJECT_NAME_NOT_FOUND;
-	}
 	const NTSTATUS iStatus = tInfo == nullptr ? STATUS_NOT_SUPPORTED :
 		WriteRegistryOverride(*tInfo, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 
@@ -443,7 +444,14 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 
 	UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
 		static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
-	return DetourNtQueryValueKey(KeyHandle, &sValue,
+	const RegInterceptInfo* tInfo = FindRegistryIntercept(KeyHandle, &sValue);
+	if (tInfo == nullptr) return TrueNtEnumerateValueKey(KeyHandle, Index,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+
+	// Enumeration preserves the stored name's spelling even when the rule uses different casing.
+	RegInterceptInfo tEnumerated = *tInfo;
+	tEnumerated.RegValueName = sValue;
+	return WriteRegistryOverride(tEnumerated,
 		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 }
 

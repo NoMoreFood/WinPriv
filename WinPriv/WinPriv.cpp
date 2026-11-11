@@ -172,6 +172,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// internal relaunches already carry expanded arguments and must retain their phase marker
 	const bool bRelaunched = iArgc > 1 && (_wcsicmp(aArgv[1], L"/RelaunchElevated") == 0 ||
 		_wcsicmp(aArgv[1], L"/RelaunchComplete") == 0);
+	if (bRelaunched)
+	{
+		if (_wcsicmp(aArgv[1], L"/RelaunchElevated") == 0) return LaunchElevated(iArgc, aArgv);
+		if (!SetSetting(WINPRIV_EV_RELAUNCH_MODE, L"1")) return __LINE__;
+	}
 	if (!bRelaunched && GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
 		const std::optional<std::wstring> sCfgArgs = LoadCfgFile(sCfgPath);
@@ -179,7 +184,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	}
 
 	// enumerate arguments
-	for (int iArg = 1; iArg < iArgc; iArg++)
+	for (int iArg = bRelaunched ? 2 : 1; iArg < iArgc; iArg++)
 	{
 		const std::wstring sArg(aArgv[iArg]);
 		const auto IsSwitch = [&sArg](LPCWSTR sName) { return _wcsicmp(sArg.c_str(), sName) == 0; };
@@ -200,18 +205,6 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			if (bUseShellExecute) sProcess = aArgv[iArg++];
 			sProcessParams = JoinArgs(iArg, iArgc - 1);
 			break;
-		}
-
-		// internal: relaunch elevated after a new logon has acquired the requested privileges
-		else if (IsSwitch(L"/RelaunchElevated"))
-		{
-			return LaunchElevated(iArgc, aArgv);
-		}
-
-		// internal: mark the privileged relaunch so it cannot recurse and console targets pause at exit
-		else if (IsSwitch(L"/RelaunchComplete"))
-		{
-			if (!SetSetting(WINPRIV_EV_RELAUNCH_MODE, L"1")) return __LINE__;
 		}
 
 		// use the plus variant of the session token's integrity level for run-as targets
@@ -552,6 +545,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// remove deny-logon rights from a named account, or from every account when none is specified
 		else if (IsSwitch(L"/ClearDenyRights"))
 		{
+			if (iArg + 1 < iArgc && aArgv[iArg + 1][0] == L'\0')
+			{
+				PrintMessage(L"ERROR: An account name cannot be empty for: %s\n", sArg.c_str());
+				return ERROR_INVALID_PARAMETER;
+			}
 			return ClearDenyRights(iArg + 1 < iArgc ? aArgv[iArg + 1] : L"") ? 0 : __LINE__;
 		}
 

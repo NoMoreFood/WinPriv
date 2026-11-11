@@ -32,6 +32,10 @@ IF ERRORLEVEL 1 (
     ECHO ERROR: 7-Zip is required to create the release archive.
     EXIT /B 1
 )
+IF EXIST "%STAGEDIR%\*.backup" (
+    ECHO ERROR: Recover previous release files from "%STAGEDIR%" before packaging again.
+    EXIT /B 1
+)
 IF EXIST "%STAGEDIR%" RD /S /Q "%STAGEDIR%"
 MD "%STAGEDIR%" 2>NUL
 IF ERRORLEVEL 1 (

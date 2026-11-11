@@ -85,8 +85,9 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
     It 'overrides REG_DWORD through every supported query information class' {
         $valueName = 'DwordValue'
         New-ItemProperty -Path $providerPath -Name $valueName -PropertyType DWord -Value 9 -Force | Out-Null
+        New-ItemProperty -Path $providerPath -Name 'UnchangedValue' -PropertyType DWord -Value 71 -Force | Out-Null
         $result = Invoke-WinPrivProbe -Architecture $Architecture `
-            -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName, 'REG_DWORD', '305419896') `
+            -WinPrivArguments @('/RegOverride', "HKCU\$subKey", $valueName.ToLowerInvariant(), 'REG_DWORD', '305419896') `
             -Operation registry -Arguments @{ root = 'HKCU'; key = $subKey; valueName = $valueName; view = 'default' } `
             -Sandbox $sandbox -TimeoutSeconds $script:RegistryProbeTimeoutSeconds
         Assert-WinPrivInvocationSucceeded $result
@@ -136,9 +137,13 @@ Describe 'WinPriv registry hooks (<Architecture>)' -Tag 'Safe' -ForEach $archite
                 $result.ProbeResult.result.ntEnumerate.supported | Should -BeTrue
                 $enumerated = @($result.ProbeResult.result.ntEnumerate.values | Where-Object name -EQ $valueName)
                 $enumerated | Should -HaveCount 1
+                $enumerated[0].name | Should -BeExactly $valueName
                 $enumerated[0].type | Should -Be 4
                 [BitConverter]::ToUInt32([Convert]::FromBase64String($enumerated[0].dataBase64), 0) |
                     Should -Be 0x12345678
+                $unchanged = @($result.ProbeResult.result.ntEnumerate.values | Where-Object name -CEQ 'UnchangedValue')
+                $unchanged | Should -HaveCount 1
+                [BitConverter]::ToUInt32([Convert]::FromBase64String($unchanged[0].dataBase64), 0) | Should -Be 71
                 return @{ Values = @($result.ProbeResult.result.ntEnumerate.values).Count }
             } | Out-Null
         }

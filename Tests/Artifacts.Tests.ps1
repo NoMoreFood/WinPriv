@@ -264,6 +264,17 @@ Describe 'WinPriv release package' -Tag 'Safe' {
 
                 $stage = Join-Path $build 'PackageStage'
                 New-Item -ItemType Directory -Path $stage | Out-Null
+                $backup = Join-Path $stage 'WinPriv.zip.backup'
+                [IO.File]::WriteAllText($backup, 'release recovery copy')
+                $recoveryBlocked = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
+                    -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
+                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
+                Assert-WinPrivInvocationFailedCleanly $recoveryBlocked
+                $recoveryBlocked.StdOut | Should -Match 'Recover previous release files'
+                [IO.File]::ReadAllText($backup) | Should -Be 'release recovery copy'
+                (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash | Should -Be $previousArchiveHash
+                (Get-Content -LiteralPath $hashPath) | Should -Be 'previous hashes'
+                Remove-Item -LiteralPath $backup
                 $sentinel = Join-Path $stage 'another-build.txt'
                 Set-Content -LiteralPath $sentinel -Value 'stale staging'
                 $repackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `

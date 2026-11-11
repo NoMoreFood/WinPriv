@@ -191,6 +191,31 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
         }
     }
 
+    It 'rejects an empty deny-right account before opening machine-wide policy' {
+        $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox `
+            -Arguments @('/ClearDenyRights', '') -TimeoutSeconds 10
+        Assert-WinPrivInvocationFailedCleanly $result
+        $result.ExitCode | Should -Be 87
+        $result.StdOut | Should -Match 'An account name cannot be empty'
+        $result.StdOut | Should -Not -Match 'security policy|Revoked'
+    }
+
+    It 'rejects misplaced and configuration-supplied internal relaunch markers' {
+        $config = Join-Path $sandbox.Root 'relaunch-marker.cfg'
+        foreach ($marker in '/RelaunchElevated', '/RelaunchComplete') {
+            [IO.File]::WriteAllText($config, $marker, [Text.UTF8Encoding]::new($false))
+            foreach ($arguments in @(
+                @{ Values = @('/MeasureTime', $marker, '/Help') },
+                @{ Values = @('/LoadCommands', $config, '/Help') }
+            )) {
+                $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox `
+                    -Arguments $arguments.Values -TimeoutSeconds 10
+                Assert-WinPrivInvocationFailedCleanly $result
+                $result.StdOut | Should -Match ('Unrecognized parameter: ' + [regex]::Escape($marker))
+            }
+        }
+    }
+
     It 'rejects empty named run-as accounts before selecting a session' {
         foreach ($switch in '/RunAsUser', '/RunAsUserNoWait') {
             $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox `
