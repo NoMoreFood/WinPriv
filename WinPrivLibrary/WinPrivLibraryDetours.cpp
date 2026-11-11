@@ -451,7 +451,11 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 	// Enumeration preserves the stored name's spelling even when the rule uses different casing.
 	RegInterceptInfo tEnumerated = *tInfo;
 	tEnumerated.RegValueName = sValue;
-	return WriteRegistryOverride(tEnumerated,
+	const NTSTATUS iOverride = WriteRegistryOverride(tEnumerated,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+
+	// return the real value if the information class is not supported
+	return iOverride != STATUS_NOT_SUPPORTED ? iOverride : TrueNtEnumerateValueKey(KeyHandle, Index,
 		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 }
 

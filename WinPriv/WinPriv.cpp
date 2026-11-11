@@ -170,13 +170,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	const std::wstring sCfgPath = std::filesystem::path(sExecutable).replace_extension(L".cfg").wstring();
 
 	// internal relaunches already carry expanded arguments and must retain their phase marker
-	const bool bRelaunched = iArgc > 1 && (_wcsicmp(aArgv[1], L"/RelaunchElevated") == 0 ||
-		_wcsicmp(aArgv[1], L"/RelaunchComplete") == 0);
-	if (bRelaunched)
-	{
-		if (_wcsicmp(aArgv[1], L"/RelaunchElevated") == 0) return LaunchElevated(iArgc, aArgv);
-		if (!SetSetting(WINPRIV_EV_RELAUNCH_MODE, L"1")) return __LINE__;
-	}
+	if (iArgc > 1 && _wcsicmp(aArgv[1], L"/RelaunchElevated") == 0) return LaunchElevated(iArgc, aArgv);
+	const bool bRelaunched = iArgc > 1 && _wcsicmp(aArgv[1], L"/RelaunchComplete") == 0;
+	if (bRelaunched && !SetSetting(WINPRIV_EV_RELAUNCH_MODE, L"1")) return __LINE__;
 	if (!bRelaunched && GetFileAttributes(sCfgPath.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
 		const std::optional<std::wstring> sCfgArgs = LoadCfgFile(sCfgPath);
