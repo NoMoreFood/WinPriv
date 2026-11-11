@@ -172,47 +172,52 @@ namespace winpriv::library
 	}
 }
 
-EXTERN_C BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
+#if defined(_M_IX86)
+#pragma comment(linker, "/export:WinPrivInitialize=_WinPrivInitialize@4")
+#else
+#pragma comment(linker, "/export:WinPrivInitialize")
+#endif
+
+extern "C" BOOL WINAPI _DllMainCRTStartup(HINSTANCE instance, DWORD reason, LPVOID reserved);
+
+extern "C" BOOL WINAPI WinPrivDllEntry(HINSTANCE instance, DWORD reason, LPVOID reserved)
+{
+	// System DLLs can still call WinPriv's hooks during process shutdown.
+	if (reason == DLL_PROCESS_DETACH && reserved != nullptr && winpriv::library::libraryBundle != nullptr)
+		return TRUE;
+	return _DllMainCRTStartup(instance, reason, reserved);
+}
+
+extern "C" DWORD WINAPI WinPrivInitialize(const winpriv::memory::Initialization* context)
 {
 	using namespace winpriv::library;
-	if (reason != DLL_PROCESS_ATTACH) return TRUE;
-
-	// Keep an immutable copy of every architecture's raw image for subsequent child launches.
-	const auto context = static_cast<winpriv::memory::Initialization*>(reserved);
-	if (context == nullptr || context->image != reinterpret_cast<ULONG_PTR>(instance)) return FALSE;
 	try
 	{
-		libraryBundle = reinterpret_cast<const winpriv::memory::LibraryBundle*>(static_cast<ULONG_PTR>(context->bundle));
+		// Keep the launcher's library bundle available for subsequent child launches.
 		if (context->settingsSize != 0 && !ApplyWinPrivPayload(
 			reinterpret_cast<LPCVOID>(static_cast<ULONG_PTR>(context->settings)), context->settingsSize))
-		{
-			context->error = GetLastError();
-			return FALSE;
-		}
+			return GetLastError();
+		libraryBundle = reinterpret_cast<const winpriv::memory::LibraryBundle*>(static_cast<ULONG_PTR>(context->bundle));
 
-		// The private CRT has no loader shutdown callback to flush buffered diagnostic output.
+		// Flush diagnostic output as it is written by the library's CRT.
 		if (const int output = _fileno(stdout); output >= 0) _setmode(output, _O_U8TEXT);
 		setvbuf(stdout, nullptr, _IONBF, 0);
 
 		// Install feature and child-process hooks in one transaction; the image remains loaded until process exit.
 		winpriv::detours::transaction transaction;
-		context->error = transaction.error();
-		if (context->error != NO_ERROR) return FALSE;
+		if (transaction.error() != NO_ERROR) return transaction.error();
 		SetLastError(NO_ERROR);
 		if (!AttachExtraHooks(transaction))
 		{
 			const DWORD error = GetLastError();
-			context->error = error == NO_ERROR ? ERROR_DLL_INIT_FAILED : error;
-			return FALSE;
+			return error == NO_ERROR ? ERROR_DLL_INIT_FAILED : error;
 		}
 		transaction.attach(trueCreateProcessA, HookCreateProcessA);
 		transaction.attach(trueCreateProcessW, HookCreateProcessW);
-		context->error = transaction.commit();
-		return context->error == NO_ERROR;
+		return transaction.commit();
 	}
 	catch (...)
 	{
-		context->error = ERROR_NOT_ENOUGH_MEMORY;
-		return FALSE;
+		return ERROR_NOT_ENOUGH_MEMORY;
 	}
 }

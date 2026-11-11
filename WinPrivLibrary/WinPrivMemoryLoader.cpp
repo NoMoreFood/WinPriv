@@ -9,14 +9,22 @@
 #include "WinPrivMemoryLoader.h"
 #include "WinPrivDynamicCode.h"
 #include "WinPrivShared.h"
+#include <compressapi.h>
+#include <wincrypt.h>
+#include <mscat.h>
 #include <algorithm>
 #include <cstring>
 #include <memory>
+
+#pragma comment(lib, "cabinet.lib")
+#pragma comment(lib, "wintrust.lib")
 
 namespace winpriv::memory
 {
 	constexpr std::array<WORD, 3> machines{
 		IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_ARM64 };
+	constexpr DWORD digestSize = 32;
+	constexpr DWORD maxLibrarySize = 64 * 1024 * 1024;
 
 	struct MappedImage
 	{
@@ -35,7 +43,7 @@ namespace winpriv::memory
 
 	bool PrepareImage(LibraryImage source, WORD machine, MappedImage& image)
 	{
-		// Validate the embedded PE before interpreting any offsets or copying its sections.
+		// Validate the PE before interpreting any offsets or copying its sections.
 		if (source.data == nullptr || source.size < sizeof(IMAGE_DOS_HEADER)) return false;
 		const auto data = static_cast<const BYTE*>(source.data);
 		const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(data);
@@ -97,7 +105,7 @@ namespace winpriv::memory
 			previousEnd = section.VirtualAddress + size;
 		}
 
-		// Locate the architecture-native initializer exported by the embedded library.
+		// Locate the architecture-native initializer exported by the library.
 		if (exports.Size < sizeof(IMAGE_EXPORT_DIRECTORY)) return false;
 		const auto directory = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(
 			image.bytes.data() + exports.VirtualAddress);
@@ -163,27 +171,65 @@ namespace winpriv::memory
 		return true;
 	}
 
-	bool CreateBundle(const std::array<LibraryImage, 3>& images, std::vector<BYTE>& bytes) noexcept
+	bool DecompressLibrary(LibraryImage resource, std::vector<BYTE>& bytes)
+	{
+		if (resource.data == nullptr || resource.size <= digestSize)
+		{
+			SetLastError(ERROR_BAD_COMPRESSION_BUFFER);
+			return false;
+		}
+		const auto compressed = static_cast<const BYTE*>(resource.data) + digestSize;
+		const DWORD compressedSize = resource.size - digestSize;
+		SmartPointer<DECOMPRESSOR_HANDLE> decompressor(CloseDecompressor, nullptr);
+		if (!CreateDecompressor(COMPRESS_ALGORITHM_LZMS, nullptr, &decompressor)) return false;
+		SIZE_T size = 0;
+		if (Decompress(decompressor, compressed, compressedSize, nullptr, 0, &size) ||
+			GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
+		if (size == 0 || size > maxLibrarySize)
+		{
+			SetLastError(ERROR_BAD_COMPRESSION_BUFFER);
+			return false;
+		}
+		try
+		{
+			bytes.resize(size);
+		}
+		catch (...)
+		{
+			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return false;
+		}
+		return Decompress(decompressor, compressed, compressedSize, bytes.data(), bytes.size(), &size) != FALSE;
+	}
+
+	bool CreateBundle(const std::array<LibraryImage, 3>& resources, std::wstring_view directory,
+		std::vector<BYTE>& bytes) noexcept
 	{
 		try
 		{
 			LibraryBundle bundle{ (sizeof(LibraryBundle) + 7) & ~DWORD(7) };
-			for (size_t index = 0; index < images.size(); ++index)
+			if (directory.empty() || directory.size() >= std::size(bundle.directory))
 			{
-				if (images[index].data == nullptr || images[index].size == 0 ||
-					images[index].size > MAXDWORD - bundle.size - 7)
+				SetLastError(ERROR_BAD_PATHNAME);
+				return false;
+			}
+			directory.copy(bundle.directory, directory.size());
+			for (size_t index = 0; index < resources.size(); ++index)
+			{
+				if (resources[index].data == nullptr || resources[index].size <= digestSize ||
+					resources[index].size > MAXDWORD - bundle.size - 7)
 				{
 					SetLastError(ERROR_BAD_EXE_FORMAT);
 					return false;
 				}
 				bundle.offsets[index] = bundle.size;
-				bundle.sizes[index] = images[index].size;
-				bundle.size = (bundle.size + images[index].size + 7) & ~DWORD(7);
+				bundle.sizes[index] = resources[index].size;
+				bundle.size = (bundle.size + resources[index].size + 7) & ~DWORD(7);
 			}
 			bytes.resize(bundle.size);
 			memcpy(bytes.data(), &bundle, sizeof(bundle));
-			for (size_t index = 0; index < images.size(); ++index)
-				memcpy(bytes.data() + bundle.offsets[index], images[index].data, images[index].size);
+			for (size_t index = 0; index < resources.size(); ++index)
+				memcpy(bytes.data() + bundle.offsets[index], resources[index].data, resources[index].size);
 			return true;
 		}
 		catch (...)
@@ -236,34 +282,45 @@ namespace winpriv::memory
 		return CreateRemoteThread(process, nullptr, 0, initialize, context, 0, nullptr);
 	}
 
-	HMODULE InitializeLibrary(HANDLE process, const LibraryBundle* bundle,
+	DWORD InitializeDiskLibrary(const Initialization* context)
+	{
+		const auto path = reinterpret_cast<LPCWSTR>(static_cast<ULONG_PTR>(context->libraryPath));
+		const HMODULE module = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		if (module == nullptr) return GetLastError();
+		const auto initialize = reinterpret_cast<decltype(&WinPrivInitialize)>(GetProcAddress(module, "WinPrivInitialize"));
+		const DWORD error = initialize == nullptr ? GetLastError() : initialize(context);
+		if (error != NO_ERROR) FreeLibrary(module);
+		return error;
+	}
+
+	bool InitializeLibrary(HANDLE process, const LibraryBundle* bundle,
 		LPCVOID settings, DWORD settingsSize, bool local)
 	{
 		DynamicCodeScope codeScope;
 		if (codeScope.Result() != NO_ERROR)
 		{
 			SetLastError(codeScope.Result());
-			return nullptr;
+			return false;
 		}
 		PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamicCodePolicy{};
 		if (!GetProcessMitigationPolicy(process, ProcessDynamicCodePolicy,
-			&dynamicCodePolicy, sizeof(dynamicCodePolicy))) return nullptr;
+			&dynamicCodePolicy, sizeof(dynamicCodePolicy))) return false;
 		if (dynamicCodePolicy.ProhibitDynamicCode && !dynamicCodePolicy.AllowThreadOptOut)
 		{
 			SetLastError(ERROR_DYNAMIC_CODE_BLOCKED);
-			return nullptr;
+			return false;
 		}
 		// Choose the target machine independently of the launcher's architecture.
 		USHORT machine = 0;
 		USHORT nativeMachine = 0;
-		if (!IsWow64Process2(process, &machine, &nativeMachine)) return nullptr;
+		if (!IsWow64Process2(process, &machine, &nativeMachine)) return false;
 		if (machine == IMAGE_FILE_MACHINE_UNKNOWN && nativeMachine == IMAGE_FILE_MACHINE_ARM64)
 		{
 			// Distinguish native ARM64 from x64 emulation, which is not reported as WOW64.
 			struct MachineInformation { USHORT machine; USHORT reserved; DWORD attributes; } information{};
 			if (GetProcessInformation(process, static_cast<PROCESS_INFORMATION_CLASS>(9),
 				&information, sizeof(information))) machine = information.machine;
-			else if (GetLastError() != ERROR_INVALID_PARAMETER && GetLastError() != ERROR_NOT_SUPPORTED) return nullptr;
+			else if (GetLastError() != ERROR_INVALID_PARAMETER && GetLastError() != ERROR_NOT_SUPPORTED) return false;
 		}
 		if (machine == IMAGE_FILE_MACHINE_UNKNOWN) machine = nativeMachine;
 		constexpr WORD arm64EcMachine = 0xa641;
@@ -272,95 +329,170 @@ namespace winpriv::memory
 		if (found == machines.end() || bundle == nullptr || bundle->size < sizeof(*bundle))
 		{
 			SetLastError(ERROR_BAD_EXE_FORMAT);
-			return nullptr;
+			return false;
 		}
 		const size_t index = found - machines.begin();
-		if (!ImageRange(bundle->offsets[index], bundle->sizes[index], bundle->size) ||
+		if (bundle->sizes[index] <= digestSize || !ImageRange(bundle->offsets[index], bundle->sizes[index], bundle->size) ||
 			(settingsSize != 0 && settings == nullptr))
 		{
 			SetLastError(ERROR_INVALID_DATA);
-			return nullptr;
+			return false;
 		}
-		MappedImage image;
-		if (!PrepareImage({ reinterpret_cast<const BYTE*>(bundle) + bundle->offsets[index], bundle->sizes[index] },
-			machine, image))
-		{
-			SetLastError(ERROR_BAD_EXE_FORMAT);
-			return nullptr;
-		}
+		const LibraryImage resource{ reinterpret_cast<const BYTE*>(bundle) + bundle->offsets[index], bundle->sizes[index] };
 
-		// Reclaim mappings only before execution; initialization can publish hooks and exception handlers.
-		PVOID remoteImage = AllocateImageMemory(process, image.bytes.size());
-		if (remoteImage == nullptr) return nullptr;
-		PVOID remoteData = nullptr;
-		bool started = false;
-		DWORD error = NO_ERROR;
-		const auto release = [&](PVOID allocation)
+		// Keep the verified file open until the native loader has finished opening it.
+		std::wstring path(bundle->directory);
+		if (!path.ends_with(L'\\')) path += L'\\';
+		path += libraryNames[index];
+		SmartPointer<HANDLE> file(CloseHandle,
+			CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+		if (file == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
+			return false;
+		if (file != INVALID_HANDLE_VALUE)
 		{
-			if (!started)
-			{
-				VirtualFreeEx(process, allocation, 0, MEM_RELEASE);
-				if (remoteData != nullptr) VirtualFreeEx(process, remoteData, 0, MEM_RELEASE);
-			}
-			SetLastError(error);
-		};
-		std::unique_ptr<void, decltype(release)> cleanup(remoteImage, release);
-		if (!RelocateImage(image, reinterpret_cast<ULONG_PTR>(remoteImage)))
-		{
-			error = ERROR_BAD_EXE_FORMAT;
-			return nullptr;
+			const DWORD capacity = GetFinalPathNameByHandleW(file, nullptr, 0, FILE_NAME_NORMALIZED);
+			if (capacity == 0) return false;
+			path.resize(capacity);
+			const DWORD length = GetFinalPathNameByHandleW(file, path.data(), capacity, FILE_NAME_NORMALIZED);
+			if (length == 0 || length >= capacity) return false;
+			path.resize(length);
 		}
-		const ULONGLONG dataSize = sizeof(Initialization) + ULONGLONG(bundle->size) + settingsSize;
+		// A nested launcher needs its own hook state when this DLL is already loaded by its parent.
+		const bool fromDisk = file != INVALID_HANDLE_VALUE && (!local || GetModuleHandleW(path.c_str()) == nullptr);
+		std::vector<BYTE> bytes;
+		if (fromDisk)
+		{
+			// Match the DLL's Authenticode digest to the build before letting the native loader open it.
+			LARGE_INTEGER size{};
+			if (!GetFileSizeEx(file, &size)) return false;
+			if (size.QuadPart <= 0 || size.QuadPart > maxLibrarySize)
+			{
+				SetLastError(ERROR_BAD_EXE_FORMAT);
+				return false;
+			}
+			SmartPointer<HCATADMIN> catalog([](HCATADMIN handle) { CryptCATAdminReleaseContext(handle, 0); }, nullptr);
+			if (!CryptCATAdminAcquireContext2(&catalog, nullptr, L"SHA256", nullptr, 0)) return false;
+			BYTE digest[digestSize];
+			DWORD length = digestSize;
+			if (!CryptCATAdminCalcHashFromFileHandle2(catalog, file, &length, digest, 0) || length != digestSize ||
+				memcmp(digest, resource.data, digestSize) != 0)
+			{
+				SetLastError(ERROR_INVALID_IMAGE_HASH);
+				return false;
+			}
+			if (!local)
+			{
+				bytes.resize(static_cast<size_t>(size.QuadPart));
+				DWORD read = 0;
+				if (!SetFilePointerEx(file, {}, nullptr, FILE_BEGIN) ||
+					!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr)) return false;
+				if (read != bytes.size())
+				{
+					SetLastError(ERROR_HANDLE_EOF);
+					return false;
+				}
+			}
+		}
+		else if (!DecompressLibrary(resource, bytes)) return false;
+
+		// Retain initialized hook state, but release the temporary bootstrap used for file-backed child loads.
+		bool started = false;
+		bool finished = false;
+		DWORD error = NO_ERROR;
+		const DWORD pathSize = fromDisk ? static_cast<DWORD>((path.size() + 1) * sizeof(WCHAR)) : 0;
+		const ULONGLONG dataSize = sizeof(Initialization) + ULONGLONG(bundle->size) + settingsSize + pathSize;
 		if (dataSize > MAXDWORD)
 		{
-			error = ERROR_NOT_ENOUGH_MEMORY;
-			return nullptr;
+			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return false;
 		}
-		remoteData = AllocateImageMemory(process, static_cast<SIZE_T>(dataSize));
-		if (remoteData == nullptr)
+		const PVOID remoteData = AllocateImageMemory(process, static_cast<SIZE_T>(dataSize));
+		if (remoteData == nullptr) return false;
+		const auto releaseData = [&](PVOID data)
 		{
-			error = GetLastError();
-			return nullptr;
+			if (!started) VirtualFreeEx(process, data, 0, MEM_RELEASE);
+			SetLastError(error);
+		};
+		std::unique_ptr<void, decltype(releaseData)> dataCleanup(remoteData, releaseData);
+		const auto releaseImage = [&](PVOID image)
+		{
+			if (!started || (fromDisk && finished)) VirtualFreeEx(process, image, 0, MEM_RELEASE);
+		};
+		std::unique_ptr<void, decltype(releaseImage)> remoteImage(nullptr, releaseImage);
+		LPTHREAD_START_ROUTINE initialize = nullptr;
+		if (!local || !fromDisk)
+		{
+			MappedImage image;
+			if (!PrepareImage({ bytes.data(), static_cast<DWORD>(bytes.size()) }, machine, image))
+			{
+				error = ERROR_BAD_EXE_FORMAT;
+				return false;
+			}
+			remoteImage.reset(AllocateImageMemory(process, image.bytes.size()));
+			if (!remoteImage)
+			{
+				error = GetLastError();
+				return false;
+			}
+			if (!RelocateImage(image, reinterpret_cast<ULONG_PTR>(remoteImage.get())))
+			{
+				error = ERROR_BAD_EXE_FORMAT;
+				return false;
+			}
+			if (!WriteProcessMemory(process, remoteImage.get(), image.bytes.data(), image.bytes.size(), nullptr))
+			{
+				error = GetLastError();
+				return false;
+			}
+
+			// Only code sections are executable while the bootstrap resolves imports.
+			for (const auto& section : image.sections)
+			{
+				if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) continue;
+				DWORD previous = 0;
+				if (!VirtualProtectEx(process, static_cast<PBYTE>(remoteImage.get()) + section.VirtualAddress,
+					(std::max)(section.Misc.VirtualSize, section.SizeOfRawData), PAGE_EXECUTE_READ, &previous))
+				{
+					error = GetLastError();
+					return false;
+				}
+			}
+			if (!FlushInstructionCache(process, remoteImage.get(), image.bytes.size()))
+			{
+				error = GetLastError();
+				return false;
+			}
+			initialize = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+				static_cast<PBYTE>(remoteImage.get()) + image.initialize);
 		}
+
+		// Pass settings and the selected DLL path alongside the retained fallback resources.
 		Initialization context{
-			reinterpret_cast<ULONG_PTR>(remoteImage),
+			reinterpret_cast<ULONG_PTR>(remoteImage.get()),
 			reinterpret_cast<ULONG_PTR>(remoteData) + sizeof(Initialization),
 			reinterpret_cast<ULONG_PTR>(remoteData) + sizeof(Initialization) + bundle->size,
-			settingsSize, ERROR_DLL_INIT_FAILED };
-		if (!WriteProcessMemory(process, remoteImage, image.bytes.data(), image.bytes.size(), nullptr) ||
-			!WriteProcessMemory(process, remoteData, &context, sizeof(context), nullptr) ||
+			0, settingsSize, ERROR_DLL_INIT_FAILED };
+		if (fromDisk) context.libraryPath = context.settings + settingsSize;
+		if (!WriteProcessMemory(process, remoteData, &context, sizeof(context), nullptr) ||
 			!WriteProcessMemory(process, reinterpret_cast<PVOID>(static_cast<ULONG_PTR>(context.bundle)),
 				bundle, bundle->size, nullptr) ||
 			(settingsSize != 0 && !WriteProcessMemory(process,
-				reinterpret_cast<PVOID>(static_cast<ULONG_PTR>(context.settings)), settings, settingsSize, nullptr)))
+				reinterpret_cast<PVOID>(static_cast<ULONG_PTR>(context.settings)), settings, settingsSize, nullptr)) ||
+			(fromDisk && !WriteProcessMemory(process,
+				reinterpret_cast<PVOID>(static_cast<ULONG_PTR>(context.libraryPath)), path.c_str(), pathSize, nullptr)))
 		{
 			error = GetLastError();
-			return nullptr;
+			return false;
 		}
-
-		// Only code sections are executable while the initializer resolves imports and finalizes protections.
-		for (const auto& section : image.sections)
-		{
-			if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) continue;
-			DWORD previous = 0;
-			if (!VirtualProtectEx(process, static_cast<PBYTE>(remoteImage) + section.VirtualAddress,
-				(std::max)(section.Misc.VirtualSize, section.SizeOfRawData), PAGE_EXECUTE_READ, &previous))
-			{
-				error = GetLastError();
-				return nullptr;
-			}
-		}
-		if (!FlushInstructionCache(process, remoteImage, image.bytes.size()))
-		{
-			error = GetLastError();
-			return nullptr;
-		}
-		const auto initialize = reinterpret_cast<LPTHREAD_START_ROUTINE>(
-			static_cast<PBYTE>(remoteImage) + image.initialize);
 		if (local)
 		{
 			started = true;
-			initialize(remoteData);
+			if (fromDisk)
+			{
+				const auto localContext = static_cast<Initialization*>(remoteData);
+				localContext->error = InitializeDiskLibrary(localContext);
+			}
+			else initialize(remoteData);
 		}
 		else
 		{
@@ -369,7 +501,7 @@ namespace winpriv::memory
 			if (!thread)
 			{
 				error = GetLastError();
-				return nullptr;
+				return false;
 			}
 			started = true;
 			const DWORD wait = WaitForSingleObject(thread, 30000);
@@ -379,28 +511,29 @@ namespace winpriv::memory
 				// Stop the owned child without unmapping code that its initializer could still use.
 				TerminateProcess(process, error);
 				WaitForSingleObject(process, 5000);
-				return nullptr;
+				return false;
 			}
 		}
+		finished = true;
 		if (!ReadProcessMemory(process, remoteData, &context, sizeof(context), nullptr))
 		{
 			error = GetLastError();
-			return nullptr;
+			return false;
 		}
 		error = context.error;
-		if (error != NO_ERROR) return nullptr;
+		if (error != NO_ERROR) return false;
 
 		// Descendants read the retained bundle; no caller should modify its images or initialization record.
 		DWORD previous = 0;
 		if (!VirtualProtectEx(process, remoteData, static_cast<SIZE_T>(dataSize), PAGE_READONLY, &previous))
 		{
 			error = GetLastError();
-			return nullptr;
+			return false;
 		}
-		return static_cast<HMODULE>(remoteImage);
+		return true;
 	}
 
-	HMODULE LoadBundle(const LibraryBundle* bundle) noexcept
+	bool LoadBundle(const LibraryBundle* bundle) noexcept
 	{
 		try
 		{
@@ -409,7 +542,7 @@ namespace winpriv::memory
 		catch (...)
 		{
 			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-			return nullptr;
+			return false;
 		}
 	}
 
@@ -418,7 +551,7 @@ namespace winpriv::memory
 	{
 		try
 		{
-			return InitializeLibrary(process, bundle, settings, settingsSize, false) != nullptr;
+			return InitializeLibrary(process, bundle, settings, settingsSize, false);
 		}
 		catch (...)
 		{

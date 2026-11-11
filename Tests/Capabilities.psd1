@@ -173,6 +173,7 @@
         @{ Id = 'artifact.build-x64'; Surface = 'Release x64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.build-arm64'; Surface = 'Release ARM64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.embedded-payloads'; Surface = 'embedded x86/x64/ARM64 DLL payloads'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
+        @{ Id = 'artifact.sidecar-library-loading'; Surface = 'loading a matching WinPriv DLL from the launcher directory'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.embedded-library-loading'; Surface = 'in-memory embedded library loading'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.memory-library-loading'; Surface = 'injection without temporary DLL files'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.package'; Surface = 'Build/build.cmd ZIP and hash manifest'; Profile = 'Safe'; Test = 'Artifacts'; Architecture = 'All'; Required = $true }

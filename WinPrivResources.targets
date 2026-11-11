@@ -12,6 +12,7 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
 
@@ -30,14 +31,36 @@ public sealed class CompressWinPrivResource : Task
         byte[] output, UIntPtr outputSize, out UIntPtr compressedSize);
     [DllImport("cabinet.dll")]
     private static extern bool CloseCompressor(IntPtr compressor);
+    [DllImport("wintrust.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CryptCATAdminAcquireContext2(out IntPtr catalog, IntPtr subsystem,
+        string algorithm, IntPtr policy, uint flags);
+    [DllImport("wintrust.dll", SetLastError = true)]
+    private static extern bool CryptCATAdminCalcHashFromFileHandle2(IntPtr catalog, SafeFileHandle file,
+        ref uint size, byte[] digest, uint flags);
+    [DllImport("wintrust.dll")]
+    private static extern bool CryptCATAdminReleaseContext(IntPtr catalog, uint flags);
 
     public override bool Execute()
     {
         IntPtr compressor = IntPtr.Zero;
+        IntPtr catalog = IntPtr.Zero;
         try
         {
+            // Keep the digest stable when an unchanged DLL is re-signed.
+            byte[] input;
+            byte[] digest = new byte[32];
+            uint digestSize = (uint)digest.Length;
+            using (FileStream source = File.OpenRead(Source))
+            using (BinaryReader reader = new BinaryReader(source))
+            {
+                if (!CryptCATAdminAcquireContext2(out catalog, IntPtr.Zero, "SHA256", IntPtr.Zero, 0) ||
+                    !CryptCATAdminCalcHashFromFileHandle2(catalog, source.SafeFileHandle, ref digestSize, digest, 0))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                source.Position = 0;
+                input = reader.ReadBytes(checked((int)source.Length));
+            }
+
             // Compress each complete DLL as one LZMS block for the highest native compression ratio.
-            byte[] input = File.ReadAllBytes(Source);
             uint blockSize = (uint)Math.Max(input.Length, 1024 * 1024);
             if (!CreateCompressor(5, IntPtr.Zero, out compressor) ||
                 !SetCompressorInformation(compressor, 1, ref blockSize, (UIntPtr)sizeof(uint)))
@@ -50,7 +73,10 @@ public sealed class CompressWinPrivResource : Task
             if (!Compress(compressor, input, (UIntPtr)input.Length, output, (UIntPtr)output.Length, out size))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             using (FileStream file = File.Create(Destination))
+            {
+                file.Write(digest, 0, digest.Length);
                 file.Write(output, 0, checked((int)size.ToUInt64()));
+            }
             return true;
         }
         catch (Exception error)
@@ -61,6 +87,7 @@ public sealed class CompressWinPrivResource : Task
         finally
         {
             if (compressor != IntPtr.Zero) CloseCompressor(compressor);
+            if (catalog != IntPtr.Zero) CryptCATAdminReleaseContext(catalog, 0);
         }
     }
 }
@@ -102,5 +129,10 @@ public sealed class CompressWinPrivResource : Task
     <ItemGroup>
       <FileWrites Include="@(_WinPrivLibraryResource->'$(IntDir)WinPrivLibrary-%(Architecture).lzms')" />
     </ItemGroup>
+  </Target>
+  <Target Name="CopyWinPrivSidecarLibraries" AfterTargets="Build" Condition="'$(DesignTimeBuild)'!='true'">
+    <Copy SourceFiles="@(_WinPrivLibraryResource)"
+          DestinationFiles="@(_WinPrivLibraryResource->'$(OutDir)WinPriv-%(Architecture).dll')"
+          SkipUnchangedFiles="true" Retries="$(CopyRetryCount)" RetryDelayMilliseconds="$(CopyRetryDelayMilliseconds)" />
   </Target>
 </Project>

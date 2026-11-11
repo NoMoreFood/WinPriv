@@ -285,12 +285,14 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
 
     It 'extracts all embedded libraries through the GUI launcher' {
         Invoke-WinPrivCapability -Id 'launcher.gui-extract' -Architecture $Architecture -Body {
+            $paths = @('x86', 'x64', 'ARM64' | ForEach-Object {
+                Join-Path $sandbox.Launchers.$Architecture.Root "WinPriv-$_.dll"
+            })
+            Remove-Item -LiteralPath $paths
             $result = Invoke-WinPriv -Architecture $Architecture -Arguments @('/ExtractLibrary') `
                 -Launcher WinPriv -Sandbox $sandbox -TimeoutSeconds 30
             Assert-WinPrivInvocationSucceeded $result
-            foreach ($name in @('WinPrivLibrary-32.dll', 'WinPrivLibrary-64.dll', 'WinPrivLibrary-arm64.dll')) {
-                Join-Path $sandbox.Launchers.$Architecture.Root $name | Should -Exist
-            }
+            foreach ($path in $paths) { $path | Should -Exist }
             return @{ Launcher = $result.LauncherPath }
         }
     }

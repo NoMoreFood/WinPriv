@@ -220,8 +220,8 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
                 -WinPrivArguments @('/UseShellExecute') -Operation state -Arguments @{} `
                 -Sandbox $sandbox -TimeoutSeconds 30
             Assert-WinPrivInvocationSucceeded $result
-            @($result.ProbeResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
-            return $result.ProbeResult.result.winPrivMemoryImages
+            $result.ProbeResult.result.winPrivLibraryLoaded | Should -BeTrue
+            return $result.ProbeResult.result.winPrivLibraryModules
         }
     }
 

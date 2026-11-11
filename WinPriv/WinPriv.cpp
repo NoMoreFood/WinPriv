@@ -8,11 +8,8 @@
 #include <Windows.h>
 #include <ShlObj.h>
 #include <WS2tcpip.h>
-#include <compressapi.h>
 #include <fcntl.h>
 #include <io.h>
-
-#pragma comment(lib, "cabinet.lib")
 
 #include <algorithm>
 #include <cstdio>
@@ -36,42 +33,15 @@ extern int LaunchAsUser(const std::wstring& commandLine, const std::wstring& use
 	const std::vector<std::wstring>& vProcessesToKill);
 extern std::wstring GetWinPrivHelp();
 
-// Embedded injection libraries in bundle order with their extracted file names.
-constexpr std::array<std::pair<DWORD, LPCWSTR>, 3> vLibraryResources{ {
-	{ IDR_RT_RCDATA_X86, L"WinPrivLibrary-32.dll" },
-	{ IDR_RT_RCDATA_X64, L"WinPrivLibrary-64.dll" },
-	{ IDR_RT_RCDATA_ARM64, L"WinPrivLibrary-arm64.dll" } } };
+// Embedded injection libraries in bundle order.
+constexpr std::array<DWORD, 3> vLibraryResources{ IDR_RT_RCDATA_X86, IDR_RT_RCDATA_X64, IDR_RT_RCDATA_ARM64 };
 
-winpriv::memory::LibraryImage LoadLibraryResource(const DWORD iResourceId, std::vector<BYTE>& vBytes)
+winpriv::memory::LibraryImage GetLibraryResource(const DWORD iResourceId)
 {
-	// Locate and decompress an embedded library image; failures return an empty image.
 	const HRSRC hResource = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
 	const HGLOBAL hLoaded = hResource == nullptr ? nullptr : LoadResource(nullptr, hResource);
-	const LPCVOID pData = hLoaded == nullptr ? nullptr : LockResource(hLoaded);
-	SmartPointer<DECOMPRESSOR_HANDLE> hDecompressor(CloseDecompressor, nullptr);
-	if (pData == nullptr || !CreateDecompressor(COMPRESS_ALGORITHM_LZMS, nullptr, &hDecompressor)) return {};
-	const DWORD iCompressedSize = SizeofResource(nullptr, hResource);
-	SIZE_T iSize = 0;
-	if (Decompress(hDecompressor, pData, iCompressedSize, nullptr, 0, &iSize) ||
-		GetLastError() != ERROR_INSUFFICIENT_BUFFER) return {};
-
-	// Bound allocations based on the size stored in the compressed resource.
-	if (iSize == 0 || iSize > 64 * 1024 * 1024)
-	{
-		SetLastError(ERROR_BAD_COMPRESSION_BUFFER);
-		return {};
-	}
-	try
-	{
-		vBytes.resize(iSize);
-	}
-	catch (...)
-	{
-		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-		return {};
-	}
-	if (!Decompress(hDecompressor, pData, iCompressedSize, vBytes.data(), vBytes.size(), &iSize)) return {};
-	return { vBytes.data(), static_cast<DWORD>(iSize) };
+	return hLoaded == nullptr ? winpriv::memory::LibraryImage{} :
+		winpriv::memory::LibraryImage{ LockResource(hLoaded), SizeofResource(nullptr, hResource) };
 }
 
 int RunProgram(int iArgc, wchar_t* aArgv[])
@@ -322,16 +292,19 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		// write the embedded libraries beside this executable
 		else if (IsSwitch(L"/ExtractLibrary"))
 		{
-			for (const auto& [iResourceId, sFileName] : vLibraryResources)
+			for (size_t iIndex = 0; iIndex < vLibraryResources.size(); ++iIndex)
 			{
 				std::vector<BYTE> vBytes;
-				const winpriv::memory::LibraryImage tImage = LoadLibraryResource(iResourceId, vBytes);
-				const std::wstring sPath = std::filesystem::path(sExecutable).replace_filename(sFileName).wstring();
-				SmartPointer<HANDLE> hFile(CloseHandle, tImage.data == nullptr ? INVALID_HANDLE_VALUE : CreateFile(
-					sPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+				const std::wstring sPath = std::filesystem::path(sExecutable)
+					.replace_filename(winpriv::memory::libraryNames[iIndex]).wstring();
+				SmartPointer<HANDLE> hFile(CloseHandle,
+					winpriv::memory::DecompressLibrary(GetLibraryResource(vLibraryResources[iIndex]), vBytes) ?
+					CreateFile(sPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr) :
+					INVALID_HANDLE_VALUE);
 				DWORD iWritten = 0;
-				if (hFile == INVALID_HANDLE_VALUE || !WriteFile(hFile, tImage.data, tImage.size, &iWritten, nullptr) ||
-					iWritten != tImage.size)
+				if (hFile == INVALID_HANDLE_VALUE ||
+					!WriteFile(hFile, vBytes.data(), static_cast<DWORD>(vBytes.size()), &iWritten, nullptr) ||
+					iWritten != vBytes.size())
 				{
 					PrintMessage(L"ERROR: Failed to extract libraries.\n");
 					return __LINE__;
@@ -710,14 +683,13 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// kill any processes requested
 	KillProcesses(vProcessesToKill);
 
-	// Release staging buffers once the loader owns the persistent images used by descendant processes.
+	// Pass the launcher directory and embedded fallback images to descendant processes.
 	{
-		std::array<std::vector<BYTE>, 3> vLibraryBytes;
-		std::array<winpriv::memory::LibraryImage, 3> vImages{};
-		for (size_t iIndex = 0; iIndex < vImages.size(); ++iIndex)
-			vImages[iIndex] = LoadLibraryResource(vLibraryResources[iIndex].first, vLibraryBytes[iIndex]);
+		std::array<winpriv::memory::LibraryImage, 3> vResources{};
+		std::ranges::transform(vLibraryResources, vResources.begin(), GetLibraryResource);
+		const auto sDirectory = std::filesystem::path(sExecutable).parent_path().native();
 		std::vector<BYTE> vBundle;
-		if (!winpriv::memory::CreateBundle(vImages, vBundle) ||
+		if (!winpriv::memory::CreateBundle(vResources, sDirectory, vBundle) ||
 			!winpriv::memory::LoadBundle(reinterpret_cast<const winpriv::memory::LibraryBundle*>(vBundle.data())))
 		{
 			PrintMessage(L"ERROR: Could not load injection library (error %lu).\n", GetLastError());

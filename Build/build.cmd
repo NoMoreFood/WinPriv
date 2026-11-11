@@ -103,7 +103,7 @@ EXIT /B %ERRORLEVEL%
 FOR %%A IN (x86 x64 ARM64) DO (
     MD "%STAGEDIR%\%%A"
     IF ERRORLEVEL 1 EXIT /B 1
-    FOR %%E IN (WinPriv.exe WinPrivCmd.exe) DO (
+    FOR %%E IN (WinPriv.exe WinPrivCmd.exe WinPriv-x86.dll WinPriv-x64.dll WinPriv-ARM64.dll) DO (
         COPY /Y "%BINDIR%%%A\%%E" "%STAGEDIR%\%%A\%%E" >NUL
         IF ERRORLEVEL 1 EXIT /B 1
     )
@@ -119,7 +119,7 @@ IF NOT "%ZIPRESULT%"=="0" EXIT /B 1
 :: output hash information
 %POWERSHELL% -Command ^
     "$ErrorActionPreference = 'Stop'; $base = $env:STAGEDIR + '\';" ^
-    "$files = Get-ChildItem -LiteralPath $env:STAGEDIR -Recurse -File | Where-Object Extension -In '.zip','.exe';" ^
+    "$files = Get-ChildItem -LiteralPath $env:STAGEDIR -Recurse -File | Where-Object Extension -In '.zip','.exe','.dll';" ^
     "$lines = foreach ($algorithm in 'SHA256','SHA1','MD5') { $files | Get-FileHash -Algorithm $algorithm |" ^
     "ForEach-Object { '{0} {1} {2}' -f $_.Algorithm,$_.Hash,$_.Path.Substring($base.Length) } };" ^
     "$lines | Set-Content -LiteralPath ($base + 'WinPriv-hash.txt') -Encoding Unicode;" ^

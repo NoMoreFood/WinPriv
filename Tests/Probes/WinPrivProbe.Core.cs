@@ -654,7 +654,8 @@ namespace WinPrivProbe
                         StringComparison.OrdinalIgnoreCase);
                     bool extractedLibrary = System.Text.RegularExpressions.Regex.IsMatch(
                         moduleName,
-                        "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(32|64|arm64)\\.dll$",
+                        "^(WinPriv-(x86|x64|arm64)|" +
+                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(32|64|arm64))\\.dll$",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase |
                         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
                     if (namedLibrary || extractedLibrary)

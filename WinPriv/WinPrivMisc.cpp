@@ -240,9 +240,9 @@ Optional Switches
 
 /ExtractLibrary
 
-   Exports the embedded x86, x64, and ARM64 library images to the directory
-   containing the WinPriv executable. Normal launches load the embedded
-   libraries directly into memory.
+   Exports WinPriv-x86.dll, WinPriv-x64.dll, and WinPriv-ARM64.dll beside
+   the WinPriv executable. WinPriv uses the matching DLL when present and
+   falls back to the embedded library when it is absent.
 
 /WindowStyle <Style>
 

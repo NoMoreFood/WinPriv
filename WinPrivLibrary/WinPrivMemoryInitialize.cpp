@@ -332,6 +332,9 @@ extern "C" DWORD WINAPI WinPrivInitializeMemory(winpriv::memory::Initialization*
 		}
 	}
 
+	// Let the Windows loader initialize the verified file-backed DLL.
+	if (context->libraryPath != 0) return context->error = InitializeDiskLibrary(context);
+
 	// Static TLS requires Windows loader registration; the memory-loaded library uses dynamic TLS instead.
 	const auto& tlsDirectory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
 	if (tlsDirectory.Size != 0)
@@ -389,14 +392,17 @@ extern "C" DWORD WINAPI WinPrivInitializeMemory(winpriv::memory::Initialization*
 	}
 	using Entry = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
 	const auto entry = reinterpret_cast<Entry>(base + nt->OptionalHeader.AddressOfEntryPoint);
-	if (!entry(reinterpret_cast<HINSTANCE>(base), DLL_PROCESS_ATTACH, context))
+	const auto instance = reinterpret_cast<HINSTANCE>(base);
+	const BOOL attached = entry(instance, DLL_PROCESS_ATTACH, context);
+	const DWORD error = attached ? WinPrivInitialize(context) : ERROR_DLL_INIT_FAILED;
+	if (error != NO_ERROR)
 	{
+		if (attached) entry(instance, DLL_PROCESS_DETACH, nullptr);
 #if defined(_WIN64)
 		if (exceptions.Size != 0) RtlDeleteFunctionTable(functions);
 #else
 		RemoveVectoredExceptionHandler(exceptionHandler);
 #endif
-		return context->error = context->error == NO_ERROR ? ERROR_DLL_INIT_FAILED : context->error;
 	}
-	return context->error = NO_ERROR;
+	return context->error = error;
 }

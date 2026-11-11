@@ -187,6 +187,7 @@
       <AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
+      <EntryPointSymbol>WinPrivDllEntry</EntryPointSymbol>
       <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>ws2_32.dll;iphlpapi.dll;netapi32.dll;shell32.dll;ole32.dll;oleaut32.dll;odbc32.dll;bcrypt.dll;amsi.dll;wldp.dll;dnsapi.dll;ncrypt.dll;wtsapi32.dll;api-ms-win-core-localization-l1-2-0.dll;credui.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>

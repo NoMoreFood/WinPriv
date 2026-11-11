@@ -402,7 +402,8 @@ function Build-WinPrivStage {
     }
     foreach ($platform in @('x86', 'x64', 'ARM64')) {
         $output = Join-Path $binaryRoot $platform
-        foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll')) {
+        foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll',
+            'WinPriv-x86.dll', 'WinPriv-x64.dll', 'WinPriv-ARM64.dll')) {
             if (-not (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf)) {
                 throw "$Configuration|$platform did not produce '$name' in '$output'."
             }
@@ -625,7 +626,8 @@ try {
 
     foreach ($item in @('x86', 'x64', 'ARM64')) {
         $directory = Join-Path $effectiveBinaryRoot $item
-        foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll')) {
+        foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll',
+            'WinPriv-x86.dll', 'WinPriv-x64.dll', 'WinPriv-ARM64.dll')) {
             $path = Join-Path $directory $name
             if (Test-Path -LiteralPath $path -PathType Leaf) {
                 $file = Get-Item -LiteralPath $path

@@ -1062,17 +1062,19 @@ Describe 'WinPriv cross-architecture descendant propagation (<Chain>, <ApiName>)
                     $State.winPrivLibraryLoaded | Should -BeTrue
                     $State.PSObject.Properties['loadedModulesError'] | Should -BeNullOrEmpty
 
-                    $modulePaths = @($State.winPrivMemoryImages)
+                    $modulePaths = @($State.winPrivLibraryModules)
                     $modulePaths | Should -HaveCount 1
-                    $modulePaths[0].architecture | Should -Be $ExpectedArchitecture
-                    @($State.winPrivLibraryModules) | Should -HaveCount 0
+                    $expectedLibrary = Join-Path $sandbox.Launchers.$LauncherArchitecture.Root `
+                        "WinPriv-$ExpectedArchitecture.dll"
+                    ($modulePaths[0] -replace '^\\\\\?\\', '') | Should -Be $expectedLibrary
+                    @($State.winPrivMemoryImages) | Should -HaveCount 0
 
                     return [ordered]@{
                         Role = $Role
                         Architecture = $State.architecture
                         PointerSize = $State.pointerSize
                         ProcessPath = $State.processPath
-                        WinPrivMemoryImages = $modulePaths
+                        WinPrivLibraryModules = $modulePaths
                     }
                 }
 
@@ -1112,8 +1114,8 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
             Invoke-WinPrivCapability -Id 'propagation.create-process-wide' -Architecture $Architecture -Body {
                 Assert-WinPrivInvocationSucceeded $one
                 $one.ProbeResult.result.childResult.success | Should -BeTrue
-                @($one.ProbeResult.result.childResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
-                return $one.ProbeResult.result.childResult.result.winPrivMemoryImages
+                $one.ProbeResult.result.childResult.result.winPrivLibraryLoaded | Should -BeTrue
+                return $one.ProbeResult.result.childResult.result.winPrivLibraryModules
             } | Out-Null
         }
         catch {
@@ -1129,8 +1131,8 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
                 $two.ProbeResult.result.childResult.success | Should -BeTrue
                 $two.ProbeResult.result.childResult.result.success | Should -BeTrue
                 $two.ProbeResult.result.childResult.result.childResult.success | Should -BeTrue
-                @($two.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
-                return $two.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages
+                $two.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryLoaded | Should -BeTrue
+                return $two.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryModules
             } | Out-Null
         }
         catch {
@@ -1150,8 +1152,8 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
             Invoke-WinPrivCapability -Id 'propagation.create-process-ansi' -Architecture $Architecture -Body {
                 Assert-WinPrivInvocationSucceeded $result
                 $result.ProbeResult.result.childResult.success | Should -BeTrue
-                @($result.ProbeResult.result.childResult.result.winPrivMemoryImages).Count | Should -BeGreaterThan 0
-                return $result.ProbeResult.result.childResult.result.winPrivMemoryImages
+                $result.ProbeResult.result.childResult.result.winPrivLibraryLoaded | Should -BeTrue
+                return $result.ProbeResult.result.childResult.result.winPrivLibraryModules
             } | Out-Null
         }
         catch {
@@ -1167,9 +1169,9 @@ Describe 'WinPriv descendant propagation (<Architecture>)' -Tag 'Safe' -ForEach 
                 $grandchild.ProbeResult.result.childResult.success | Should -BeTrue
                 $grandchild.ProbeResult.result.childResult.result.success | Should -BeTrue
                 $grandchild.ProbeResult.result.childResult.result.childResult.success | Should -BeTrue
-                @($grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages).Count |
-                    Should -BeGreaterThan 0
-                return $grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivMemoryImages
+                $grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryLoaded |
+                    Should -BeTrue
+                return $grandchild.ProbeResult.result.childResult.result.childResult.result.winPrivLibraryModules
             } | Out-Null
         }
         catch {
