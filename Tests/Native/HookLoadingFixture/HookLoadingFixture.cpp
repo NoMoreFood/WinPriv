@@ -23,6 +23,9 @@ int TestSmartCardEnrollment();
 int TestProcessLogon();
 int TestProcessControl();
 DWORD TestDetourContextRollback();
+#if defined(_M_ARM64)
+DWORD TestDetourArm64Branches();
+#endif
 int TestPrivilegeEnumeration();
 #endif
 
@@ -1014,6 +1017,13 @@ int wmain(const int argumentCount, wchar_t* arguments[])
     if (argumentCount == 2 && wcscmp(arguments[1], L"--process-control") == 0) return TestProcessControl();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--privilege-enumeration") == 0) return TestPrivilegeEnumeration();
     if (argumentCount == 2 && wcscmp(arguments[1], L"--rejected-detours") == 0) return TestRejectedDetours();
+#if defined(_M_ARM64)
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--arm64-branches") == 0)
+    {
+        const DWORD error = TestDetourArm64Branches();
+        return error == NO_ERROR ? 0 : Fail(L"arm64-branches", error);
+    }
+#endif
 #endif
     if (argumentCount >= 2 && wcscmp(arguments[1], L"--library-loading") == 0)
         return TestLibraryLoading(argumentCount, arguments);

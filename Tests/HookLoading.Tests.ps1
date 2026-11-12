@@ -583,11 +583,11 @@ Describe 'WinPriv memory image exception handling (<Architecture>)' -Tag 'Safe' 
     }
 }
 
-Describe 'WinPriv detour rejection (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+Describe 'WinPriv detour validation (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
     BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'rejected-detours' }
     AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
 
-    It 'rejects invalid hooks without publishing pending hooks or changing code protections' {
+    It 'preserves branch targets and rejects invalid hooks without changing code protections' {
         $fixture = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivHookDynamic.exe'
         if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
             Skip-WinPrivCapability -Id 'detour.rejected-hooks' -Architecture $Architecture `
@@ -599,6 +599,11 @@ Describe 'WinPriv detour rejection (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
                 -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--rejected-detours')
             Assert-WinPrivInvocationSucceeded $result
             ($result.StdOut | ConvertFrom-Json).rejectedCases | Should -Be $(if ($Architecture -eq 'ARM64') { 5 } else { 7 })
+            if ($Architecture -eq 'ARM64') {
+                $result = Invoke-WinPrivContainedProcess -FilePath $fixture -Sandbox $sandbox `
+                    -WorkingDirectory $sandbox.Working -TimeoutSeconds 25 -ArgumentList @('--arm64-branches')
+                Assert-WinPrivInvocationSucceeded $result
+            }
         }
     }
 }

@@ -158,14 +158,12 @@ class CDetourDis
 #define ENTRY_CopyBytesSegment      ENTRY_CopyBytesPrefix
 #define ENTRY_CopyBytesRax          { ENTRY_DataIgnored &CDetourDis::CopyBytesRax }
 #define ENTRY_CopyF2                { ENTRY_DataIgnored &CDetourDis::CopyF2 }
-#define ENTRY_CopyF3                ENTRY_CopyBytesPrefix
 #define ENTRY_Copy0F                { ENTRY_DataIgnored &CDetourDis::Copy0F }
 #define ENTRY_Copy0F78              { ENTRY_DataIgnored &CDetourDis::Copy0F78 }
 #define ENTRY_Copy66                { ENTRY_DataIgnored &CDetourDis::Copy66 }
 #define ENTRY_Copy67                { ENTRY_DataIgnored &CDetourDis::Copy67 }
 #define ENTRY_CopyF6                { ENTRY_DataIgnored &CDetourDis::CopyF6 }
 #define ENTRY_CopyF7                { ENTRY_DataIgnored &CDetourDis::CopyF7 }
-#define ENTRY_CopyFF                ENTRY_CopyBytes2Mod
 #define ENTRY_CopyC7                { ENTRY_DataIgnored &CDetourDis::CopyC7 }
 #define ENTRY_CopyVex2              { ENTRY_DataIgnored &CDetourDis::CopyVex2 }
 #define ENTRY_CopyVex3              { ENTRY_DataIgnored &CDetourDis::CopyVex3 }
@@ -200,7 +198,6 @@ class CDetourDis
     PBYTE CopyC7(PBYTE pbDst, PBYTE pbSrc);
     PBYTE CopyVex2(PBYTE pbDst, PBYTE pbSrc);
     PBYTE CopyVex3(PBYTE pbDst, PBYTE pbSrc);
-    PBYTE CopyVexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc);
     PBYTE CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p);
     PBYTE CopyEvex(PBYTE pbDst, PBYTE pbSrc);
     PBYTE CopyXop(PBYTE pbDst, PBYTE pbSrc);
@@ -219,9 +216,9 @@ class CDetourDis
 #ifdef _M_X64
     bool                m_bRaxOverride : 1 = false;
 #endif
-    bool                m_bVex : 1 = false;
-    bool                m_bEvex : 1 = false;
+    bool                m_bVex : 1 = false;     // VEX or EVEX encoded.
     bool                m_bF2 : 1 = false;
+    BYTE                m_cNested = 0;          // prefixes and escapes decoded so far.
     LONG&               m_lExtra;
 };
 
@@ -241,6 +238,12 @@ CDetourDis::CDetourDis(LONG& extra) :
 
 PBYTE CDetourDis::CopyInstruction(PBYTE pbDst, PBYTE pbSrc, const COPYENTRY* table)
 {
+    // Prefixes and escapes re-enter here. An instruction is at most 15 bytes, so a longer run of them
+    // is not code and must not be copied.
+    if (++m_cNested > 15) {
+        return Invalid(pbSrc);
+    }
+
     // Figure out how big the instruction is, do the appropriate copy,
     // and relocate any relative target.
     //
@@ -273,13 +276,8 @@ PBYTE CDetourDis::CopyBytes(const COPYENTRY& entry, PBYTE pbDst, PBYTE pbSrc)
         nBytesFixed = nFixedSize + ((nFlagBits & RAX) ? 4 : 0);
     }
 #endif
-    else if (m_bVex || m_bEvex) {
-        // VEX/EVEX pp field does not shrink immediates to 16-bit.
-        // This matters for EVEX MAP4 (APX) where entries like opcode 81
-        // (Group 1 imm32) have nFixedSize=6 but nFixedSize16=4.
-        nBytesFixed = nFixedSize;
-    }
     else {
+        // The pp field of an EVEX MAP4 (APX) instruction selects 16-bit immediates just as a 66 prefix does.
         nBytesFixed = m_bOperandOverride ? nFixedSize16 : nFixedSize;
     }
 
@@ -287,26 +285,15 @@ PBYTE CDetourDis::CopyBytes(const COPYENTRY& entry, PBYTE pbDst, PBYTE pbSrc)
     UINT nRelOffset = entry.nRelOffset;
     UINT cbTarget = nBytes - nRelOffset;
     if (nModOffset > 0) {
-        BYTE const bModRm = pbSrc[nModOffset];
-        BYTE const bFlags = s_rbModRm[bModRm];
+        BYTE const bFlags = s_rbModRm[pbSrc[nModOffset]];
 
         nBytes += bFlags & NOTSIB;
 
         if (bFlags & SIB) {
-            BYTE const bSib = pbSrc[nModOffset + 1];
-
-            if ((bSib & 0x07) == 0x05) {
-                if ((bModRm & 0xc0) == 0x00) {
-                    nBytes += 4;
-                }
-                else if ((bModRm & 0xc0) == 0x40) {
-                    nBytes += 1;
-                }
-                else if ((bModRm & 0xc0) == 0x80) {
-                    nBytes += 4;
-                }
+            // The table flags SIB only for mod 00, where base 101 means a disp32 follows.
+            if ((pbSrc[nModOffset + 1] & 0x07) == 0x05) {
+                nBytes += 4;
             }
-            cbTarget = nBytes - nRelOffset;
         }
 #ifdef _M_X64
         else if (bFlags & RIP) {
@@ -356,7 +343,6 @@ PBYTE CDetourDis::CopyBytesJump(PBYTE pbDst, PBYTE pbSrc)
         return pbSrc + 2;
     }
 
-
     pbDst[0] = 0x0f;
     pbDst[1] = 0x80 | (pbSrc[0] & 0xf);
     pvDstAddr = &pbDst[2];
@@ -389,11 +375,6 @@ void CDetourDis::AdjustTarget(PBYTE pbDst, PBYTE pbSrc,
       case 4:
         nOldOffset = *(UNALIGNED LONG*&)pvTargetAddr;
         break;
-#if defined(_M_X64)
-      case 8:
-        nOldOffset = *(UNALIGNED LONGLONG*&)pvTargetAddr;
-        break;
-#endif
       default:
         nOldOffset = 0;
         break;
@@ -420,11 +401,6 @@ void CDetourDis::AdjustTarget(PBYTE pbDst, PBYTE pbSrc,
             m_lExtra = -1;
         }
         break;
-#if defined(_M_X64)
-      case 8:
-        *(UNALIGNED LONGLONG*&)pvTargetAddr = nNewOffset;
-        break;
-#endif
     }
 }
 
@@ -449,12 +425,12 @@ PBYTE CDetourDis::Copy0F78(PBYTE pbDst, PBYTE pbSrc)
     static const COPYENTRY vmread = /* 78 */ ENTRY_CopyBytes2Mod;
     static const COPYENTRY extrq_insertq = /* 78 */ ENTRY_CopyBytes4;
 
-
     // For insertq and presumably despite documentation extrq, mode must be 11, not checked.
     // insertq/extrq/78 are followed by two immediate bytes, and given mode == 11, mod/rm byte is always one byte,
     // and the 0x78 makes 4 bytes (not counting the 66/F2/F which are accounted for elsewhere)
+    // The VEX and EVEX forms are conversions that take ModR/M and no immediate.
 
-    return CopyBytes(m_bF2 || m_bOperandOverride ? extrq_insertq : vmread, pbDst, pbSrc);
+    return CopyBytes((m_bF2 || m_bOperandOverride) && !m_bVex ? extrq_insertq : vmread, pbDst, pbSrc);
 }
 
 PBYTE CDetourDis::Copy66(PBYTE pbDst, PBYTE pbSrc)
@@ -533,9 +509,9 @@ PBYTE CDetourDis::CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p)
     static const COPYENTRY ceF38 = /* 38 */ ENTRY_CopyBytes2Mod;
     static const COPYENTRY ceF3A = /* 3A */ ENTRY_CopyBytes2Mod1;
 
+    // The low two bits of p imply a prefix: 1 is 66 and 3 is F2.
+    m_bVex = true;
     switch (p & 3) {
-    case 0:
-    case 2: break;
     case 1: m_bOperandOverride = true; break;
     case 3: m_bF2 = true; break;
     }
@@ -554,18 +530,13 @@ PBYTE CDetourDis::CopyVexEvexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc, BYTE p)
     case 6:  // MAP6 (FP16) - opcode structure mirrors 0F 38 (MAP2).
     case 2:  return CopyBytes(ceF38, pbDst, pbSrc);
     case 3:  return CopyBytes(ceF3A, pbDst, pbSrc);
-    case 4:  // MAP4 (APX) - promoted legacy MAP0 instructions.
-             return CopyInstruction(pbDst, pbSrc);
+    case 4:  // MAP4 (APX) - promoted legacy MAP0 instructions. Every one takes ModR/M, so an opcode whose
+             // MAP0 entry has another shape is a different instruction here and cannot be sized. The
+             // handlers for 8F (POP2) and F6/F7 size through ModR/M themselves.
+             return s_rceCopyTable[pbSrc[0]].nModOffset == 1 ||
+                    pbSrc[0] == 0x8F || pbSrc[0] == 0xF6 || pbSrc[0] == 0xF7
+                 ? CopyInstruction(pbDst, pbSrc) : Invalid(pbSrc);
     }
-}
-
-PBYTE CDetourDis::CopyVexCommon(BYTE m, PBYTE pbDst, PBYTE pbSrc)
-// m is first instead of last in the hopes of pbDst/pbSrc being
-// passed along efficiently in the registers they were already in.
-{
-    m_bVex = true;
-    BYTE const p = (BYTE)(pbSrc[-1] & 3); // p in last byte
-    return CopyVexEvexCommon(m, pbDst, pbSrc, p);
 }
 
 PBYTE CDetourDis::CopyVex3(PBYTE pbDst, PBYTE pbSrc)
@@ -609,7 +580,7 @@ PBYTE CDetourDis::CopyVex3(PBYTE pbDst, PBYTE pbSrc)
     // VFMADD132PS xmm0, xmm1, xmm2/m128
     //
 #endif
-    return CopyVexCommon(pbSrc[1] & 0x1F, pbDst + 3, pbSrc + 3);
+    return CopyVexEvexCommon(pbSrc[1] & 0x1F, pbDst + 3, pbSrc + 3, pbSrc[2]); // p in last byte
 }
 
 PBYTE CDetourDis::CopyVex2(PBYTE pbDst, PBYTE pbSrc)
@@ -623,7 +594,7 @@ PBYTE CDetourDis::CopyVex2(PBYTE pbDst, PBYTE pbSrc)
 #endif
     pbDst[0] = pbSrc[0];
     pbDst[1] = pbSrc[1];
-    return CopyVexCommon(1, pbDst + 2, pbSrc + 2);
+    return CopyVexEvexCommon(1, pbDst + 2, pbSrc + 2, pbSrc[1]); // p in last byte
 }
 
 PBYTE CDetourDis::CopyEvex(PBYTE pbDst, PBYTE pbSrc)
@@ -649,8 +620,6 @@ PBYTE CDetourDis::CopyEvex(PBYTE pbDst, PBYTE pbSrc)
 
     // Copy 4 byte prefix.
     *(UNALIGNED ULONG *)pbDst = *(UNALIGNED ULONG*)pbSrc;
-
-    m_bEvex = true;
 
 #ifdef _M_X64
     m_bRaxOverride = m_bRaxOverride || (p1 & 0x80); // w
@@ -1068,13 +1037,7 @@ const CDetourDis::COPYENTRY CDetourDis::s_rceCopyTable[] =
     /* F0 */ ENTRY_CopyBytesPrefix,                    // LOCK prefix
     /* F1 */ ENTRY_CopyBytes1,                         // INT1 / ICEBP somewhat documented by AMD, not by Intel
     /* F2 */ ENTRY_CopyF2,                             // REPNE prefix
-//#ifdef _M_IX86
-    /* F3 */ ENTRY_CopyF3,                             // REPE prefix
-//#else
-// This does presently suffice for AMD64 but it requires tracing
-// through a bunch of code to verify and seems not worth maintaining.
-//  /* F3 */ ENTRY_CopyBytesPrefix,                    // REPE prefix
-//#endif
+    /* F3 */ ENTRY_CopyBytesPrefix,                    // REPE prefix
     /* F4 */ ENTRY_CopyBytes1,                         // HLT
     /* F5 */ ENTRY_CopyBytes1,                         // CMC
     /* F6 */ ENTRY_CopyF6,                             // TEST/0, DIV/6
@@ -1086,7 +1049,7 @@ const CDetourDis::COPYENTRY CDetourDis::s_rceCopyTable[] =
     /* FC */ ENTRY_CopyBytes1,                         // CLD
     /* FD */ ENTRY_CopyBytes1,                         // STD
     /* FE */ ENTRY_CopyBytes2Mod,                      // DEC/1,INC/0
-    /* FF */ ENTRY_CopyFF,                             // CALL/2
+    /* FF */ ENTRY_CopyBytes2Mod,                      // CALL/2
 };
 
 const CDetourDis::COPYENTRY CDetourDis::s_rceCopyTable0F[] =
@@ -1385,7 +1348,8 @@ const CDetourDis::COPYENTRY CDetourDis::s_rceCopyTable0F[] =
 // ADR     0ll10000 hhhhhhhh hhhhhhhh hhhddddd  & 0x9f000000 == 0x10000000  (l = low, h = high, d = Rd)
 // ADRP    1ll10000 hhhhhhhh hhhhhhhh hhhddddd  & 0x9f000000 == 0x90000000  (l = low, h = high, d = Rd)
 //
-// B.cond  01010100 iiiiiiii iiiiiiii iii0cccc  & 0xff000010 == 0x54000000  (i = delta = SignExtend(imm19:00, 64), c = cond)
+// B.cond  01010100 iiiiiiii iiiiiiii iii0cccc  & 0xff000000 == 0x54000000  (i = delta = SignExtend(imm19:00, 64), c = cond)
+// BC.cond 01010100 iiiiiiii iiiiiiii iii1cccc  (B.cond with a prediction hint; relocated as B.cond)
 //
 // B       000101ii iiiiiiii iiiiiiii iiiiiiii  & 0xfc000000 == 0x14000000  (i = delta = SignExtend(imm26:00, 64))
 // BL      100101ii iiiiiiii iiiiiiii iiiiiiii  & 0xfc000000 == 0x94000000  (i = delta = SignExtend(imm26:00, 64))
@@ -1705,7 +1669,7 @@ PBYTE CDetourDis::CopyInstruction(PBYTE pDst,
     ULONG CopiedSize;
     if ((Instruction & 0x1f000000) == 0x10000000) {
         CopiedSize = CopyAdr(pSrc, pDst, Instruction);
-    } else if ((Instruction & 0xff000010) == 0x54000000) {
+    } else if ((Instruction & 0xff000000) == 0x54000000) {
         CopiedSize = CopyBcc(pSrc, pDst, Instruction);
     } else if ((Instruction & 0x7c000000) == 0x14000000) {
         CopiedSize = CopyB_or_Bl(pSrc, pDst, Instruction);
@@ -1834,6 +1798,13 @@ BYTE CDetourDis::CopyAdr(BYTE* pSource, BYTE* pDest, ULONG instruction)
 BYTE CDetourDis::CopyBcc(BYTE* pSource, BYTE* pDest, ULONG instruction)
 {
     Bcc19& decoded = (Bcc19&)(instruction);
+
+    // AL and NV both mean always, so neither condition can be inverted to skip a longer branch.
+    if (decoded.s.Condition >= 14)
+    {
+        return CopyB_or_Bl(pSource, pDest, Branch26::AssembleB(decoded.Imm()));
+    }
+
     PULONG pDstInst = (PULONG)(pDest);
 
     BYTE* pTarget = pSource + decoded.Imm();
@@ -2004,49 +1975,6 @@ static PBYTE DetourCopyInstruction(PBYTE pDst, PBYTE pSrc, LONG& extra)
 
 #endif // _M_ARM64
 
-//
-///////////////////////////////////////////////////////////////// End of File.
-
-#undef ENTRY_Copy0F
-#undef ENTRY_Copy0F78
-#undef ENTRY_Copy66
-#undef ENTRY_Copy67
-#undef ENTRY_CopyBytes1
-#undef ENTRY_CopyBytes1Address
-#undef ENTRY_CopyBytes2
-#undef ENTRY_CopyBytes2CantJump
-#undef ENTRY_CopyBytes2Jump
-#undef ENTRY_CopyBytes2Mod
-#undef ENTRY_CopyBytes2Mod1
-#undef ENTRY_CopyBytes2ModOperand
-#undef ENTRY_CopyBytes3
-#undef ENTRY_CopyBytes3Mod
-#undef ENTRY_CopyBytes3Mod1
-#undef ENTRY_CopyBytes3Or5
-#undef ENTRY_CopyBytes3Or5Rax
-#undef ENTRY_CopyBytes3Or5Target
-#undef ENTRY_CopyBytes4
-#undef ENTRY_CopyBytes5Or7
-#undef ENTRY_CopyBytesPrefix
-#undef ENTRY_CopyBytesRax
-#undef ENTRY_CopyBytesSegment
-#undef ENTRY_CopyBytesXop
-#undef ENTRY_CopyBytesXop1
-#undef ENTRY_CopyBytesXop4
-#undef ENTRY_CopyC7
-#undef ENTRY_CopyEvex
-#undef ENTRY_CopyF2
-#undef ENTRY_CopyF3
-#undef ENTRY_CopyF6
-#undef ENTRY_CopyF7
-#undef ENTRY_CopyFF
-#undef ENTRY_CopyRex2
-#undef ENTRY_CopyVex2
-#undef ENTRY_CopyVex3
-#undef ENTRY_CopyXop
-#undef ENTRY_DataIgnored
-#undef ENTRY_Invalid
-
 //////////////////////////////////////////////////////////////////////////////
 // Trampolines and transactions
 
@@ -2060,7 +1988,9 @@ static PVOID const s_pSystemRegionUpperBound = (PVOID)(ULONG_PTR)0x80000000;
 static bool detour_is_imported(PBYTE pbCode, PBYTE pbAddress)
 {
     MEMORY_BASIC_INFORMATION mbi;
-    VirtualQuery((PVOID)pbCode, &mbi, sizeof(mbi));
+    if (!VirtualQuery(pbCode, &mbi, sizeof(mbi))) {
+        return false;
+    }
     __try {
         PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)mbi.AllocationBase;
         if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
@@ -2073,22 +2003,14 @@ static bool detour_is_imported(PBYTE pbCode, PBYTE pbAddress)
             return false;
         }
 
-        if (pbAddress >= ((PBYTE)pDosHeader +
-                          pNtHeader->OptionalHeader
-                          .DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress) &&
-            pbAddress < ((PBYTE)pDosHeader +
-                         pNtHeader->OptionalHeader
-                         .DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress +
-                         pNtHeader->OptionalHeader
-                         .DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT].Size)) {
-            return true;
-        }
+        const auto& iat = pNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+        const PBYTE pbIat = (PBYTE)pDosHeader + iat.VirtualAddress;
+        return pbAddress >= pbIat && pbAddress < pbIat + iat.Size;
     }
     __except(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ?
              EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         return false;
     }
-    return false;
 }
 
 inline ULONG_PTR detour_2gb_below(ULONG_PTR address)
@@ -2119,7 +2041,6 @@ inline BOOL detour_does_code_end_function(PBYTE pbCode)
 {
     if (pbCode[0] == 0xeb ||    // jmp +imm8
         pbCode[0] == 0xe9 ||    // jmp +imm32
-        pbCode[0] == 0xe0 ||    // jmp eax
         pbCode[0] == 0xc2 ||    // ret +imm8
         pbCode[0] == 0xc3 ||    // ret
         pbCode[0] == 0xcc) {    // brk
@@ -2128,7 +2049,7 @@ inline BOOL detour_does_code_end_function(PBYTE pbCode)
     else if (pbCode[0] == 0xf3 && pbCode[1] == 0xc3) {  // rep ret
         return TRUE;
     }
-    else if (pbCode[0] == 0xff && pbCode[1] == 0x25) {  // jmp [+imm32]
+    else if (pbCode[0] == 0xff && (pbCode[1] & 0x30) == 0x20) { // jmp reg or jmp [mem] (FF /4, /5)
         return TRUE;
     }
     else if ((pbCode[0] == 0x26 ||      // jmp es:
@@ -2203,6 +2124,63 @@ inline ULONG detour_is_code_filler(PBYTE pbCode)
     return 0;
 }
 
+// The address from which jmp [mem] loads its destination.
+inline PBYTE detour_jmp_vector(PBYTE pbCode)
+{
+#ifdef _M_X64
+    return pbCode + 6 + *(UNALIGNED INT32 *)&pbCode[2];     // jmp [rip+imm32]
+#else
+    return *(UNALIGNED PBYTE *)&pbCode[2];                  // jmp [imm32]
+#endif
+}
+
+inline PBYTE detour_skip_jmp(PBYTE pbCode)
+{
+    if (pbCode == NULL) {
+        return NULL;
+    }
+
+    // Follow an import alias jump to the code it points to; reports whether pbCode is a jmp [mem] at all.
+    const auto skipImport = [&pbCode] {
+        if (pbCode[0] != 0xff || pbCode[1] != 0x25) {
+            return false;
+        }
+        PBYTE pbVector = detour_jmp_vector(pbCode);
+        if (detour_is_imported(pbCode, pbVector)) {
+            pbCode = *(UNALIGNED PBYTE *)pbVector;
+        }
+        return true;
+    };
+
+    // First, skip over the import vector if there is one.
+    skipImport();
+
+    // Then, skip over a patch jump
+    if (pbCode[0] == 0xeb) {   // jmp +imm8
+        pbCode += 2 + *(CHAR *)&pbCode[1];
+        const PBYTE pbCodeOriginal = pbCode;
+
+        // Finally, skip over another import vector, or a long jump if it is the target of the patch jump.
+        if (!skipImport() && pbCode[0] == 0xe9) {   // jmp +imm32
+            pbCode += 5 + *(UNALIGNED INT32 *)&pbCode[1];
+
+            // Patches applied by the OS will jump through an HPAT page to get
+            // the target function in the patch image. The jump is always performed
+            // to the target function found at the current instruction pointer +
+            // PAGE_SIZE - 6 (size of jump).
+            // If this is an OS patch, we want to detour at the point of the target function
+            // padding in the base image. Ideally, we would detour at the target function, but
+            // since it's patched it begins with a short jump (to padding) which isn't long
+            // enough to hold the detour code bytes.
+            if (pbCode[0] == 0xff && pbCode[1] == 0x25 &&
+                detour_jmp_vector(pbCode) == pbCode + 0x1000) {   // jmp [ip+PAGE_SIZE-6]
+                pbCode = pbCodeOriginal;
+            }
+        }
+    }
+    return pbCode;
+}
+
 #endif
 
 ///////////////////////////////////////////////////////////////////////// X86.
@@ -2226,64 +2204,6 @@ enum {
     SIZE_OF_TRAMPOLINE_JMP = 5
 };
 
-inline PBYTE detour_skip_jmp(PBYTE pbCode)
-{
-    PBYTE pbCodeOriginal;
-
-    if (pbCode == NULL) {
-        return NULL;
-    }
-
-    // First, skip over the import vector if there is one.
-    if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [imm32]
-        // Looks like an import alias jump, then get the code it points to.
-        PBYTE pbTarget = *(UNALIGNED PBYTE *)&pbCode[2];
-        if (detour_is_imported(pbCode, pbTarget)) {
-            PBYTE pbNew = *(UNALIGNED PBYTE *)pbTarget;
-            pbCode = pbNew;
-        }
-    }
-
-    // Then, skip over a patch jump
-    if (pbCode[0] == 0xeb) {   // jmp +imm8
-        PBYTE pbNew = pbCode + 2 + *(CHAR *)&pbCode[1];
-        pbCode = pbNew;
-        pbCodeOriginal = pbCode;
-
-        // First, skip over the import vector if there is one.
-        if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [imm32]
-            // Looks like an import alias jump, then get the code it points to.
-            PBYTE pbTarget = *(UNALIGNED PBYTE *)&pbCode[2];
-            if (detour_is_imported(pbCode, pbTarget)) {
-                pbNew = *(UNALIGNED PBYTE *)pbTarget;
-                pbCode = pbNew;
-            }
-        }
-        // Finally, skip over a long jump if it is the target of the patch jump.
-        else if (pbCode[0] == 0xe9) {   // jmp +imm32
-            pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
-            pbCode = pbNew;
-
-            // Patches applied by the OS will jump through an HPAT page to get
-            // the target function in the patch image. The jump is always performed
-            // to the target function found at the current instruction pointer +
-            // PAGE_SIZE - 6 (size of jump).
-            // If this is an OS patch, we want to detour at the point of the target function
-            // padding in the base image. Ideally, we would detour at the target function, but
-            // since it's patched it begins with a short jump (to padding) which isn't long
-            // enough to hold the detour code bytes.
-            if (pbCode[0] == 0xff &&
-                pbCode[1] == 0x25 &&
-                *(UNALIGNED INT32 *)&pbCode[2] == (UNALIGNED INT32)(pbCode + 0x1000)) {   // jmp [eip+PAGE_SIZE-6]
-
-                pbCode = pbCodeOriginal;
-            }
-
-        }
-    }
-    return pbCode;
-}
-
 #endif // _M_IX86
 
 ///////////////////////////////////////////////////////////////////////// X64.
@@ -2292,7 +2212,7 @@ inline PBYTE detour_skip_jmp(PBYTE pbCode)
 
 struct _DETOUR_TRAMPOLINE
 {
-    // An X64 instuction can be 15 bytes long.
+    // An X64 instruction can be 15 bytes long.
     // In practice 11 seems to be the limit.
     BYTE            rbCode[30];     // target code + jmp to pbRemain.
     BYTE            cbRestore;      // size of original target code.
@@ -2316,62 +2236,6 @@ inline PBYTE detour_gen_jmp_indirect(PBYTE pbCode, PBYTE *ppbJmpVal)
     *pbCode++ = 0xff;   // jmp [+imm32]
     *pbCode++ = 0x25;
     *((INT32*&)pbCode)++ = (INT32)((PBYTE)ppbJmpVal - pbJmpSrc);
-    return pbCode;
-}
-
-inline PBYTE detour_skip_jmp(PBYTE pbCode)
-{
-    PBYTE pbCodeOriginal;
-
-    if (pbCode == NULL) {
-        return NULL;
-    }
-
-    // First, skip over the import vector if there is one.
-    if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [+imm32]
-        // Looks like an import alias jump, then get the code it points to.
-        PBYTE pbTarget = pbCode + 6 + *(UNALIGNED INT32 *)&pbCode[2];
-        if (detour_is_imported(pbCode, pbTarget)) {
-            PBYTE pbNew = *(UNALIGNED PBYTE *)pbTarget;
-            pbCode = pbNew;
-        }
-    }
-
-    // Then, skip over a patch jump
-    if (pbCode[0] == 0xeb) {   // jmp +imm8
-        PBYTE pbNew = pbCode + 2 + *(CHAR *)&pbCode[1];
-        pbCode = pbNew;
-        pbCodeOriginal = pbCode;
-
-        // First, skip over the import vector if there is one.
-        if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [+imm32]
-            // Looks like an import alias jump, then get the code it points to.
-            PBYTE pbTarget = pbCode + 6 + *(UNALIGNED INT32 *)&pbCode[2];
-            if (detour_is_imported(pbCode, pbTarget)) {
-                pbNew = *(UNALIGNED PBYTE *)pbTarget;
-                pbCode = pbNew;
-            }
-        }
-        // Finally, skip over a long jump if it is the target of the patch jump.
-        else if (pbCode[0] == 0xe9) {   // jmp +imm32
-            pbNew = pbCode + 5 + *(UNALIGNED INT32 *)&pbCode[1];
-            pbCode = pbNew;
-
-            // Patches applied by the OS will jump through an HPAT page to get
-            // the target function in the patch image. The jump is always performed
-            // to the target function found at the current instruction pointer +
-            // PAGE_SIZE - 6 (size of jump).
-            // If this is an OS patch, we want to detour at the point of the target function
-            // in the base image. Since we need 5 bytes to perform the jump, detour at the
-            // point of the long jump instead of the short jump at the start of the target.
-            if (pbCode[0] == 0xff &&
-                pbCode[1] == 0x25 &&
-                *(UNALIGNED INT32 *)&pbCode[2] == 0xFFA) {   // jmp [rip+PAGE_SIZE-6]
-
-                pbCode = pbCodeOriginal;
-            }
-        }
-    }
     return pbCode;
 }
 
@@ -2401,7 +2265,7 @@ struct _DETOUR_TRAMPOLINE
     //   3 instructions to form immediate
     //   br or brl
     //
-    // A theoretical maximum for rbCode is thefore 4*4*6 + 16 = 112 (another 16 for jmp to pbRemain).
+    // A theoretical maximum for rbCode is therefore 4*4*6 + 16 = 112 (another 16 for jmp to pbRemain).
     //
     // With literals, the maximum expansion is 5, including the literals: 4*4*5 + 16 = 96.
     //
@@ -2471,7 +2335,7 @@ union ARM64_INDIRECT_IMM {
 
 #pragma warning(pop)
 
-PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
+inline PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
 {
     // adrp x17, [jmpval]
     // ldr x17, [x17, jmpval]
@@ -2480,7 +2344,7 @@ PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
     struct ARM64_INDIRECT_JMP *pIndJmp;
     union ARM64_INDIRECT_IMM jmpIndAddr;
 
-    jmpIndAddr.value = (((LONG64)pbJmpVal) & 0xFFFFFFFFFFFFF000) - 
+    jmpIndAddr.value = (((LONG64)pbJmpVal) & 0xFFFFFFFFFFFFF000) -
                        (((LONG64)pbCode) & 0xFFFFFFFFFFFFF000);
 
     pIndJmp = (struct ARM64_INDIRECT_JMP *)pbCode;
@@ -2506,7 +2370,7 @@ PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
     return pbCode;
 }
 
-PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE *ppPool, PBYTE pbJmpVal)
+inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE *ppPool, PBYTE pbJmpVal)
 {
     *ppPool -= 8;
     PBYTE pbLiteral = *ppPool;
@@ -2680,7 +2544,7 @@ inline std::pair<PBYTE, PBYTE> detour_find_jmp_bounds(PBYTE pbCode)
     PBYTE pbNew = pbCode;
 #ifdef _M_X64
     if (pbCode[0] == 0xff && pbCode[1] == 0x25) {   // jmp [+imm32]
-        pbNew = pbCode + 6 + *(UNALIGNED INT32 *)&pbCode[2];
+        pbNew = detour_jmp_vector(pbCode);
     }
     else
 #endif
@@ -2738,161 +2602,86 @@ static void detour_runnable_trampoline_regions()
     }
 }
 
+// Free areas are not always region aligned, so candidates are rounded onto region boundaries.
 static PBYTE detour_alloc_round_down_to_region(PBYTE pbTry)
 {
-    // WinXP64 returns free areas that aren't REGION aligned to 32-bit applications.
-    ULONG_PTR extra = ((ULONG_PTR)pbTry) & (DETOUR_REGION_SIZE - 1);
-    if (extra != 0) {
-        pbTry -= extra;
-    }
-    return pbTry;
+    return pbTry - ((ULONG_PTR)pbTry & (DETOUR_REGION_SIZE - 1));
 }
 
 static PBYTE detour_alloc_round_up_to_region(PBYTE pbTry)
 {
-    // WinXP64 returns free areas that aren't REGION aligned to 32-bit applications.
-    ULONG_PTR extra = ((ULONG_PTR)pbTry) & (DETOUR_REGION_SIZE - 1);
-    if (extra != 0) {
-        ULONG_PTR adjust = DETOUR_REGION_SIZE - extra;
-        pbTry += adjust;
-    }
-    return pbTry;
+    return detour_alloc_round_down_to_region(pbTry + DETOUR_REGION_SIZE - 1);
 }
 
-// Starting at pbLo, try to allocate a memory region, continue until pbHi.
+// Try to allocate a memory region within [pbLo, pbHi), searching upward from pbLo or downward from pbHi.
 
-static PVOID detour_alloc_region_from_lo(PBYTE pbLo, PBYTE pbHi, LONG& error)
+static PVOID detour_alloc_region(PBYTE pbLo, PBYTE pbHi, bool fromLo, LONG& error)
 {
-    PBYTE pbTry = detour_alloc_round_up_to_region(pbLo);
+    const LONG_PTR step = fromLo ? 1 : -1;
+    PBYTE pbTry = fromLo
+        ? detour_alloc_round_up_to_region(pbLo)
+        : detour_alloc_round_down_to_region(pbHi - DETOUR_REGION_SIZE);
 
-
-    for (; pbTry < pbHi;) {
-        MEMORY_BASIC_INFORMATION mbi;
-
+    while (fromLo ? pbTry < pbHi : pbTry > pbLo) {
         if (pbTry >= s_pSystemRegionLowerBound && pbTry <= s_pSystemRegionUpperBound) {
             // Skip region reserved for system DLLs, but preserve address space entropy.
-            pbTry += 0x08000000;
+            pbTry += step * 0x08000000;
             continue;
         }
 
-        ZeroMemory(&mbi, sizeof(mbi));
+        MEMORY_BASIC_INFORMATION mbi;
         if (!VirtualQuery(pbTry, &mbi, sizeof(mbi))) {
             break;
         }
 
-
-        if (mbi.State == MEM_FREE && mbi.RegionSize >= DETOUR_REGION_SIZE) {
-
-            PVOID pv = VirtualAlloc(pbTry,
-                                    DETOUR_REGION_SIZE,
-                                    MEM_COMMIT|MEM_RESERVE,
-                                    PAGE_EXECUTE_READWRITE);
-            if (pv != NULL) {
-                return pv;
-            }
-            else if (GetLastError() == ERROR_DYNAMIC_CODE_BLOCKED) {
-                error = ERROR_DYNAMIC_CODE_BLOCKED;
-                return NULL;
-            }
-            pbTry += DETOUR_REGION_SIZE;
-        }
-        else {
-            pbTry = detour_alloc_round_up_to_region((PBYTE)mbi.BaseAddress + mbi.RegionSize);
-        }
-    }
-    return NULL;
-}
-
-// Starting at pbHi, try to allocate a memory region, continue until pbLo.
-
-static PVOID detour_alloc_region_from_hi(PBYTE pbLo, PBYTE pbHi, LONG& error)
-{
-    PBYTE pbTry = detour_alloc_round_down_to_region(pbHi - DETOUR_REGION_SIZE);
-
-
-    for (; pbTry > pbLo;) {
-        MEMORY_BASIC_INFORMATION mbi;
-
-        if (pbTry >= s_pSystemRegionLowerBound && pbTry <= s_pSystemRegionUpperBound) {
-            // Skip region reserved for system DLLs, but preserve address space entropy.
-            pbTry -= 0x08000000;
+        // Step over a block that is in use or too small. A free block has no allocation base of its own.
+        if (mbi.State != MEM_FREE || mbi.RegionSize < DETOUR_REGION_SIZE) {
+            pbTry = fromLo
+                ? detour_alloc_round_up_to_region((PBYTE)mbi.BaseAddress + mbi.RegionSize)
+                : detour_alloc_round_down_to_region(
+                    (PBYTE)(mbi.State == MEM_FREE ? mbi.BaseAddress : mbi.AllocationBase) - DETOUR_REGION_SIZE);
             continue;
         }
 
-        ZeroMemory(&mbi, sizeof(mbi));
-        if (!VirtualQuery(pbTry, &mbi, sizeof(mbi))) {
-            break;
+        PVOID pv = VirtualAlloc(pbTry, DETOUR_REGION_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (pv != NULL) {
+            return pv;
         }
-
-
-        if (mbi.State == MEM_FREE && mbi.RegionSize >= DETOUR_REGION_SIZE) {
-
-            PVOID pv = VirtualAlloc(pbTry,
-                                    DETOUR_REGION_SIZE,
-                                    MEM_COMMIT|MEM_RESERVE,
-                                    PAGE_EXECUTE_READWRITE);
-            if (pv != NULL) {
-                return pv;
-            }
-            else if (GetLastError() == ERROR_DYNAMIC_CODE_BLOCKED) {
-                error = ERROR_DYNAMIC_CODE_BLOCKED;
-                return NULL;
-            }
-            pbTry -= DETOUR_REGION_SIZE;
+        if (GetLastError() == ERROR_DYNAMIC_CODE_BLOCKED) {
+            error = ERROR_DYNAMIC_CODE_BLOCKED;
+            return NULL;
         }
-        else {
-            pbTry = detour_alloc_round_down_to_region((PBYTE)mbi.AllocationBase
-                                                      - DETOUR_REGION_SIZE);
-        }
+        pbTry += step * (LONG_PTR)DETOUR_REGION_SIZE;
     }
     return NULL;
 }
 
-static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget,
-                                                  PBYTE pLo,
-                                                  PBYTE pHi,
-                                                  LONG& error)
+static PVOID detour_alloc_trampoline_allocate_new(PBYTE pbTarget, PBYTE pLo, PBYTE pHi, LONG& error)
 {
     PVOID pbTry = NULL;
 
-    // The region searches honor only their own arguments, so clamp every window to the jump bounds.
-    const auto fromLo = [&](PBYTE pbLo, PBYTE pbHi) {
-        return detour_alloc_region_from_lo(std::max<PBYTE>(pbLo, pLo), std::min<PBYTE>(pbHi, pHi), error);
-    };
-    const auto fromHi = [&](PBYTE pbLo, PBYTE pbHi) {
-        return detour_alloc_region_from_hi(std::max<PBYTE>(pbLo, pLo), std::min<PBYTE>(pbHi, pHi), error);
+    // The region search honors only its own arguments, so clamp every window to the jump bounds.
+    // A blocked allocation ends the search.
+    constexpr bool fromLo = true, fromHi = false;
+    const auto search = [&](bool direction, PBYTE pbLo, PBYTE pbHi) {
+        if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
+            pbTry = detour_alloc_region(std::max<PBYTE>(pbLo, pLo), std::min<PBYTE>(pbHi, pHi), direction, error);
+        }
     };
 
     // NB: We must always also start the search at an offset from pbTarget
     //     in order to maintain ASLR entropy.
 
 #if defined(_WIN64)
-    // Try looking 1GB below or lower.
-    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
-        pbTry = fromHi(pLo, pbTarget - 0x40000000);
-    }
-    // Try looking 1GB above or higher.
-    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = fromLo(pbTarget + 0x40000000, pHi);
-    }
-    // Try looking 1GB below or higher.
-    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget > (PBYTE)0x40000000) {
-        pbTry = fromLo(pbTarget - 0x40000000, pbTarget);
-    }
-    // Try looking 1GB above or lower.
-    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED && pbTarget < (PBYTE)0xffffffff40000000) {
-        pbTry = fromHi(pbTarget, pbTarget + 0x40000000);
-    }
+    const bool below = pbTarget > (PBYTE)0x40000000;
+    const bool above = pbTarget < (PBYTE)0xffffffff40000000;
+    if (below) search(fromHi, pLo, pbTarget - 0x40000000);          // 1GB below or lower.
+    if (above) search(fromLo, pbTarget + 0x40000000, pHi);          // 1GB above or higher.
+    if (below) search(fromLo, pbTarget - 0x40000000, pbTarget);     // 1GB below or higher.
+    if (above) search(fromHi, pbTarget, pbTarget + 0x40000000);     // 1GB above or lower.
 #endif
-
-    // Try anything below.
-    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
-        pbTry = fromHi(pLo, pbTarget);
-    }
-    // try anything above.
-    if (pbTry == NULL && error != ERROR_DYNAMIC_CODE_BLOCKED) {
-        pbTry = fromLo(pbTarget, pHi);
-    }
+    search(fromHi, pLo, pbTarget);      // Anything below.
+    search(fromLo, pbTarget, pHi);      // Anything above.
 
     return pbTry;
 }
@@ -2927,9 +2716,9 @@ static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget, LONG& error)
         s_pRegion->pNext = s_pRegions;
         s_pRegions = s_pRegion;
 
-        // Put everything but the first trampoline on the free list.
+        // Put every trampoline after the region header on the free list.
         auto trampolines = ((PDETOUR_TRAMPOLINE)s_pRegion) + 1;
-        for (int i = DETOUR_TRAMPOLINES_PER_REGION - 1; i > 1; i--) {
+        for (int i = DETOUR_TRAMPOLINES_PER_REGION - 1; i >= 0; i--) {
             trampolines[i].pbRemain = (PBYTE)s_pRegion->pFree;
             s_pRegion->pFree = &trampolines[i];
         }
@@ -2946,8 +2735,7 @@ static PDETOUR_TRAMPOLINE detour_alloc_trampoline(PBYTE pbTarget, LONG& error)
 
 static void detour_free_trampoline(PDETOUR_TRAMPOLINE pTrampoline)
 {
-    PDETOUR_REGION pRegion = (PDETOUR_REGION)
-        ((ULONG_PTR)pTrampoline & ~(ULONG_PTR)0xffff);
+    PDETOUR_REGION pRegion = (PDETOUR_REGION)detour_alloc_round_down_to_region((PBYTE)pTrampoline);
 
     pTrampoline->pbRemain = (PBYTE)pRegion->pFree;
     pRegion->pFree = pTrampoline;
@@ -3115,7 +2903,8 @@ static LONG detour_suspend_other_threads(
                 continue;
             }
 
-            try { threads.reserve(threads.size() + 1); }
+            // Make room for every remaining entry at once; growing per thread copies each saved context again.
+            try { threads.reserve(threads.size() + (process->NumberOfThreads - i)); }
             catch (...) { return fail(ERROR_NOT_ENOUGH_MEMORY); }
 
             // Retry paths resume peers before closing this handle; close hooks can acquire their locks.
@@ -3147,21 +2936,6 @@ static LONG detour_suspend_other_threads(
                 detour_resume_and_close_threads(threads);
                 continue;
             }
-            // Terminating peers can reject suspension before their handles become signaled.
-            if (SuspendThread(thread.get()) == MAXDWORD) {
-                const LONG error = GetLastError();
-                if (WaitForSingleObject(thread.get(), 0) != WAIT_OBJECT_0 &&
-                    error != ERROR_INVALID_PARAMETER && error != ERROR_ACCESS_DENIED) {
-                    return fail(error);
-                }
-                retryEnumeration = true;
-                retryError = error;
-                detour_resume_and_close_threads(threads);
-
-                // Give an exiting peer time to finish before enumerating again.
-                if (error == ERROR_ACCESS_DENIED) WaitForSingleObject(thread.get(), 10);
-                continue;
-            }
 
             DetourSuspendedThread candidate{
                 .threadId = threadId,
@@ -3175,18 +2949,23 @@ static LONG detour_suspend_other_threads(
 #elif defined(_M_X64) || defined(_M_ARM64)
             candidate.originalContext.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
 #endif
-            if (!GetThreadContext(thread.get(), &candidate.originalContext)) {
+
+            // Terminating peers can reject suspension or context capture before their handles become signaled.
+            const bool suspended = SuspendThread(thread.get()) != MAXDWORD;
+            if (!suspended || !GetThreadContext(thread.get(), &candidate.originalContext)) {
                 const LONG error = GetLastError();
-                const DWORD wait = WaitForSingleObject(thread.get(), 0);
-                if (wait != WAIT_OBJECT_0) {
+                const bool exited = WaitForSingleObject(thread.get(), 0) == WAIT_OBJECT_0;
+                if (suspended && !exited) {
                     ResumeThread(thread.get());
                 }
-                if (wait != WAIT_OBJECT_0 && error != ERROR_INVALID_PARAMETER && error != ERROR_ACCESS_DENIED) {
+                if (!exited && error != ERROR_INVALID_PARAMETER && error != ERROR_ACCESS_DENIED) {
                     return fail(error);
                 }
                 retryEnumeration = true;
                 retryError = error;
                 detour_resume_and_close_threads(threads);
+
+                // Give an exiting peer time to finish before enumerating again.
                 if (error == ERROR_ACCESS_DENIED) WaitForSingleObject(thread.get(), 10);
                 continue;
             }
@@ -3250,16 +3029,10 @@ static LONG detour_relocate_suspended_threads(
             const auto& operation = operations[index];
             const auto targetBegin = reinterpret_cast<ULONG_PTR>(operation.pbTarget);
             const auto targetEnd = targetBegin + operation.pTrampoline->cbRestore;
-            if (instructionPointer >= targetBegin &&
-                instructionPointer < targetEnd) {
-
-                const auto relocated = detour_align_target_to_trampoline(
-                    operation.pTrampoline,
-                    static_cast<BYTE>(instructionPointer - targetBegin));
-                if (relocated != NULL && reinterpret_cast<ULONG_PTR>(relocated) != instructionPointer) {
-                    thread.relocatedInstructionPointer = relocated;
-                    thread.relocationIndex = index;
-                }
+            if (instructionPointer >= targetBegin && instructionPointer < targetEnd) {
+                thread.relocatedInstructionPointer = detour_align_target_to_trampoline(
+                    operation.pTrampoline, static_cast<BYTE>(instructionPointer - targetBegin));
+                thread.relocationIndex = index;
                 break;
             }
         }
@@ -3435,9 +3208,7 @@ LONG winpriv::detours::transaction::stage(PVOID* ppPointer, PVOID pDetour) noexc
     PBYTE pbPool = pbTrampoline + sizeof(pTrampoline->rbCode);
     ULONG cbTarget = 0;
 
-    pTrampoline->cbRestore = 0;
     pTrampoline->alignCount = 0;
-    ZeroMemory(pTrampoline->rAlign, sizeof(pTrampoline->rAlign));
 
     while (cbTarget < SIZE_OF_JMP) {
         if (pTrampoline->alignCount == ARRAYSIZE(pTrampoline->rAlign)) {
@@ -3458,16 +3229,11 @@ LONG winpriv::detours::transaction::stage(PVOID* ppPointer, PVOID pDetour) noexc
             return fail(ERROR_INVALID_BLOCK);
         }
 
-        const auto targetEnd = static_cast<SIZE_T>(pbSrc - pbTarget);
-        const auto trampolineEnd = static_cast<SIZE_T>(
-            pbTrampoline - pTrampoline->rbCode);
-        if (targetEnd > MAXBYTE || trampolineEnd > MAXBYTE) {
-            return fail(ERROR_INVALID_BLOCK);
-        }
-
+        // A copy is never shorter than its source, so both offsets lie within rbCode and fit a byte.
+        static_assert(sizeof(pTrampoline->rbCode) <= MAXBYTE);
         pTrampoline->rAlign[pTrampoline->alignCount++] = {
-            static_cast<BYTE>(targetEnd),
-            static_cast<BYTE>(trampolineEnd),
+            static_cast<BYTE>(cbTarget),
+            static_cast<BYTE>(pbTrampoline - pTrampoline->rbCode),
         };
 
         if (detour_does_code_end_function(pbOp)) {
@@ -3486,36 +3252,26 @@ LONG winpriv::detours::transaction::stage(PVOID* ppPointer, PVOID pDetour) noexc
         cbTarget = (LONG)(pbSrc - pbTarget);
     }
 
-    if (cbTarget < SIZE_OF_JMP ||
-        cbTarget > MAXBYTE) {
-        return fail(ERROR_INVALID_BLOCK);
-    }
-
-    if (pbTrampoline > pbPool ||
-        pbPool - pbTrampoline < SIZE_OF_TRAMPOLINE_JMP) {
+    // The target must hold the hook jump and the trampoline must have room left to jump back.
+    if (cbTarget < SIZE_OF_JMP || pbPool - pbTrampoline < SIZE_OF_TRAMPOLINE_JMP) {
         return fail(ERROR_INVALID_BLOCK);
     }
 
     pTrampoline->cbRestore = (BYTE)cbTarget;
-
     pTrampoline->pbRemain = pbTarget + cbTarget;
     pTrampoline->pbDetour = (PBYTE)pDetour;
 
 #ifdef _M_X64
-    pbTrampoline = detour_gen_jmp_indirect(pbTrampoline, &pTrampoline->pbRemain);
+    detour_gen_jmp_indirect(pbTrampoline, &pTrampoline->pbRemain);
 #endif // _M_X64
 
 #ifdef _M_IX86
-    pbTrampoline = detour_gen_jmp_immediate(pbTrampoline, pTrampoline->pbRemain);
+    detour_gen_jmp_immediate(pbTrampoline, pTrampoline->pbRemain);
 #endif // _M_IX86
 
 #ifdef _M_ARM64
-    pbTrampoline = detour_gen_jmp_immediate(pbTrampoline, &pbPool, pTrampoline->pbRemain);
+    detour_gen_jmp_immediate(pbTrampoline, &pbPool, pTrampoline->pbRemain);
 #endif // _M_ARM64
-
-    if (pbTrampoline > pbPool) {
-        return fail(ERROR_INVALID_BLOCK);
-    }
 
     DWORD dwOld = 0;
     if (!VirtualProtect(pbTarget, cbTarget, PAGE_EXECUTE_READWRITE, &dwOld)) {
