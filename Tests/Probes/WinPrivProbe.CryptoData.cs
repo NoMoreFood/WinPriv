@@ -269,16 +269,12 @@ namespace WinPrivProbe
 
         private static Dictionary<string, object>[] RunBcrypt(byte[] plaintext, byte[] secret, byte[] iv)
         {
-            Dictionary<string, object> separate = MethodResult(true, false, null);
-            Dictionary<string, object> inPlace = MethodResult(true, false, null);
             IntPtr algorithm = IntPtr.Zero;
             IntPtr key = IntPtr.Zero;
             IntPtr keyObject = IntPtr.Zero;
             try
             {
                 int status = BCryptOpenAlgorithmProvider(out algorithm, "AES", null, 0);
-                separate["openStatus"] = status;
-                inPlace["openStatus"] = status;
                 if (status != 0) throw new InvalidOperationException("BCryptOpenAlgorithmProvider returned " + Hex32(status));
                 byte[] chaining = Encoding.Unicode.GetBytes("ChainingModeCBC\0");
                 status = BCryptSetProperty(algorithm, "ChainingMode", chaining, chaining.Length, 0);
@@ -294,42 +290,32 @@ namespace WinPrivProbe
                     secret, secret.Length, 0);
                 if (status != 0) throw new InvalidOperationException("BCryptGenerateSymmetricKey returned " + Hex32(status));
 
-                byte[] separateCipher;
-                int encryptStatus = BcryptTransform(key, plaintext, iv, true, false, out separateCipher);
-                byte[] separatePlain = new byte[0];
-                int decryptStatus = encryptStatus == 0
-                    ? BcryptTransform(key, separateCipher, iv, false, false, out separatePlain)
-                    : -1;
-                separate["encryptStatus"] = encryptStatus;
-                separate["encryptStatusHex"] = Hex32(encryptStatus);
-                separate["decryptStatus"] = decryptStatus;
-                separate["decryptStatusHex"] = Hex32(decryptStatus);
-                separate["ciphertextBase64"] = Convert.ToBase64String(separateCipher);
-                separate["decryptedBase64"] = Convert.ToBase64String(separatePlain);
-                separate["encryptRecordExpectedBase64"] = Convert.ToBase64String(plaintext);
-				separate["decryptRecordExpectedBase64"] = Convert.ToBase64String(separatePlain);
-                separate["success"] = encryptStatus == 0 && decryptStatus == 0 && BytesEqual(plaintext, separatePlain);
-                if (!(bool)separate["success"])
-                    separate["reason"] = "BCrypt separate-buffer round trip failed.";
-
-                byte[] inPlaceCipher;
-                encryptStatus = BcryptTransform(key, plaintext, iv, true, true, out inPlaceCipher);
-                byte[] inPlacePlain = new byte[0];
-                decryptStatus = encryptStatus == 0
-                    ? BcryptTransform(key, inPlaceCipher, iv, false, true, out inPlacePlain)
-                    : -1;
-                inPlace["encryptStatus"] = encryptStatus;
-                inPlace["encryptStatusHex"] = Hex32(encryptStatus);
-                inPlace["decryptStatus"] = decryptStatus;
-                inPlace["decryptStatusHex"] = Hex32(decryptStatus);
-                inPlace["ciphertextBase64"] = Convert.ToBase64String(inPlaceCipher);
-                inPlace["decryptedBase64"] = Convert.ToBase64String(inPlacePlain);
-                inPlace["encryptRecordExpectedBase64"] = Convert.ToBase64String(plaintext);
-                inPlace["decryptRecordExpectedBase64"] = Convert.ToBase64String(inPlacePlain);
-                inPlace["success"] = encryptStatus == 0 && decryptStatus == 0 && BytesEqual(plaintext, inPlacePlain);
-                if (!(bool)inPlace["success"])
-                    inPlace["reason"] = "BCrypt in-place round trip failed.";
-                return new Dictionary<string, object>[] { separate, inPlace };
+                // Exercise both buffer modes with the same status and recording checks.
+                List<Dictionary<string, object>> results = new List<Dictionary<string, object>>();
+                foreach (bool inPlace in new bool[] { false, true })
+                {
+                    byte[] cipher;
+                    int encryptStatus = BcryptTransform(key, plaintext, iv, true, inPlace, out cipher);
+                    byte[] clear = new byte[0];
+                    int decryptStatus = encryptStatus == 0
+                        ? BcryptTransform(key, cipher, iv, false, inPlace, out clear) : -1;
+                    Dictionary<string, object> result = MethodResult(true, false, null);
+                    result["openStatus"] = 0;
+                    result["encryptStatus"] = encryptStatus;
+                    result["encryptStatusHex"] = Hex32(encryptStatus);
+                    result["decryptStatus"] = decryptStatus;
+                    result["decryptStatusHex"] = Hex32(decryptStatus);
+                    result["ciphertextBase64"] = Convert.ToBase64String(cipher);
+                    result["decryptedBase64"] = Convert.ToBase64String(clear);
+                    result["encryptRecordExpectedBase64"] = Convert.ToBase64String(plaintext);
+                    result["decryptRecordExpectedBase64"] = Convert.ToBase64String(clear);
+                    result["success"] = encryptStatus == 0 && decryptStatus == 0 && BytesEqual(plaintext, clear);
+                    if (!(bool)result["success"])
+                        result["reason"] = "BCrypt " + (inPlace ? "in-place" : "separate-buffer") +
+                            " round trip failed.";
+                    results.Add(result);
+                }
+                return results.ToArray();
             }
             finally
             {
@@ -919,9 +905,7 @@ namespace WinPrivProbe
                 }
                 else
                 {
-                    uint error = LsaNtStatusToWinError(status);
-                    result["win32Error"] = error;
-                    result["reason"] = new System.ComponentModel.Win32Exception(unchecked((int)error)).Message;
+                    throw new System.ComponentModel.Win32Exception(unchecked((int)LsaNtStatusToWinError(status)));
                 }
                 result["right"] = right;
                 result["accounts"] = accounts;

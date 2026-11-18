@@ -71,6 +71,48 @@ BeforeAll {
     }
 }
 
+Describe 'WinPriv LSA snapshot failures' -Tag 'Safe' {
+    BeforeAll {
+        $probeRoot = Join-Path $TestDrive 'lsa-probe'
+        New-Item -ItemType Directory -Path $probeRoot | Out-Null
+        foreach ($file in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'Probes') -Filter 'WinPrivProbe.*.cs') {
+            $source = [IO.File]::ReadAllText($file.FullName).Replace(
+                'namespace WinPrivProbe', 'namespace WinPrivLsaProbeTests')
+            if ($file.Name -eq 'WinPrivProbe.CryptoData.cs') {
+                # Inject native enumeration outcomes without changing any account rights.
+                $declaration = '(?s)\[DllImport\("advapi32\.dll"\)\]\s*private static extern int ' +
+                    'LsaEnumerateAccountsWithUserRight\([^;]+;'
+                [regex]::Matches($source, $declaration).Count | Should -Be 1
+                $replacement = @'
+private static int LsaEnumerateAccountsWithUserRight(IntPtr policyHandle,
+            ref LSA_UNICODE_STRING userRight, out IntPtr buffer, out uint countReturned)
+        {
+            buffer = IntPtr.Zero;
+            countReturned = 0;
+            return Marshal.PtrToStringUni(userRight.Buffer) == "Empty"
+                ? STATUS_NO_MORE_ENTRIES : unchecked((int)0xC0000022);
+        }
+'@
+                $source = [regex]::Replace($source, $declaration, $replacement)
+            }
+            [IO.File]::WriteAllText((Join-Path $probeRoot $file.Name), $source)
+        }
+        Add-Type -Path @(Get-ChildItem -LiteralPath $probeRoot -Filter '*.cs' | ForEach-Object FullName)
+    }
+
+    It 'reports <Outcome> enumeration as success=<Success>' -ForEach @(
+        @{ Outcome = 'Denied'; Success = $false }, @{ Outcome = 'Empty'; Success = $true }
+    ) {
+        $result = [WinPrivLsaProbeTests.Native]::ReadLsa('', '', $Outcome)
+        $result.success | Should -Be $Success
+        if ($Success) {
+            $result.accountsWithRight.success | Should -BeTrue
+            @($result.accountsWithRight.accounts) | Should -HaveCount 0
+        }
+        else { $result.reason | Should -Match 'System.ComponentModel.Win32Exception' }
+    }
+}
+
 Describe 'WinPriv release test tooling' -Tag 'Safe' {
     It 'stages source without cached test work or generated binaries' {
         $runner = Join-Path $PSScriptRoot 'Invoke-WinPrivTests.ps1'
@@ -242,7 +284,14 @@ Describe 'WinPriv long-path probe output (<Architecture>)' -Tag 'Safe' -ForEach 
         Remove-WinPrivSandbox -Sandbox $sandbox
     }
 
-    It 'atomically persists results beyond the legacy MAX_PATH limit' {
+    It 'persists and reads <Operation> results beyond the legacy MAX_PATH limit' -TestCases @(
+        @{ Operation = 'state'; Arguments = @{} },
+        @{ Operation = 'create-process'; Arguments = @{ depth = 2 } },
+        @{ Operation = 'registry'; Arguments = @{
+            root = 'HKLM'; key = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'; valueName = 'ProductName'; view = '64'
+        } }
+    ) {
+        param($Operation, $Arguments)
         $longDirectory = $sandbox.Artifacts
         while ((Join-Path $longDirectory 'probe.json').Length -le 270) {
             $longDirectory = Join-Path $longDirectory ('p' * 48)
@@ -250,11 +299,16 @@ Describe 'WinPriv long-path probe output (<Architecture>)' -Tag 'Safe' -ForEach 
         [void][IO.Directory]::CreateDirectory($longDirectory)
         $outputPath = Join-Path $longDirectory 'probe.json'
 
-        $result = Invoke-WinPrivProbe -Architecture $Architecture -Operation state -Arguments @{} `
-            -Sandbox $sandbox -OutputPath $outputPath -TimeoutSeconds 20
+        $result = Invoke-WinPrivProbe -Architecture $Architecture -Operation $Operation -Arguments $Arguments `
+            -Sandbox $sandbox -OutputPath $outputPath -TimeoutSeconds 90
         Assert-WinPrivInvocationSucceeded $result
         $result.ProbeOutputPath.Length | Should -BeGreaterThan 260
         $result.ProbeOutputPath | Should -Exist
+        if ($Operation -eq 'registry') {
+            foreach ($method in @('win32', 'ntPartial', 'ntPartialAlign64', 'ntFull', 'ntFullAlign64', 'ntEnumerate')) {
+                $result.ProbeResult.result.$method.success | Should -BeTrue
+            }
+        }
     }
 }
 

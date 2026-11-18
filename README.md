@@ -48,9 +48,9 @@ refer to the filenames inside the archive.
 - Run elevated for account-rights changes or acquiring missing privileges. Overrides that do not request additional
   privileges can run as an ordinary user.
 - The `/RunAs...` switches require LocalSystem and an existing user session.
-- No installation is needed. Each launcher embeds all three injection libraries and loads them directly into memory.
+- No installation is needed. Each launcher embeds all three injection DLLs. It loads verified copies beside the launcher, or extracts the embedded DLLs into a writable temporary directory. Temporary DLLs remain available to descendants and are removed after the final participating process exits normally.
 
-Source builds enable Control Flow Guard (CFG) in the launchers and injection libraries, including for strict-CFG processes. Process protections must still permit DLL loading and API hooking. When dynamic-code policy (ACG) already permits thread opt-out, WinPriv uses that permission during hook transactions and restores the previous thread policy afterward. It leaves the process policy unchanged and reports error 1655 when strict ACG prevents hook installation.
+Source builds enable Control Flow Guard (CFG) in the launchers and injection libraries, including for strict-CFG processes. Process protections must still permit DLL loading and API hooking. When dynamic-code policy (ACG) already permits thread opt-out, WinPriv uses that permission during hook transactions and restores the previous thread policy afterward. It leaves the process policy unchanged. A launcher running under strict ACG exits with error 1655; a descendant created with strict ACG runs without WinPriv hooks.
 
 ## Building
 
@@ -62,10 +62,9 @@ The script builds the shared libraries and all three injection DLLs, then attemp
 It next builds both launchers for every architecture and the native test fixtures, and attempts to sign the six
 launchers in one batch before packaging. The launchers embed the DLLs after the DLL signing step. Signing is
 best-effort unless `RequireCodeSigning=true`; the native test fixtures are built, but tests are not run.
-The archive contains the six launchers; `Build\WinPriv-hash.txt` covers the launchers and archive.
+Each architecture folder in the archive contains both launchers and `WinPriv-x86.dll`, `WinPriv-x64.dll`, and `WinPriv-ARM64.dll`. `Build\WinPriv-hash.txt` covers every packaged executable, DLL, and the archive.
 
-Use `Build\build.cmd /SkipCodeSigning` for an unsigned local build, or `/PackageOnly` to package existing Release
-launchers without compiling. Failures return a nonzero exit code, and the script does not pause for input.
+Use `Build\build.cmd /SkipCodeSigning` for an unsigned local build, or `/PackageOnly` to package existing Release launchers and their DLLs without compiling. Failures return a nonzero exit code, and the script does not pause for input.
 
 For interactive builds, open `WinPriv.sln` in Visual Studio with the v145 C++ toolset, Desktop development with C++,
 and ARM64 build tools, then select `Release` or `Debug` with solution platform `x86`, `x64`, or `ARM64` (`x86` maps to
@@ -74,7 +73,7 @@ Debug binaries and PDBs are written beneath `Build\Debug\`. Both configurations 
 injection-library architectures before compiling launcher resources, including for direct `.vcxproj` builds.
 Install all three C++ toolchains even when building a launcher for only one architecture.
 
-The solution contains four product projects (listed below) and three native test fixture projects.
+The solution contains four product projects (listed below) and five native test fixture projects.
 
 | Project | Output | Description |
 |---|---|---|
@@ -377,9 +376,7 @@ Display a message box with the given text before launching the target process.
 Display a Yes/No prompt before launching. If the user clicks No, execution is cancelled.
 
 **`/ExtractLibrary`**  
-Write the embedded libraries beside the running launcher as `WinPrivLibrary-32.dll`, `WinPrivLibrary-64.dll`, and
-`WinPrivLibrary-arm64.dll`, overwriting existing copies, then exit. Normal launches always load the embedded
-libraries directly into memory.
+Write the embedded libraries beside the running launcher as `WinPriv-x86.dll`, `WinPriv-x64.dll`, and `WinPriv-ARM64.dll`, overwriting existing copies, then exit. Normal launches verify and load adjacent DLLs when the complete bundle is available. Mismatched DLLs are rejected; a missing DLL causes the embedded bundle to be extracted into the temporary directory.
 
 **`/Help`** or **`/?`**  
 Display help and exit. Use `WinPrivCmd.exe /Help` for the full switch reference; the GUI launcher shows brief usage.

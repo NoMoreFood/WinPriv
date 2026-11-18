@@ -259,10 +259,12 @@ Describe 'WinPriv process control (<Architecture>)' -Tag 'Safe' -ForEach $archit
     }
 }
 
-Describe 'WinPriv surviving descendant injection (<ParentArch> -> <ChildArch>)' `
+Describe 'WinPriv surviving descendant injection (<ParentArch> -> <ChildArch>, Standalone=<Standalone>)' `
     -Tag 'Safe', 'CrossArchitecture' -ForEach @(
-        @{ ParentArch = 'x64'; ChildArch = 'x86' },
-        @{ ParentArch = 'x86'; ChildArch = 'x64' }
+        @{ ParentArch = 'x64'; ChildArch = 'x86'; Standalone = $false },
+        @{ ParentArch = 'x86'; ChildArch = 'x64'; Standalone = $false },
+        @{ ParentArch = 'x64'; ChildArch = 'x86'; Standalone = $true },
+        @{ ParentArch = 'x86'; ChildArch = 'x64'; Standalone = $true }
     ) {
     It 'preserves the sibling payload after the launcher and direct target exit' {
         $capability = 'propagation.orphan-cross-architecture'
@@ -283,6 +285,10 @@ Describe 'WinPriv surviving descendant injection (<ParentArch> -> <ChildArch>)' 
             New-ItemProperty -Path $providerPath -Name LifetimeValue -PropertyType DWord -Value 9 -Force | Out-Null
 
             Invoke-WinPrivCapability -Id $capability -Architecture All -Body {
+                if ($Standalone) {
+                    Get-ChildItem -LiteralPath $sandbox.Launchers.$ParentArch.Root -Filter 'WinPriv-*.dll' -File |
+                        Remove-Item
+                }
                 $scriptPath = Join-Path $sandbox.Working 'lifetime.ps1'
                 $scriptBody = @'
 param([string] $Role = 'Driver')
@@ -320,6 +326,22 @@ try {
                 if ($launcher.ExitCode -ne 0) { throw "Launcher exit code: $($launcher.ExitCode)" }
                 $survivor = [Diagnostics.Process]::GetProcessById([int][IO.File]::ReadAllText($context.Ready))
                 [void]$survivor.Handle
+                $libraries = @(Get-ChildItem -LiteralPath $context.Libraries -Filter 'WinPriv-*.dll' -File)
+                if ($libraries.Count -ne 3) { throw 'The three library files were not retained.' }
+                # The survivor must also protect the architecture it has never loaded.
+                $unused = $libraries | Where-Object Name -Like '*-ARM64.dll'
+                foreach ($change in @(
+                    { [IO.File]::Open($unused.FullName, 'Open', 'Write', 'ReadWrite, Delete').Dispose() }
+                    { [IO.File]::Move($unused.FullName, $unused.FullName + '.renamed') }
+                )) {
+                    try {
+                        & $change
+                        throw 'A verified DLL could be changed while the survivor was running.'
+                    }
+                    catch [IO.IOException] {
+                        if (($_.Exception.GetBaseException().HResult -band 0xffff) -ne 32) { throw }
+                    }
+                }
                 [IO.File]::WriteAllText($context.LauncherExited, [string]$launcher.Id)
                 if (-not $survivor.WaitForExit(30000)) { throw 'The survivor did not exit.' }
                 if ($survivor.ExitCode -ne 0) { throw "Survivor exit code: $($survivor.ExitCode)" }
@@ -356,8 +378,7 @@ try {
             $value = [Microsoft.Win32.Registry]::GetValue(
                 ('HKEY_CURRENT_USER\' + $context.Key), 'LifetimeValue', $null)
             $modules = @([Diagnostics.Process]::GetCurrentProcess().Modules | Where-Object {
-                $_.ModuleName.StartsWith('WinPrivLibrary', [StringComparison]::OrdinalIgnoreCase) -or
-                    $_.ModuleName -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(32|64|arm64)\.dll$'
+                $_.ModuleName -match '^WinPriv-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-)?(x86|x64|arm64)\.dll$'
             } | ForEach-Object { $_.FileName })
             $evidence = @{ Value = $value; PointerSize = [IntPtr]::Size; Modules = $modules }
             [IO.File]::WriteAllText($context.Verified, ($evidence | ConvertTo-Json -Compress))
@@ -375,6 +396,7 @@ catch {
                     Launcher = $sandbox.Launchers.$ParentArch.WinPrivCmd
                     ParentHost = Get-WinPrivTestHost -Architecture $ParentArch
                     ChildHost = Get-WinPrivTestHost -Architecture $ChildArch
+                    Libraries = if ($Standalone) { $sandbox.Temp } else { $sandbox.Launchers.$ParentArch.Root }
                     Key = $subKey
                     Ready = Join-Path $sandbox.Artifacts 'survivor-ready.txt'
                     LauncherExited = Join-Path $sandbox.Artifacts 'launcher-exited.txt'
@@ -382,7 +404,8 @@ catch {
                 }
                 $result = Invoke-WinPrivContainedProcess -FilePath $context.ParentHost -Sandbox $sandbox `
                     -CreateHiddenConsole -TimeoutSeconds 70 `
-                    -Environment @{ WINPRIV_LIFETIME_CONTEXT = ($context | ConvertTo-Json -Compress) } `
+                    -Environment @{ WINPRIV_LIFETIME_CONTEXT = ($context | ConvertTo-Json -Compress)
+                        TEMP = $sandbox.Temp; TMP = $sandbox.Temp } `
                     -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                         '-File', $scriptPath, '-Role', 'Driver')
                 Assert-WinPrivInvocationSucceeded $result
@@ -395,7 +418,11 @@ catch {
                 $evidence.ChildExitCode | Should -Be 0
                 $evidence.Value | Should -Be 0x12345678
                 $evidence.PointerSize | Should -Be $(if ($ChildArch -eq 'x64') { 8 } else { 4 })
-                @($evidence.Modules) | Should -HaveCount 0
+                @($evidence.Modules) | Should -HaveCount 1
+                if ($Standalone) {
+                    $evidence.Modules[0] | Should -Not -Exist
+                    @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File) | Should -HaveCount 0
+                }
                 return $evidence
             }
         }

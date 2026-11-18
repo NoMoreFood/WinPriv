@@ -32,7 +32,8 @@ void PrintMessage(_Printf_format_string_ const wchar_t* format, ...);
 template <typename Function>
 Function LoadNtFunction(LPCSTR name) noexcept
 {
-	return reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), name));
+	const HMODULE module = GetModuleHandleW(L"ntdll.dll");
+	return module == nullptr ? nullptr : reinterpret_cast<Function>(GetProcAddress(module, name));
 }
 
 //

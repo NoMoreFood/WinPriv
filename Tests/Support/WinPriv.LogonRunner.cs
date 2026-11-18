@@ -268,8 +268,7 @@ namespace WinPrivTests
                 while (true)
                 {
                     int[] activeProcessIds = GetJobProcessIds(job);
-                    for (int index = 0; index < activeProcessIds.Length; index++)
-                        observedProcessIds.Add(activeProcessIds[index]);
+                    observedProcessIds.UnionWith(activeProcessIds);
                     if (activeProcessIds.Length == 0) break;
                     long remaining = (long)boundedTimeout - execution.ElapsedMilliseconds;
                     if (remaining <= 0)

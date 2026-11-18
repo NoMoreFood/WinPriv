@@ -158,7 +158,8 @@ static void AttachClockDetour(winpriv::detours::transaction& transaction, Functi
 	Function& baseTarget, Function replacement, LPCSTR sName)
 {
 	// API-set imports can resolve to separate KernelBase implementations of the same clock.
-	baseTarget = reinterpret_cast<Function>(GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), sName));
+	const HMODULE module = GetModuleHandleW(L"kernelbase.dll");
+	baseTarget = module == nullptr ? nullptr : reinterpret_cast<Function>(GetProcAddress(module, sName));
 	if (baseTarget == target) baseTarget = nullptr;
 	transaction.attach(target, replacement);
 	if (baseTarget != nullptr) transaction.attach(baseTarget, replacement);

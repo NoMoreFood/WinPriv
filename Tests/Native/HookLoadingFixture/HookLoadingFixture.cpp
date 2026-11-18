@@ -184,13 +184,9 @@ namespace
         return quoted;
     }
 
-    LSTATUS QueryDwordW(
-        RegOpenKeyExWFunction openKey,
-        RegQueryValueExWFunction queryVal,
-        RegCloseKeyFunction closeKey,
-        const wchar_t* subKey,
-        const wchar_t* valueName,
-        DWORD& resultValue)
+    template <typename Character>
+    LSTATUS QueryDword(auto openKey, auto queryVal, RegCloseKeyFunction closeKey,
+        const Character* subKey, const Character* valueName, DWORD& resultValue)
     {
         HKEY key = nullptr;
         LSTATUS status = openKey(HKEY_CURRENT_USER, subKey, 0, KEY_QUERY_VALUE, &key);
@@ -199,28 +195,6 @@ namespace
         DWORD val = 0;
         DWORD size = sizeof(val);
         status = queryVal(key, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(&val), &size);
-        closeKey(key);
-        if (status != ERROR_SUCCESS) return status;
-        if (type != REG_DWORD || size != sizeof(val)) return ERROR_INVALID_DATA;
-        resultValue = val;
-        return ERROR_SUCCESS;
-    }
-
-    LSTATUS QueryDwordA(
-        RegOpenKeyExAFunction openKeyA,
-        RegQueryValueExAFunction queryValA,
-        RegCloseKeyFunction closeKey,
-        const char* subKeyA,
-        const char* valueNameA,
-        DWORD& resultValue)
-    {
-        HKEY key = nullptr;
-        LSTATUS status = openKeyA(HKEY_CURRENT_USER, subKeyA, 0, KEY_QUERY_VALUE, &key);
-        if (status != ERROR_SUCCESS) return status;
-        DWORD type = REG_NONE;
-        DWORD val = 0;
-        DWORD size = sizeof(val);
-        status = queryValA(key, valueNameA, nullptr, &type, reinterpret_cast<LPBYTE>(&val), &size);
         closeKey(key);
         if (status != ERROR_SUCCESS) return status;
         if (type != REG_DWORD || size != sizeof(val)) return ERROR_INVALID_DATA;
@@ -240,7 +214,7 @@ namespace
 #if defined(WINPRIV_LOADING_MODE_DYNAMIC)
             return ERROR_NOT_SUPPORTED;
 #else
-            return QueryDwordW(RegOpenKeyExW, RegQueryValueExW, RegCloseKey, subKey.c_str(), valueName.c_str(), queriedValue);
+            return QueryDword(RegOpenKeyExW, RegQueryValueExW, RegCloseKey, subKey.c_str(), valueName.c_str(), queriedValue);
 #endif
         }
         else if (mode == L"static-import-ansi" || mode == L"delay-load-ansi")
@@ -250,7 +224,7 @@ namespace
 #else
             const std::string subKeyA = WideToAnsi(subKey);
             const std::string valueNameA = WideToAnsi(valueName);
-            return QueryDwordA(RegOpenKeyExA, RegQueryValueExA, RegCloseKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
+            return QueryDword(RegOpenKeyExA, RegQueryValueExA, RegCloseKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
 #endif
         }
         else if (mode == L"load-library")
@@ -265,7 +239,7 @@ namespace
                 FreeLibrary(mod);
                 return ERROR_PROC_NOT_FOUND;
             }
-            const LSTATUS status = QueryDwordW(openKey, queryVal, closeKey, subKey.c_str(), valueName.c_str(), queriedValue);
+            const LSTATUS status = QueryDword(openKey, queryVal, closeKey, subKey.c_str(), valueName.c_str(), queriedValue);
             FreeLibrary(mod);
             return status;
         }
@@ -283,7 +257,7 @@ namespace
             }
             const std::string subKeyA = WideToAnsi(subKey);
             const std::string valueNameA = WideToAnsi(valueName);
-            const LSTATUS status = QueryDwordA(openKeyA, queryValA, closeKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
+            const LSTATUS status = QueryDword(openKeyA, queryValA, closeKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
             FreeLibrary(mod);
             return status;
         }
@@ -301,7 +275,7 @@ namespace
             auto queryVal = reinterpret_cast<RegQueryValueExWFunction>(GetProcAddress(mod, "RegQueryValueExW"));
             auto closeKey = reinterpret_cast<RegCloseKeyFunction>(GetProcAddress(mod, "RegCloseKey"));
             if (!openKey || !queryVal || !closeKey) return ERROR_PROC_NOT_FOUND;
-            return QueryDwordW(openKey, queryVal, closeKey, subKey.c_str(), valueName.c_str(), queriedValue);
+            return QueryDword(openKey, queryVal, closeKey, subKey.c_str(), valueName.c_str(), queriedValue);
         }
         else if (mode == L"get-module-handle-ansi")
         {
@@ -319,7 +293,7 @@ namespace
             if (!openKeyA || !queryValA || !closeKey) return ERROR_PROC_NOT_FOUND;
             const std::string subKeyA = WideToAnsi(subKey);
             const std::string valueNameA = WideToAnsi(valueName);
-            return QueryDwordA(openKeyA, queryValA, closeKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
+            return QueryDword(openKeyA, queryValA, closeKey, subKeyA.c_str(), valueNameA.c_str(), queriedValue);
         }
         else if (mode == L"reload-library")
         {
@@ -439,10 +413,7 @@ namespace
                 startupInfoA.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
                 startupInfoA.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
-                std::vector<char> cmdBuffer(commandLineA.begin(), commandLineA.end());
-                cmdBuffer.push_back('\0');
-
-                if (!CreateProcessA(nextExeA.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE,
+                if (!CreateProcessA(nextExeA.c_str(), commandLineA.data(), nullptr, nullptr, TRUE,
                     creationFlags, nullptr, nullptr, &startupInfoA, &processInfo))
                 {
                     return Fail(L"CreateProcessA", GetLastError());
@@ -464,10 +435,7 @@ namespace
                 startupInfoW.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
                 startupInfoW.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
-                std::vector<wchar_t> cmdBuffer(commandLineW.begin(), commandLineW.end());
-                cmdBuffer.push_back(L'\0');
-
-                if (!CreateProcessW(nextExe.c_str(), cmdBuffer.data(), nullptr, nullptr, TRUE,
+                if (!CreateProcessW(nextExe.c_str(), commandLineW.data(), nullptr, nullptr, TRUE,
                     creationFlags, nullptr, nullptr, &startupInfoW, &processInfo))
                 {
                     return Fail(L"CreateProcessW", GetLastError());
@@ -508,25 +476,42 @@ struct MitigationProcess final
 {
     PROCESS_INFORMATION process{};
     LPPROC_THREAD_ATTRIBUTE_LIST attributes = nullptr;
+    std::wstring profile;
+    HRESULT(WINAPI* deleteProfile)(PCWSTR) = nullptr;
 
     ~MitigationProcess()
     {
         if (process.hThread != nullptr) CloseHandle(process.hThread);
         if (process.hProcess != nullptr) CloseHandle(process.hProcess);
         if (attributes != nullptr) DeleteProcThreadAttributeList(attributes);
+        if (!profile.empty()) deleteProfile(profile.c_str());
     }
 };
+
+static bool HasAppContainerToken(HANDLE process)
+{
+    HANDLE handle = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &handle)) return false;
+    std::unique_ptr<void, decltype(&CloseHandle)> token(handle, CloseHandle);
+    DWORD isAppContainer = 0, length = 0;
+    return GetTokenInformation(token.get(), TokenIsAppContainer, &isAppContainer, sizeof(isAppContainer), &length) &&
+        isAppContainer != 0;
+}
 
 int LaunchMitigatedProcess(const int argumentCount, wchar_t* arguments[])
 {
     const bool strictCfg = wcscmp(arguments[2], L"strict-cfg") == 0;
     const bool dynamicCode = wcscmp(arguments[2], L"dynamic-code") == 0;
     const bool allowOptOut = wcscmp(arguments[2], L"dynamic-code-optout") == 0;
-    if (!strictCfg && !dynamicCode && !allowOptOut) return Fail(L"mitigation-name", ERROR_INVALID_PARAMETER);
+    const bool signedOnly = wcscmp(arguments[2], L"microsoft-signed") == 0;
+    const bool appContainer = wcscmp(arguments[2], L"app-container") == 0;
+    if (!strictCfg && !dynamicCode && !allowOptOut && !signedOnly && !appContainer)
+        return Fail(L"mitigation-name", ERROR_INVALID_PARAMETER);
 
     DWORD64 mitigation[]{
         strictCfg ? PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_ON :
         allowOptOut ? PROCESS_CREATION_MITIGATION_POLICY_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON_ALLOW_OPT_OUT :
+        signedOnly ? PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON :
             PROCESS_CREATION_MITIGATION_POLICY_PROHIBIT_DYNAMIC_CODE_ALWAYS_ON,
         strictCfg ? PROCESS_CREATION_MITIGATION_POLICY2_STRICT_CONTROL_FLOW_GUARD_ALWAYS_ON : 0
     };
@@ -535,32 +520,37 @@ int LaunchMitigatedProcess(const int argumentCount, wchar_t* arguments[])
     std::vector<BYTE> attributeStorage(attributeBytes);
     MitigationProcess child;
     auto attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
-    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attributeBytes))
+    if (!attributes || !InitializeProcThreadAttributeList(attributes, 1, 0, &attributeBytes))
         return Fail(L"InitializeProcThreadAttributeList", GetLastError());
     child.attributes = attributes;
-    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-        &mitigation, sizeof(mitigation), nullptr, nullptr))
+
+    // AppContainer launches need a registered profile, which is removed after the child exits.
+    SECURITY_CAPABILITIES capabilities{};
+    if (appContainer)
+    {
+        const HMODULE userenv = LoadLibraryW(L"userenv.dll");
+        const auto createProfile = userenv == nullptr ? nullptr : reinterpret_cast<HRESULT(WINAPI*)(PCWSTR, PCWSTR,
+            PCWSTR, PSID_AND_ATTRIBUTES, DWORD, PSID*)>(GetProcAddress(userenv, "CreateAppContainerProfile"));
+        child.deleteProfile = userenv == nullptr ? nullptr :
+            reinterpret_cast<HRESULT(WINAPI*)(PCWSTR)>(GetProcAddress(userenv, "DeleteAppContainerProfile"));
+        if (createProfile == nullptr || child.deleteProfile == nullptr) return Fail(L"userenv", ERROR_PROC_NOT_FOUND);
+        const std::wstring profile = L"WinPrivFixture-" + std::to_wstring(GetCurrentProcessId());
+        const HRESULT result = createProfile(profile.c_str(), profile.c_str(), profile.c_str(), nullptr, 0,
+            &capabilities.AppContainerSid);
+        if (FAILED(result)) return Fail(L"CreateAppContainerProfile", static_cast<LSTATUS>(result));
+        child.profile = profile;
+    }
+    if (!UpdateProcThreadAttribute(attributes, 0,
+        appContainer ? PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES : PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+        appContainer ? static_cast<PVOID>(&capabilities) : static_cast<PVOID>(&mitigation),
+        appContainer ? sizeof(capabilities) : sizeof(mitigation), nullptr, nullptr))
         return Fail(L"UpdateProcThreadAttribute", GetLastError());
 
     std::wstring command;
     for (int index = 3; index < argumentCount; ++index)
     {
         if (!command.empty()) command.push_back(L' ');
-        command.push_back(L'"');
-        size_t backslashes = 0;
-        for (const wchar_t* cursor = arguments[index]; *cursor != L'\0'; ++cursor)
-        {
-            if (*cursor == L'\\')
-            {
-                ++backslashes;
-                continue;
-            }
-            command.append(*cursor == L'"' ? backslashes * 2 + 1 : backslashes, L'\\');
-            command.push_back(*cursor);
-            backslashes = 0;
-        }
-        command.append(backslashes * 2, L'\\');
-        command.push_back(L'"');
+        command += QuoteArgumentW(arguments[index]);
     }
 
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
@@ -577,19 +567,29 @@ int LaunchMitigatedProcess(const int argumentCount, wchar_t* arguments[])
 
     PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY cfg{};
     PROCESS_MITIGATION_DYNAMIC_CODE_POLICY acg{};
-    const bool queried = strictCfg ?
-        GetProcessMitigationPolicy(child.process.hProcess, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) != FALSE :
-        GetProcessMitigationPolicy(child.process.hProcess, ProcessDynamicCodePolicy, &acg, sizeof(acg)) != FALSE;
-    if (!queried || (strictCfg && (!cfg.EnableControlFlowGuard || !cfg.StrictMode)) ||
-        ((dynamicCode || allowOptOut) && (!acg.ProhibitDynamicCode || acg.AllowThreadOptOut != allowOptOut)))
+    PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY signature{};
+    const HANDLE process = child.process.hProcess;
+    bool enforced = false;
+    if (appContainer) enforced = HasAppContainerToken(process);
+    else if (strictCfg)
+        enforced = GetProcessMitigationPolicy(process, ProcessControlFlowGuardPolicy, &cfg, sizeof(cfg)) &&
+            cfg.EnableControlFlowGuard && cfg.StrictMode;
+    else if (signedOnly)
+        enforced = GetProcessMitigationPolicy(process, ProcessSignaturePolicy, &signature, sizeof(signature)) &&
+            signature.MicrosoftSignedOnly;
+    else
+        enforced = GetProcessMitigationPolicy(process, ProcessDynamicCodePolicy, &acg, sizeof(acg)) &&
+            acg.ProhibitDynamicCode && acg.AllowThreadOptOut == allowOptOut;
+    std::wprintf(L"{\"schemaVersion\":1,\"mitigation\":\"%ls\",\"enforced\":%ls}\n", arguments[2],
+        enforced ? L"true" : L"false");
+    std::fflush(stdout);
+    if (!enforced)
     {
         TerminateProcess(child.process.hProcess, ERROR_NOT_SUPPORTED);
         WaitForSingleObject(child.process.hProcess, INFINITE);
-        return Fail(L"GetProcessMitigationPolicy", ERROR_NOT_SUPPORTED);
+        return Fail(appContainer ? L"TokenIsAppContainer" : L"GetProcessMitigationPolicy", ERROR_NOT_SUPPORTED);
     }
 
-    std::wprintf(L"{\"schemaVersion\":1,\"mitigation\":\"%ls\",\"enforced\":true}\n", arguments[2]);
-    std::fflush(stdout);
     if (ResumeThread(child.process.hThread) == static_cast<DWORD>(-1))
     {
         const DWORD error = GetLastError();
@@ -617,12 +617,13 @@ int QueryDynamicCodeCapability(const bool allowOptOut)
 
     SetLastError(NO_ERROR);
     void* allocation = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    const DWORD allocationError = allocation == nullptr ? GetLastError() : NO_ERROR;
-    if (allocation != nullptr) VirtualFree(allocation, 0, MEM_RELEASE);
+    const bool allocated = allocation != nullptr;
+    const DWORD allocationError = allocated ? NO_ERROR : GetLastError();
+    if (allocated) VirtualFree(allocation, 0, MEM_RELEASE);
     std::wprintf(L"{\"schemaVersion\":1,\"capability\":\"dynamic-code\",\"processDynamicCode\":%lu,"
         L"\"allowThreadOptOut\":%lu,\"allocationSucceeded\":%ls,\"allocationError\":%lu}\n",
         static_cast<DWORD>(policy.ProhibitDynamicCode), static_cast<DWORD>(policy.AllowThreadOptOut),
-        allocation != nullptr ? L"true" : L"false", allocationError);
+        allocated ? L"true" : L"false", allocationError);
     return 0;
 }
 
@@ -1027,7 +1028,7 @@ int wmain(const int argumentCount, wchar_t* arguments[])
 #endif
     if (argumentCount >= 2 && wcscmp(arguments[1], L"--library-loading") == 0)
         return TestLibraryLoading(argumentCount, arguments);
-    if (argumentCount == 2 && wcscmp(arguments[1], L"--memory-exceptions") == 0)
+    if (argumentCount == 2 && wcscmp(arguments[1], L"--hook-exceptions") == 0)
     {
         // Exercise repeated C++ unwinding inside the hooks while unrelated application exceptions still work.
         HMODULE odbc = LoadLibraryW(L"odbc32.dll");
@@ -1089,7 +1090,8 @@ int wmain(const int argumentCount, wchar_t* arguments[])
         QueryPerformanceCounter(&counter);
         QueryPerformanceFrequency(&frequency);
         FILE* output = nullptr;
-        if (_wfopen_s(&output, arguments[2], L"w") != 0) return Fail(L"startup-output", ERROR_OPEN_FAILED);
+        if (_wfopen_s(&output, arguments[2], L"w") != 0 || output == nullptr)
+            return Fail(L"startup-output", ERROR_OPEN_FAILED);
         std::fwprintf(output, L"%lld %lld\n", counter.QuadPart, frequency.QuadPart);
         std::fclose(output);
         return 0;

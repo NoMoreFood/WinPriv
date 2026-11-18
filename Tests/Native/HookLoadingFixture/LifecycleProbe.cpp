@@ -26,7 +26,10 @@ static void NTAPI LifecycleCallback(PVOID, DWORD reason, PVOID)
     ++state.callbacks[reason];
 
     // Exercise hooks in TLS callbacks before the corresponding DllMain notification, using only Win32 APIs.
-    WCHAR key[256]{}, name[128]{}, file[32768]{};
+    WCHAR key[256]{}, name[128]{};
+    // Loader notifications are serialized, so the path buffer need not consume each thread's stack.
+    static WCHAR file[32768];
+    file[0] = L'\0';
     const DWORD keyLength = GetEnvironmentVariableW(L"WINPRIV_LOADING_TLS_KEY", key, ARRAYSIZE(key));
     const DWORD nameLength = GetEnvironmentVariableW(L"WINPRIV_LOADING_TLS_VALUE", name, ARRAYSIZE(name));
     const DWORD fileLength = GetEnvironmentVariableW(L"WINPRIV_LOADING_TLS_FILE", file, ARRAYSIZE(file));

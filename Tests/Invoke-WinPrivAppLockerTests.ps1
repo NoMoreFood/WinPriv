@@ -75,12 +75,17 @@ function Invoke-LanguageCase {
     $method = if ($Expected -eq 'FullLanguage') { 'MethodAllowed' } else { 'MethodBlocked' }
     $passed = $result.Succeeded -and $result.JobAssigned -and
         $result.StdOut.Contains($Expected) -and $result.StdOut.Contains($method)
-    if ($ReadinessProbe) { return $passed }
-    $evidence.Add([pscustomobject]@{
+    $observation = [pscustomobject]@{
         Host = $HostInfo.Name; Case = $Name; Expected = $Expected; Passed = $passed
         ExitCode = $result.ExitCode; StdOut = $result.StdOut; StdErr = $result.StdErr
         TimedOut = $result.TimedOut; StartError = $result.StartError; JobAssigned = $result.JobAssigned
-    })
+    }
+    if ($ReadinessProbe) {
+        $observation | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $ResultsPath "$Name-readiness.json") -Encoding UTF8
+        return $passed
+    }
+    $evidence.Add($observation)
     if (-not $passed) { throw "$($HostInfo.Name) / $Name failed: $($result.StdOut) $($result.StdErr)" }
 }
 
@@ -162,12 +167,12 @@ try {
         Start-Sleep -Milliseconds 250
     }
     if ($attempt -eq 40) { throw 'The temporary policy did not become effective.' }
+    [IO.File]::WriteAllText((Join-Path $ResultsPath 'applied-policy.xml'), (Get-AppLockerPolicy -Effective -Xml))
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         if (Invoke-LanguageCase $hosts[0] 'activation' 'ConstrainedLanguage' -Direct -ReadinessProbe) { break }
         Start-Sleep -Milliseconds 500
     }
     if ($attempt -eq 20) { throw 'The effective policy did not constrain a fresh PowerShell host.' }
-    [IO.File]::WriteAllText((Join-Path $ResultsPath 'applied-policy.xml'), (Get-AppLockerPolicy -Effective -Xml))
     foreach ($hostInfo in $hosts) {
         Invoke-LanguageCase $hostInfo 'enforced-command-control' 'ConstrainedLanguage' -Direct
         Invoke-LanguageCase $hostInfo 'enforced-script-control' 'ConstrainedLanguage' -Direct @blockedTarget

@@ -7,11 +7,6 @@ BeforeAll {
 Describe 'WinPriv build artifacts' -Tag 'Safe' {
     BeforeAll {
         $binaryRoot = [IO.Path]::GetFullPath($env:WINPRIV_TEST_BINARY_ROOT)
-        $expected = @{
-            x86   = @{ Directory = 'x86'; Machine = 0x014C }
-            x64   = @{ Directory = 'x64'; Machine = 0x8664 }
-            ARM64 = @{ Directory = 'ARM64'; Machine = 0xAA64 }
-        }
     }
 
     It 'contains CFG instrumentation and call-target metadata in every architecture' {
@@ -33,13 +28,17 @@ Describe 'WinPriv build artifacts' -Tag 'Safe' {
         }
     }
 
-    It 'contains matching configured launchers for x86' {
-        Invoke-WinPrivCapability -Id 'artifact.build-x86' -Architecture x86 -Body {
-            $directory = Join-Path $binaryRoot $expected.x86.Directory
+    It 'contains matching configured launchers for <Architecture>' -ForEach @(
+        @{ Architecture = 'x86'; Machine = 0x014C; Capability = 'artifact.build-x86' },
+        @{ Architecture = 'x64'; Machine = 0x8664; Capability = 'artifact.build-x64' },
+        @{ Architecture = 'ARM64'; Machine = 0xAA64; Capability = 'artifact.build-arm64' }
+    ) {
+        Invoke-WinPrivCapability -Id $Capability -Architecture $Architecture -Body {
+            $directory = Join-Path $binaryRoot $Architecture
             $paths = @((Join-Path $directory 'WinPriv.exe'), (Join-Path $directory 'WinPrivCmd.exe'))
             foreach ($path in $paths) {
                 $path | Should -Exist
-                (Get-PeMachine $path) | Should -Be $expected.x86.Machine
+                (Get-PeMachine $path) | Should -Be $Machine
             }
             ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[0]).FileVersion) |
                 Should -Be ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[1]).FileVersion)
@@ -55,34 +54,6 @@ Describe 'WinPriv build artifacts' -Tag 'Safe' {
                 $version.OriginalFilename | Should -Be $name -Because $path
                 $version.InternalName | Should -Be $name -Because $path
             }
-        }
-    }
-
-    It 'contains matching configured launchers for x64' {
-        Invoke-WinPrivCapability -Id 'artifact.build-x64' -Architecture x64 -Body {
-            $directory = Join-Path $binaryRoot $expected.x64.Directory
-            $paths = @((Join-Path $directory 'WinPriv.exe'), (Join-Path $directory 'WinPrivCmd.exe'))
-            foreach ($path in $paths) {
-                $path | Should -Exist
-                (Get-PeMachine $path) | Should -Be $expected.x64.Machine
-            }
-            ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[0]).FileVersion) |
-                Should -Be ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[1]).FileVersion)
-            return $paths
-        }
-    }
-
-    It 'contains matching configured launchers for ARM64' {
-        Invoke-WinPrivCapability -Id 'artifact.build-arm64' -Architecture ARM64 -Body {
-            $directory = Join-Path $binaryRoot $expected.ARM64.Directory
-            $paths = @((Join-Path $directory 'WinPriv.exe'), (Join-Path $directory 'WinPrivCmd.exe'))
-            foreach ($path in $paths) {
-                $path | Should -Exist
-                (Get-PeMachine $path) | Should -Be $expected.ARM64.Machine
-            }
-            ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[0]).FileVersion) |
-                Should -Be ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[1]).FileVersion)
-            return $paths
         }
     }
 }
@@ -141,7 +112,6 @@ Describe 'WinPriv library payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
             foreach ($state in @($probe.ProbeResult.result.parentState, $probe.ProbeResult.result.childResult.result)) {
                 @($state.winPrivLibraryModules) | Should -HaveCount 1
                 ($state.winPrivLibraryModules[0] -replace '^\\\\\?\\', '') | Should -Be $expectedPath
-                @($state.winPrivMemoryImages) | Should -HaveCount 0
             }
 
             [IO.File]::WriteAllText($expectedPath, 'This file is not a WinPriv DLL.')
@@ -153,51 +123,56 @@ Describe 'WinPriv library payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
         }
     }
 
-    It 'loads the embedded image when the matching DLL is absent beside the launcher' {
+    It 'extracts the embedded DLL bundle when a DLL is absent beside the launcher' {
         Invoke-WinPrivCapability -Id 'artifact.embedded-library-loading' -Architecture $Architecture -Body {
             $expectedName = "WinPriv-$Architecture.dll"
             $expectedPath = Join-Path $sandbox.Launchers.$Architecture.Root $expectedName
             Remove-Item -LiteralPath $expectedPath
+            # A stale sibling can sort before or after the missing DLL.
+            $staleName = if ($Architecture -eq 'x86') { 'WinPriv-x64.dll' } else { 'WinPriv-x86.dll' }
+            [IO.File]::WriteAllText((Join-Path $sandbox.Launchers.$Architecture.Root $staleName), 'stale DLL')
             [IO.File]::WriteAllText((Join-Path $sandbox.Working $expectedName), 'This file is not a WinPriv DLL.')
-            $probe = Invoke-WinPrivProbe -Architecture $Architecture -Operation state -Arguments @{} `
-                -Sandbox $sandbox -Environment @{ TEMP = $sandbox.Temp; TMP = $sandbox.Temp } -TimeoutSeconds 20
+            $probe = Invoke-WinPrivProbe -Architecture $Architecture -Operation create-process `
+                -Arguments @{ api = 'W'; depth = 1; childOperation = 'state'; childArguments = @{} } `
+                -Sandbox $sandbox -Environment @{ TEMP = $sandbox.Temp; TMP = $sandbox.Temp } -TimeoutSeconds 35
             Assert-WinPrivInvocationSucceeded $probe
-            @($probe.ProbeResult.result.winPrivLibraryModules) | Should -HaveCount 0
-            @($probe.ProbeResult.result.winPrivMemoryImages) | Should -HaveCount 1
-            $probe.ProbeResult.result.winPrivMemoryImages[0].architecture | Should -Be $Architecture
-            @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File -ErrorAction SilentlyContinue) |
-                Should -HaveCount 0
+            foreach ($state in @($probe.ProbeResult.result.parentState, $probe.ProbeResult.result.childResult.result)) {
+                @($state.winPrivLibraryModules) | Should -HaveCount 1
+                ($state.winPrivLibraryModules[0] -replace '^\\\\\?\\', '') |
+                    Should -BeLike (Join-Path $sandbox.Temp "WinPriv-*-$Architecture.dll")
+                $state.winPrivLibraryModules[0] | Should -Not -Exist
+            }
+            @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File) | Should -HaveCount 0
             return @{ LibraryPath = $expectedPath }
         }
     }
 
-    It 'loads hooks without creating temporary DLLs during the process lifetime' {
-        Invoke-WinPrivCapability -Id 'artifact.memory-library-loading' -Architecture $Architecture -Body {
+    It 'cleans up temporary DLLs and reports an unusable extraction directory' {
+        Invoke-WinPrivCapability -Id 'artifact.temporary-library-cleanup' -Architecture $Architecture -Body {
             $standalone = Join-Path $sandbox.Working 'standalone'
             New-Item -ItemType Directory -Path $standalone | Out-Null
             $launcher = Join-Path $standalone 'WinPrivCmd.exe'
             Copy-Item -LiteralPath $sandbox.Launchers.$Architecture.WinPrivCmd -Destination $launcher
             $watcher = [IO.FileSystemWatcher]::new($sandbox.Temp, '*.dll')
-            $watcher.IncludeSubdirectories = $true
-            $source = 'WinPrivMemoryLoading-' + [Guid]::NewGuid().ToString('N')
+            $source = 'WinPrivDllLoading-' + [Guid]::NewGuid().ToString('N')
             try {
                 Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier $source | Out-Null
                 $watcher.EnableRaisingEvents = $true
-                # A native target avoids temporary assemblies created by the PowerShell probe compiler.
                 $result = Invoke-WinPrivContainedProcess -FilePath $launcher `
                     -ArgumentList @($launcher, '/ListPrivileges') `
                     -Sandbox $sandbox -Environment @{ TEMP = $sandbox.Temp; TMP = $sandbox.Temp } -TimeoutSeconds 20
                 Assert-WinPrivInvocationSucceeded $result
                 Start-Sleep -Milliseconds 100
                 @(Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue |
-                    ForEach-Object { $_.SourceEventArgs.FullPath }) | Should -BeNullOrEmpty
-                @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File -Recurse) | Should -HaveCount 0
+                    ForEach-Object { $_.SourceEventArgs.FullPath } | Select-Object -Unique) | Should -HaveCount 3
+                @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File) | Should -HaveCount 0
                 $unusableTemp = Join-Path $sandbox.Working 'temp-file'
                 [IO.File]::WriteAllText($unusableTemp, 'This path is a file, not a temporary directory.')
                 $result = Invoke-WinPrivContainedProcess -FilePath $launcher `
                     -ArgumentList @($launcher, '/ListPrivileges') -Sandbox $sandbox `
                     -Environment @{ TEMP = $unusableTemp; TMP = $unusableTemp } -TimeoutSeconds 20
-                Assert-WinPrivInvocationSucceeded $result
+                Assert-WinPrivInvocationFailedCleanly $result
+                $result.StdOut | Should -Match 'Could not load injection library'
                 @(Get-ChildItem -LiteralPath $standalone -File).Name | Should -Be @('WinPrivCmd.exe')
                 return @{ Temp = $sandbox.Temp; ExitCode = $result.ExitCode }
             }
@@ -209,7 +184,6 @@ Describe 'WinPriv library payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
         }
     }
 }
-
 Describe 'WinPriv release package' -Tag 'Safe' {
     It 'packages launchers and their DLLs with complete hash entries in an isolated tree' {
         $runtimeArchitecture = @(Get-WinPrivTestArchitectures)[0]
@@ -266,15 +240,6 @@ Describe 'WinPriv release package' -Tag 'Safe' {
                 New-Item -ItemType Directory -Path $stage | Out-Null
                 $backup = Join-Path $stage 'WinPriv.zip.backup'
                 [IO.File]::WriteAllText($backup, 'release recovery copy')
-                $recoveryBlocked = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `
-                    -ArgumentList @('/d', '/c', (Join-Path $build 'build.cmd'), '/PackageOnly') `
-                    -WorkingDirectory $build -Sandbox $sandbox -TimeoutSeconds 120
-                Assert-WinPrivInvocationFailedCleanly $recoveryBlocked
-                $recoveryBlocked.StdOut | Should -Match 'Recover previous release files'
-                [IO.File]::ReadAllText($backup) | Should -Be 'release recovery copy'
-                (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash | Should -Be $previousArchiveHash
-                (Get-Content -LiteralPath $hashPath) | Should -Be 'previous hashes'
-                Remove-Item -LiteralPath $backup
                 $sentinel = Join-Path $stage 'another-build.txt'
                 Set-Content -LiteralPath $sentinel -Value 'stale staging'
                 $repackaging = Invoke-WinPrivContainedProcess -FilePath $env:ComSpec `

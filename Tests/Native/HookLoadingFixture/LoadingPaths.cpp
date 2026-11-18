@@ -105,11 +105,10 @@ static DWORD ReloadProbe(LPCWSTR path, bool ansi, DWORD flags, LPCWSTR key, LPCW
 
 LSTATUS QueryReloadedLibrary(LPCWSTR key, LPCWSTR valueName, DWORD& value)
 {
-    std::array<WCHAR, 32768> path{};
-    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (length == 0 || length >= path.size()) return ERROR_INSUFFICIENT_BUFFER;
-    std::wstring library(path.data());
-    library.resize(library.find_last_of(L'\\') + 1);
+    std::wstring library(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, library.data(), static_cast<DWORD>(library.size()));
+    if (length == 0 || length >= library.size()) return ERROR_INSUFFICIENT_BUFFER;
+    library.resize(library.rfind(L'\\', length - 1) + 1);
     library += L"WinPrivLoadingProbe.dll";
     LoadingProbeResult result{};
     const DWORD error = ReloadProbe(library.c_str(), false, 0, key, valueName, nullptr, result);
@@ -166,7 +165,7 @@ static DWORD CheckSignedLoading(LPCWSTR reportPath, DWORD& accepted, DWORD& tamp
     const auto damaged = std::wstring(reportPath) + L".tampered.dll";
     if (!CopyFileW(source.c_str(), damaged.c_str(), TRUE)) return GetLastError();
     FILE* opened = nullptr;
-    if (_wfopen_s(&opened, damaged.c_str(), L"r+b") != 0) return ERROR_OPEN_FAILED;
+    if (_wfopen_s(&opened, damaged.c_str(), L"r+b") != 0 || opened == nullptr) return ERROR_OPEN_FAILED;
     std::unique_ptr<FILE, decltype(&fclose)> stream(opened, fclose);
     IMAGE_DOS_HEADER dos{};
     IMAGE_NT_HEADERS nt{};

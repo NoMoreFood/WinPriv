@@ -14,10 +14,6 @@ function Initialize-WinPrivNativeMethods {
         return
     }
 
-    if (-not (Test-WinPrivWindows)) {
-        throw 'The WinPriv test harness process helpers require Windows.'
-    }
-
     if (-not ('WinPriv.TestHarness.NativeMethods' -as [type])) {
         $source = @'
 using System;
@@ -153,7 +149,7 @@ namespace WinPriv.TestHarness
         private static extern bool SetInformationJobObject(
             IntPtr job,
             Int32 informationClass,
-            IntPtr information,
+            ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION information,
             UInt32 informationLength);
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -178,17 +174,6 @@ namespace WinPriv.TestHarness
         public static extern bool CloseHandle(IntPtr handle);
 
         [DllImport("kernel32.dll")]
-        private static extern IntPtr GetConsoleWindow();
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool AllocConsole();
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool ShowWindow(IntPtr window, Int32 command);
-
-        [DllImport("kernel32.dll")]
         private static extern IntPtr GetCurrentProcess();
 
         [DllImport("advapi32.dll", SetLastError = true)]
@@ -200,7 +185,7 @@ namespace WinPriv.TestHarness
         private static extern bool GetTokenInformation(
             IntPtr token,
             Int32 informationClass,
-            IntPtr information,
+            out TOKEN_ELEVATION information,
             UInt32 informationLength,
             out UInt32 returnLength);
 
@@ -253,20 +238,11 @@ namespace WinPriv.TestHarness
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             Int32 size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
-            IntPtr buffer = Marshal.AllocHGlobal(size);
-            try
+            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, (UInt32)size))
             {
-                Marshal.StructureToPtr(limits, buffer, false);
-                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, buffer, (UInt32)size))
-                {
-                    Int32 error = Marshal.GetLastWin32Error();
-                    CloseHandle(job);
-                    throw new Win32Exception(error, "SetInformationJobObject failed");
-                }
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(buffer);
+                Int32 error = Marshal.GetLastWin32Error();
+                CloseHandle(job);
+                throw new Win32Exception(error, "SetInformationJobObject failed");
             }
             return job;
         }
@@ -302,7 +278,7 @@ namespace WinPriv.TestHarness
                 {
                     throw new InvalidOperationException("Job Object returned an invalid process count.");
                 }
-                List<Int32> ids = new List<Int32>(count);
+                Int32[] ids = new Int32[count];
                 for (Int32 index = 0; index < count; index++)
                 {
                     Int64 value = IntPtr.Size == 8
@@ -310,33 +286,14 @@ namespace WinPriv.TestHarness
                         : Marshal.ReadInt32(buffer, 8 + (index * IntPtr.Size));
                     if (value <= 0 || value > Int32.MaxValue)
                         throw new InvalidOperationException("Job Object returned an invalid process identifier.");
-                    ids.Add((Int32)value);
+                    ids[index] = (Int32)value;
                 }
-                return ids.ToArray();
+                return ids;
             }
             finally
             {
                 Marshal.FreeHGlobal(buffer);
             }
-        }
-
-        public static bool EnsureHiddenConsole()
-        {
-            IntPtr window = GetConsoleWindow();
-            if (window != IntPtr.Zero)
-            {
-                return true;
-            }
-            if (!AllocConsole())
-            {
-                return false;
-            }
-            window = GetConsoleWindow();
-            if (window != IntPtr.Zero)
-            {
-                ShowWindow(window, 0);
-            }
-            return true;
         }
 
         public static bool IsCurrentTokenElevated()
@@ -349,21 +306,13 @@ namespace WinPriv.TestHarness
             try
             {
                 Int32 size = Marshal.SizeOf(typeof(TOKEN_ELEVATION));
-                IntPtr buffer = Marshal.AllocHGlobal(size);
-                try
+                TOKEN_ELEVATION elevation;
+                UInt32 returned;
+                if (!GetTokenInformation(token, TokenElevation, out elevation, (UInt32)size, out returned))
                 {
-                    UInt32 returned;
-                    if (!GetTokenInformation(token, TokenElevation, buffer, (UInt32)size, out returned))
-                    {
-                        return false;
-                    }
-                    TOKEN_ELEVATION elevation = (TOKEN_ELEVATION)Marshal.PtrToStructure(buffer, typeof(TOKEN_ELEVATION));
-                    return elevation.TokenIsElevated != 0;
+                    return false;
                 }
-                finally
-                {
-                    Marshal.FreeHGlobal(buffer);
-                }
+                return elevation.TokenIsElevated != 0;
             }
             finally
             {
@@ -458,10 +407,7 @@ namespace WinPriv.TestHarness
                 while (true)
                 {
                     Int32[] activeProcessIds = GetJobProcessIds(job);
-                    for (Int32 index = 0; index < activeProcessIds.Length; index++)
-                    {
-                        observedProcessIds.Add(activeProcessIds[index]);
-                    }
+                    observedProcessIds.UnionWith(activeProcessIds);
                     if (activeProcessIds.Length == 0)
                     {
                         break;
@@ -1669,25 +1615,6 @@ function Invoke-WinPrivCurrentRunReconciliation {
     }
 }
 
-function Get-WinPrivDescendantProcessIds {
-    param([int]$RootProcessId)
-    $processes = @()
-    try { $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId) } catch { return @() }
-    $found = New-Object 'System.Collections.Generic.HashSet[int]'
-    $queue = New-Object 'System.Collections.Generic.Queue[int]'
-    $queue.Enqueue($RootProcessId)
-    while ($queue.Count -gt 0) {
-        $parent = $queue.Dequeue()
-        foreach ($process in $processes) {
-            $id = [int]$process.ProcessId
-            if ([int]$process.ParentProcessId -eq $parent -and $found.Add($id)) {
-                $queue.Enqueue($id)
-            }
-        }
-    }
-    return @($found)
-}
-
 function Write-WinPrivContainedProcessEvent {
     param([Parameter(Mandatory = $true)]$Result)
 
@@ -1728,6 +1655,10 @@ function Invoke-WinPrivContainedProcess {
         [switch]$CreateNoWindow
     )
 
+    if (-not (Test-WinPrivWindows)) {
+        throw 'The WinPriv test harness process helpers require Windows.'
+    }
+
     $startedUtc = [DateTime]::UtcNow
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     $stdout = ''
@@ -1738,11 +1669,6 @@ function Invoke-WinPrivContainedProcess {
     $processId = $null
     $childIds = @()
     $jobAssigned = $false
-    $jobError = $null
-    $job = [IntPtr]::Zero
-    $process = $null
-    $stdoutTask = $null
-    $stderrTask = $null
 
     if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
         $WorkingDirectory = if ($null -ne $Sandbox) { $Sandbox.Working } else { [Environment]::CurrentDirectory }
@@ -1756,220 +1682,74 @@ function Invoke-WinPrivContainedProcess {
     # For WinPrivCmd, CREATE_NEW_CONSOLE guarantees that GetConsoleWindow() is
     # non-null even though stdout/stderr are redirected; this prevents the
     # launcher's generic output helper from falling back to a modal message box.
-    if (Test-WinPrivWindows) {
-        $stem = '{0:yyyyMMddTHHmmssfff}-{1}' -f $startedUtc, ([Guid]::NewGuid().ToString('N'))
-        $deleteLogsAfterRead = $false
-        if ($null -ne $Sandbox) {
-            $stdoutPath = Join-Path $Sandbox.Logs ($stem + '.stdout.log')
-            $stderrPath = Join-Path $Sandbox.Logs ($stem + '.stderr.log')
-        }
-        else {
-            $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) ($stem + '.stdout.log')
-            $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ($stem + '.stderr.log')
-            $deleteLogsAfterRead = $true
-        }
-        $mergedEnvironment = @{}
-        foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
-            $mergedEnvironment[[string]$entry.Key] = [string]$entry.Value
-        }
-        if ($null -ne $Sandbox) {
-            $mergedEnvironment['TEMP'] = $Sandbox.Temp
-            $mergedEnvironment['TMP'] = $Sandbox.Temp
-            $mergedEnvironment['TMPDIR'] = $Sandbox.Temp
-            $mergedEnvironment['WINPRIV_TEST_SANDBOX'] = $Sandbox.Root
-        }
-        if ($null -ne $Environment) {
-            foreach ($key in $Environment.Keys) {
-                if ($null -eq $Environment[$key]) { [void]$mergedEnvironment.Remove([string]$key) }
-                else { $mergedEnvironment[[string]$key] = [string]$Environment[$key] }
-            }
-        }
-        $environmentEntries = @($mergedEnvironment.GetEnumerator() | Sort-Object Key | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value })
-        $renderedCommandLine = (ConvertTo-WinPrivCommandLineArgument $FilePath) + $(if ($ArgumentList.Count) { ' ' + (Join-WinPrivCommandLine $ArgumentList) } else { '' })
-        try {
-            Initialize-WinPrivNativeMethods
-            $nativeResult = [WinPriv.TestHarness.NativeMethods]::RunContainedProcess(
-                $FilePath,
-                $renderedCommandLine,
-                $WorkingDirectory,
-                [string[]]$environmentEntries,
-                $stdoutPath,
-                $stderrPath,
-                $TimeoutSeconds * 1000,
-                [bool]$CreateHiddenConsole,
-                [bool]$CreateNoWindow)
-            $processId = $nativeResult.ProcessId
-            $exitCode = $nativeResult.ExitCode
-            $timedOut = $nativeResult.TimedOut
-            $jobAssigned = $nativeResult.JobAssigned
-            $childIds = @($nativeResult.ProcessIds | Where-Object { $_ -ne $processId })
-        }
-        catch {
-            $startError = $_.Exception.Message
-        }
-        finally {
-            $stopwatch.Stop()
-            if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
-                try { $stdout = [IO.File]::ReadAllText($stdoutPath) } catch { $stderr += "Unable to read stdout log: $($_.Exception.Message)" }
-            }
-            if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
-                try { $stderr += [IO.File]::ReadAllText($stderrPath) } catch { $stderr += "Unable to read stderr log: $($_.Exception.Message)" }
-            }
-            if ($deleteLogsAfterRead) {
-                Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
-                $stdoutPath = $null
-                $stderrPath = $null
-            }
-        }
-        $result = [pscustomobject]@{
-            FilePath             = $FilePath
-            ArgumentList         = @($ArgumentList)
-            CommandLine          = $renderedCommandLine
-            WorkingDirectory     = $WorkingDirectory
-            ProcessId            = $processId
-            ChildProcessIds      = @($childIds)
-            ExitCode             = $exitCode
-            TimedOut             = $timedOut
-            StartError           = $startError
-            StdOut               = $stdout
-            StdErr               = $stderr
-            StdOutPath           = $stdoutPath
-            StdErrPath           = $stderrPath
-            StartedUtc           = $startedUtc.ToString('o')
-            Duration             = $stopwatch.Elapsed
-            DurationMilliseconds = [Math]::Round($stopwatch.Elapsed.TotalMilliseconds, 3)
-            JobAssigned          = $jobAssigned
-            JobAssignmentError   = $jobError
-            ContainmentMode      = 'JobObject'
-            Succeeded            = -not $timedOut -and $null -eq $startError -and $exitCode -eq 0
-        }
-        Write-WinPrivContainedProcessEvent -Result $result
-        return $result
+    $stem = '{0:yyyyMMddTHHmmssfff}-{1}' -f $startedUtc, ([Guid]::NewGuid().ToString('N'))
+    $deleteLogsAfterRead = $false
+    if ($null -ne $Sandbox) {
+        $stdoutPath = Join-Path $Sandbox.Logs ($stem + '.stdout.log')
+        $stderrPath = Join-Path $Sandbox.Logs ($stem + '.stderr.log')
     }
-
+    else {
+        $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) ($stem + '.stdout.log')
+        $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ($stem + '.stderr.log')
+        $deleteLogsAfterRead = $true
+    }
+    $mergedEnvironment = @{}
+    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        $mergedEnvironment[[string]$entry.Key] = [string]$entry.Value
+    }
+    if ($null -ne $Sandbox) {
+        $mergedEnvironment['TEMP'] = $Sandbox.Temp
+        $mergedEnvironment['TMP'] = $Sandbox.Temp
+        $mergedEnvironment['TMPDIR'] = $Sandbox.Temp
+        $mergedEnvironment['WINPRIV_TEST_SANDBOX'] = $Sandbox.Root
+    }
+    if ($null -ne $Environment) {
+        foreach ($key in $Environment.Keys) {
+            if ($null -eq $Environment[$key]) { [void]$mergedEnvironment.Remove([string]$key) }
+            else { $mergedEnvironment[[string]$key] = [string]$Environment[$key] }
+        }
+    }
+    $environmentEntries = @($mergedEnvironment.GetEnumerator() | Sort-Object Key | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value })
+    $renderedCommandLine = (ConvertTo-WinPrivCommandLineArgument $FilePath) + $(if ($ArgumentList.Count) { ' ' + (Join-WinPrivCommandLine $ArgumentList) } else { '' })
     try {
-        if ($CreateHiddenConsole) {
-            Initialize-WinPrivNativeMethods
-            [void][WinPriv.TestHarness.NativeMethods]::EnsureHiddenConsole()
-        }
-
-        $startInfo = New-Object Diagnostics.ProcessStartInfo
-        $startInfo.FileName = $FilePath
-        $startInfo.Arguments = Join-WinPrivCommandLine -ArgumentList $ArgumentList
-        $startInfo.WorkingDirectory = $WorkingDirectory
-        $startInfo.UseShellExecute = $false
-        $startInfo.RedirectStandardOutput = $true
-        $startInfo.RedirectStandardError = $true
-        $startInfo.CreateNoWindow = [bool]$CreateNoWindow
-        $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-
-        if ($null -ne $Sandbox) {
-            $startInfo.EnvironmentVariables['TEMP'] = $Sandbox.Temp
-            $startInfo.EnvironmentVariables['TMP'] = $Sandbox.Temp
-            $startInfo.EnvironmentVariables['TMPDIR'] = $Sandbox.Temp
-            $startInfo.EnvironmentVariables['WINPRIV_TEST_SANDBOX'] = $Sandbox.Root
-        }
-        if ($null -ne $Environment) {
-            foreach ($key in $Environment.Keys) {
-                if ($null -eq $Environment[$key]) {
-                    [void]$startInfo.EnvironmentVariables.Remove([string]$key)
-                }
-                else {
-                    $startInfo.EnvironmentVariables[[string]$key] = [string]$Environment[$key]
-                }
-            }
-        }
-
-        $process = New-Object Diagnostics.Process
-        $process.StartInfo = $startInfo
-        if (-not $process.Start()) {
-            throw "Process.Start returned false for '$FilePath'."
-        }
-        $processId = $process.Id
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-
-        try {
-            Initialize-WinPrivNativeMethods
-            $job = [WinPriv.TestHarness.NativeMethods]::CreateKillOnCloseJob()
-            $nativeError = 0
-            $jobAssigned = [WinPriv.TestHarness.NativeMethods]::TryAssignProcess($job, $process.Handle, [ref]$nativeError)
-            if (-not $jobAssigned) { $jobError = "AssignProcessToJobObject failed with Win32 error $nativeError." }
-        }
-        catch {
-            $jobError = $_.Exception.Message
-        }
-
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            $timedOut = $true
-            $childIds = @(Get-WinPrivDescendantProcessIds -RootProcessId $processId)
-            if ($jobAssigned -and $job -ne [IntPtr]::Zero) {
-                $nativeError = 0
-                [void][WinPriv.TestHarness.NativeMethods]::TryTerminateJob($job, 0xDEAD, [ref]$nativeError)
-            }
-            else {
-                foreach ($id in ($childIds | Sort-Object -Descending)) {
-                    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-                }
-                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-            }
-            [void]$process.WaitForExit(5000)
-        }
-        else {
-            $process.WaitForExit()
-        }
-
-        if ($jobAssigned -and $job -ne [IntPtr]::Zero) {
-            $jobIds = @([WinPriv.TestHarness.NativeMethods]::GetJobProcessIds($job))
-            $childIds = @($jobIds | Where-Object { $_ -ne $processId })
-        }
-        elseif ($childIds.Count -eq 0) {
-            $childIds = @(Get-WinPrivDescendantProcessIds -RootProcessId $processId)
-        }
-
-        if ($job -ne [IntPtr]::Zero) {
-            [void][WinPriv.TestHarness.NativeMethods]::CloseHandle($job)
-            $job = [IntPtr]::Zero
-        }
-        if (-not $jobAssigned) {
-            foreach ($id in ($childIds | Sort-Object -Descending)) {
-                Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-            }
-        }
-
-        if ($null -ne $stdoutTask -and $stdoutTask.Wait(5000)) { $stdout = $stdoutTask.Result }
-        if ($null -ne $stderrTask -and $stderrTask.Wait(5000)) { $stderr = $stderrTask.Result }
-        if ($process.HasExited) { $exitCode = $process.ExitCode }
+        Initialize-WinPrivNativeMethods
+        $nativeResult = [WinPriv.TestHarness.NativeMethods]::RunContainedProcess(
+            $FilePath,
+            $renderedCommandLine,
+            $WorkingDirectory,
+            [string[]]$environmentEntries,
+            $stdoutPath,
+            $stderrPath,
+            $TimeoutSeconds * 1000,
+            [bool]$CreateHiddenConsole,
+            [bool]$CreateNoWindow)
+        $processId = $nativeResult.ProcessId
+        $exitCode = $nativeResult.ExitCode
+        $timedOut = $nativeResult.TimedOut
+        $jobAssigned = $nativeResult.JobAssigned
+        $childIds = @($nativeResult.ProcessIds | Where-Object { $_ -ne $processId })
     }
     catch {
         $startError = $_.Exception.Message
-        if ($null -ne $process -and -not $process.HasExited) {
-            try { $process.Kill() } catch { }
-        }
     }
     finally {
-        if ($job -ne [IntPtr]::Zero) {
-            try { [void][WinPriv.TestHarness.NativeMethods]::CloseHandle($job) } catch { }
-        }
-        if ($null -ne $process) { $process.Dispose() }
         $stopwatch.Stop()
+        if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+            try { $stdout = [IO.File]::ReadAllText($stdoutPath) } catch { $stderr += "Unable to read stdout log: $($_.Exception.Message)" }
+        }
+        if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+            try { $stderr += [IO.File]::ReadAllText($stderrPath) } catch { $stderr += "Unable to read stderr log: $($_.Exception.Message)" }
+        }
+        if ($deleteLogsAfterRead) {
+            Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+            $stdoutPath = $null
+            $stderrPath = $null
+        }
     }
-
-    $stdoutPath = $null
-    $stderrPath = $null
-    if ($null -ne $Sandbox) {
-        $stem = '{0:yyyyMMddTHHmmssfff}-{1}' -f $startedUtc, ([Guid]::NewGuid().ToString('N'))
-        $stdoutPath = Join-Path $Sandbox.Logs ($stem + '.stdout.log')
-        $stderrPath = Join-Path $Sandbox.Logs ($stem + '.stderr.log')
-        $encoding = New-Object Text.UTF8Encoding($false)
-        [IO.File]::WriteAllText($stdoutPath, [string]$stdout, $encoding)
-        [IO.File]::WriteAllText($stderrPath, [string]$stderr, $encoding)
-    }
-
     $result = [pscustomobject]@{
         FilePath             = $FilePath
         ArgumentList         = @($ArgumentList)
-        CommandLine          = (ConvertTo-WinPrivCommandLineArgument $FilePath) + $(if ($ArgumentList.Count) { ' ' + (Join-WinPrivCommandLine $ArgumentList) } else { '' })
+        CommandLine          = $renderedCommandLine
         WorkingDirectory     = $WorkingDirectory
         ProcessId            = $processId
         ChildProcessIds      = @($childIds)
@@ -1984,8 +1764,8 @@ function Invoke-WinPrivContainedProcess {
         Duration             = $stopwatch.Elapsed
         DurationMilliseconds = [Math]::Round($stopwatch.Elapsed.TotalMilliseconds, 3)
         JobAssigned          = $jobAssigned
-        JobAssignmentError   = $jobError
-        ContainmentMode      = if ($jobAssigned) { 'JobObject' } else { 'ProcessTreeFallback' }
+        JobAssignmentError   = $null
+        ContainmentMode      = 'JobObject'
         Succeeded            = -not $timedOut -and $null -eq $startError -and $exitCode -eq 0
     }
     Write-WinPrivContainedProcessEvent -Result $result
@@ -2343,94 +2123,6 @@ function Invoke-WinPrivStaleRunReconciliation {
             }
             $entries = @($entries | Where-Object {
                 $_.Kind -notin @('Process', 'Registry', 'Acl', 'LsaRight', 'LocalPrincipalIntent', 'LocalPrincipal')
-            })
-        }
-        foreach ($entry in @($entries | Where-Object Kind -eq 'Process')) {
-            $metadata = $entry.Metadata
-            $processId = [int](Get-WinPrivObjectValue -Object $metadata -Name 'ProcessId')
-            if ($processId -le 0) { [void][int]::TryParse([string]$entry.Identifier, [ref]$processId) }
-            $expectedPath = [string](Get-WinPrivObjectValue -Object $metadata -Name 'Path')
-            $expectedStart = [string](Get-WinPrivObjectValue -Object $metadata -Name 'StartTimeUtc')
-            $processExists = $null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)
-            if (-not $processExists) {
-                [void]$actions.Add([pscustomobject]@{ Kind = 'Process'; Identifier = $processId; Status = 'AlreadyAbsent' })
-            }
-            elseif ($processId -gt 0 -and -not [string]::IsNullOrWhiteSpace($expectedPath) -and
-                -not [string]::IsNullOrWhiteSpace($expectedStart) -and
-                (Test-WinPrivProcessIdentity -ProcessId $processId -ExpectedPath $expectedPath -ExpectedStartUtc $expectedStart)) {
-                try {
-                    Stop-Process -Id $processId -Force -ErrorAction Stop
-                    [void]$actions.Add([pscustomobject]@{ Kind = 'Process'; Identifier = $processId; Status = 'Terminated' })
-                }
-                catch { [void]$manualRecovery.Add([pscustomobject]@{ Kind = 'Process'; Identifier = $processId; Reason = $_.Exception.Message }) }
-            }
-            else {
-                [void]$manualRecovery.Add([pscustomobject]@{ Kind = 'Process'; Identifier = $processId; Reason = 'PID exists but path/start-time evidence is incomplete or does not match; it was not terminated.' })
-            }
-        }
-
-        foreach ($entry in @($entries | Where-Object Kind -eq 'Acl')) {
-            $path = [string]$entry.Identifier
-            $sddl = [string](Get-WinPrivObjectValue -Object $entry.OriginalState -Name 'Sddl')
-            if ([string]::IsNullOrWhiteSpace($sddl) -and $entry.OriginalState -is [string]) { $sddl = [string]$entry.OriginalState }
-            if (-not (Test-WinPrivPathWithin -Child $path -Parent $root) -or [string]::IsNullOrWhiteSpace($sddl)) {
-                [void]$manualRecovery.Add([pscustomobject]@{ Kind = 'Acl'; Identifier = $path; Reason = 'ACL path is outside the stale run or original SDDL is missing.' })
-                continue
-            }
-            if (-not (Test-Path -LiteralPath $path)) {
-                [void]$actions.Add([pscustomobject]@{ Kind = 'Acl'; Identifier = $path; Status = 'PathAlreadyAbsent' })
-                continue
-            }
-            try {
-                $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
-                $acl.SetSecurityDescriptorSddlForm($sddl)
-                Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop
-                [void]$actions.Add([pscustomobject]@{ Kind = 'Acl'; Identifier = $path; Status = 'Restored' })
-            }
-            catch { [void]$manualRecovery.Add([pscustomobject]@{ Kind = 'Acl'; Identifier = $path; Reason = $_.Exception.Message }) }
-        }
-
-        $hasLsaEntries = @($entries | Where-Object Kind -eq 'LsaRight').Count -gt 0
-        foreach ($entry in @($entries | Where-Object Kind -eq 'LocalPrincipal')) {
-            $name = [string]$entry.Identifier
-            if ($hasLsaEntries) {
-                [void]$actions.Add([pscustomobject]@{ Kind = 'LocalPrincipal'; Identifier = $name; Status = 'RetainedForLsaRecovery' })
-                continue
-            }
-            $sid = [string](Get-WinPrivObjectValue -Object $entry.Metadata -Name 'Sid')
-            $type = [string](Get-WinPrivObjectValue -Object $entry.Metadata -Name 'Type')
-            $description = [string](Get-WinPrivObjectValue -Object $entry.Metadata -Name 'Description')
-            if ($type -notin @('user', 'group') -or [string]::IsNullOrWhiteSpace($name) -or
-                [string]::IsNullOrWhiteSpace($sid) -or [string]::IsNullOrWhiteSpace($description)) {
-                [void]$manualRecovery.Add([pscustomobject]@{ Kind = 'LocalPrincipal'; Identifier = $name; Reason = 'Name, SID, type, and description marker are all required.' })
-                continue
-            }
-            try {
-                $principal = [ADSI]"WinNT://$env:COMPUTERNAME/$name,$type"
-                $sidBytes = [byte[]]$principal.Properties['objectSid'].Value
-                $actualSid = (New-Object Security.Principal.SecurityIdentifier($sidBytes, 0)).Value
-                $actualDescription = [string]$principal.Properties['Description'].Value
-                if ($actualSid -ne $sid -or $actualDescription -ne $description) {
-                    throw 'The current principal SID or description marker does not match the journal.'
-                }
-                $computer = [ADSI]"WinNT://$env:COMPUTERNAME,computer"
-                [void]$computer.Delete($type, $name)
-                [void]$actions.Add([pscustomobject]@{ Kind = 'LocalPrincipal'; Identifier = $name; Status = 'Removed'; Sid = $sid })
-            }
-            catch {
-                $notFound = $_.Exception.Message -match 'not found|unknown user|no such'
-                if ($notFound) { [void]$actions.Add([pscustomobject]@{ Kind = 'LocalPrincipal'; Identifier = $name; Status = 'AlreadyAbsent'; Sid = $sid }) }
-                else { [void]$manualRecovery.Add([pscustomobject]@{ Kind = 'LocalPrincipal'; Identifier = $name; Reason = $_.Exception.Message; Sid = $sid }) }
-            }
-        }
-
-        foreach ($entry in @($entries | Where-Object Kind -eq 'LsaRight')) {
-            [void]$manualRecovery.Add([pscustomobject]@{
-                Kind = 'LsaRight'
-                Identifier = [string]$entry.Identifier
-                Reason = 'Exact LSA policy restoration requires manual recovery; the original state is retained in this journal entry.'
-                OriginalState = $entry.OriginalState
-                StaleRunRoot = $root
             })
         }
         foreach ($entry in @($entries | Where-Object Kind -eq 'Path')) {

@@ -469,6 +469,30 @@ Describe 'WinPriv process mitigations (<Architecture>)' -Tag 'Safe' -ForEach (Ge
         }
     }
 
+    It 'starts Microsoft-signed-only and AppContainer descendants without hooks' {
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            Skip-WinPrivCapability -Id 'mitigation.unhookable-descendants' -Architecture $Architecture `
+                -Reason 'The native hook-loading fixture is absent from the supplied binary root.'
+            return
+        }
+
+        Invoke-WinPrivCapability -Id 'mitigation.unhookable-descendants' -Architecture $Architecture -Body {
+            $child = Join-Path $env:SystemRoot 'System32\hostname.exe'
+            foreach ($mode in @('microsoft-signed', 'app-container')) {
+                $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 25 `
+                    -Arguments @($fixture, '--launch-mitigation', $mode, $child)
+                Assert-WinPrivInvocationSucceeded $result
+                $payload = @($result.StdOut -split '\r?\n' | Where-Object {
+                    $_.StartsWith('{"schemaVersion":1,', [StringComparison]::Ordinal)
+                } | ConvertFrom-Json -ErrorAction Stop)
+                $payload | Should -HaveCount 1 -Because $mode
+                $payload[0].mitigation | Should -Be $mode
+                $payload[0].enforced | Should -BeTrue -Because $mode
+                @{ Mode = $mode; ExitCode = $result.ExitCode }
+            }
+        }
+    }
+
     It 'preserves the dynamic-code allocation error and leaves its target unchanged' {
         if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
             Skip-WinPrivCapability -Id 'mitigation.dynamic-code-allocation' -Architecture $Architecture `
@@ -567,8 +591,8 @@ Describe 'WinPriv combined hook installation (<Architecture>)' -Tag 'Safe' -ForE
     }
 }
 
-Describe 'WinPriv memory image exception handling (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
-    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'memory-exceptions' }
+Describe 'WinPriv hook exception handling (<Architecture>)' -Tag 'Safe' -ForEach (Get-WinPrivArchitectureCases) {
+    BeforeAll { $sandbox = New-WinPrivSandbox -Architecture $Architecture -Purpose 'hook-exceptions' }
     AfterAll { Remove-WinPrivSandbox -Sandbox $sandbox }
 
     It 'recovers from repeated hook exceptions on concurrent threads' {
@@ -576,7 +600,7 @@ Describe 'WinPriv memory image exception handling (<Architecture>)' -Tag 'Safe' 
         $fixture | Should -Exist
         foreach ($pattern in @('[unterminated', '(unclosed', '[z-a]', '*invalid')) {
             $result = Invoke-WinPriv -Architecture $Architecture -Sandbox $sandbox -TimeoutSeconds 30 `
-                -Arguments @('/SqlConnectSearchReplace', $pattern, 'replacement', $fixture, '--memory-exceptions')
+                -Arguments @('/SqlConnectSearchReplace', $pattern, 'replacement', $fixture, '--hook-exceptions')
             Assert-WinPrivInvocationSucceeded $result
             ($result.StdOut | ConvertFrom-Json).completed | Should -Be 100
         }

@@ -100,45 +100,6 @@ function Get-WinPrivPackageTreeHash {
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
 }
 
-function Expand-WinPrivVerifiedPackage {
-    param(
-        [Parameter(Mandatory = $true)][string]$PackagePath,
-        [Parameter(Mandatory = $true)][string]$Destination
-    )
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $destinationPath = [IO.Path]::GetFullPath($Destination)
-    [void](New-Item -ItemType Directory -Path $destinationPath -Force)
-    $prefix = $destinationPath.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-    $archive = [IO.Compression.ZipFile]::OpenRead($PackagePath)
-    try {
-        foreach ($entry in $archive.Entries) {
-            $entryPath = $entry.FullName -replace '/', [IO.Path]::DirectorySeparatorChar
-            $target = [IO.Path]::GetFullPath((Join-Path $destinationPath $entryPath))
-            if (-not $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Package entry '$($entry.FullName)' escapes its extraction root."
-            }
-            if ([string]::IsNullOrEmpty($entry.Name)) {
-                [void](New-Item -ItemType Directory -Path $target -Force)
-                continue
-            }
-            $targetDirectory = Split-Path -Parent $target
-            if (-not (Test-Path -LiteralPath $targetDirectory -PathType Container)) {
-                [void](New-Item -ItemType Directory -Path $targetDirectory -Force)
-            }
-            $inputStream = $entry.Open()
-            $outputStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-            try { $inputStream.CopyTo($outputStream) }
-            finally {
-                $outputStream.Dispose()
-                $inputStream.Dispose()
-            }
-        }
-    }
-    finally {
-        $archive.Dispose()
-    }
-}
-
 function Test-WinPrivPesterExtraction {
     param(
         [Parameter(Mandatory = $true)][string]$ModuleDirectory,
@@ -245,7 +206,7 @@ function Import-WinPrivPinnedPester {
             }
             $temporaryDirectory = "$moduleDirectory.$([Guid]::NewGuid().ToString('N')).extracting"
             try {
-                Expand-WinPrivVerifiedPackage -PackagePath $packagePath -Destination $temporaryDirectory
+                [IO.Compression.ZipFile]::ExtractToDirectory($packagePath, $temporaryDirectory)
                 $temporaryManifest = Import-PowerShellDataFile -LiteralPath (Join-Path $temporaryDirectory 'Pester.psd1')
                 if ([version]$temporaryManifest.ModuleVersion -ne [version]$requirement.Version -or
                     [guid]$temporaryManifest.GUID -ne [guid]$requirement.Guid -or

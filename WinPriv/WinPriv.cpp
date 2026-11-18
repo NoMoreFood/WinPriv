@@ -25,7 +25,7 @@
 
 #include "WinPrivShared.h"
 #include "WinPriv.h"
-#include "../WinPrivLibrary/WinPrivMemoryLoader.h"
+#include "../WinPrivLibrary/WinPrivDllLoader.h"
 
 extern int LaunchNewLogon(int iArgc, wchar_t* aArgv[]);
 extern int LaunchElevated(int iArgc, wchar_t* aArgv[]);
@@ -36,12 +36,12 @@ extern std::wstring GetWinPrivHelp();
 // Embedded injection libraries in bundle order.
 constexpr std::array<DWORD, 3> vLibraryResources{ IDR_RT_RCDATA_X86, IDR_RT_RCDATA_X64, IDR_RT_RCDATA_ARM64 };
 
-winpriv::memory::LibraryImage GetLibraryResource(const DWORD iResourceId)
+winpriv::loader::LibraryImage GetLibraryResource(const DWORD iResourceId)
 {
 	const HRSRC hResource = FindResource(nullptr, MAKEINTRESOURCE(iResourceId), L"RT_RCDATA");
 	const HGLOBAL hLoaded = hResource == nullptr ? nullptr : LoadResource(nullptr, hResource);
-	return hLoaded == nullptr ? winpriv::memory::LibraryImage{} :
-		winpriv::memory::LibraryImage{ LockResource(hLoaded), SizeofResource(nullptr, hResource) };
+	return hLoaded == nullptr ? winpriv::loader::LibraryImage{} :
+		winpriv::loader::LibraryImage{ LockResource(hLoaded), SizeofResource(nullptr, hResource) };
 }
 
 int RunProgram(int iArgc, wchar_t* aArgv[])
@@ -260,7 +260,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		else if (IsSwitch(L"/WithPrivs"))
 		{
 			if (!HasArgs(1)) return __LINE__;
-			for (const auto sPriv : std::wstring_view(aArgv[++iArg]) | std::views::split(L','))
+			for (const auto& sPriv : std::wstring_view(aArgv[++iArg]) | std::views::split(L','))
 				vPrivsToEnable.emplace_back(sPriv.begin(), sPriv.end());
 		}
 
@@ -285,9 +285,9 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			{
 				std::vector<BYTE> vBytes;
 				const std::wstring sPath = std::filesystem::path(sExecutable)
-					.replace_filename(winpriv::memory::libraryNames[iIndex]).wstring();
+					.replace_filename(winpriv::loader::libraryNames[iIndex]).wstring();
 				SmartPointer<HANDLE> hFile(CloseHandle,
-					winpriv::memory::DecompressLibrary(GetLibraryResource(vLibraryResources[iIndex]), vBytes) ?
+					winpriv::loader::DecompressLibrary(GetLibraryResource(vLibraryResources[iIndex]), vBytes) ?
 					CreateFile(sPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr) :
 					INVALID_HANDLE_VALUE);
 				DWORD iWritten = 0;
@@ -677,14 +677,12 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// kill any processes requested
 	KillProcesses(vProcessesToKill);
 
-	// Pass the launcher directory and embedded fallback images to descendant processes.
+	// Load the matching DLL and retain its bundle for descendant processes.
 	{
-		std::array<winpriv::memory::LibraryImage, 3> vResources{};
+		std::array<winpriv::loader::LibraryImage, 3> vResources{};
 		std::ranges::transform(vLibraryResources, vResources.begin(), GetLibraryResource);
 		const auto sDirectory = std::filesystem::path(sExecutable).parent_path().native();
-		std::vector<BYTE> vBundle;
-		if (!winpriv::memory::CreateBundle(vResources, sDirectory, vBundle) ||
-			!winpriv::memory::LoadBundle(reinterpret_cast<const winpriv::memory::LibraryBundle*>(vBundle.data())))
+		if (!winpriv::loader::LoadLibraries(vResources, sDirectory))
 		{
 			PrintMessage(L"ERROR: Could not load injection library (error %lu).\n", GetLastError());
 			return __LINE__;
@@ -744,7 +742,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 int wmain(const int iArgc, wchar_t* aArgv[])
 {
 	// Preserve Unicode diagnostics in both the console and redirected UTF-8 output.
-	_setmode(_fileno(stdout), _O_U8TEXT);
+	(void)_setmode(_fileno(stdout), _O_U8TEXT);
 	return RunProgram(iArgc, aArgv);
 }
 #else

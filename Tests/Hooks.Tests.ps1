@@ -1072,7 +1072,6 @@ Describe 'WinPriv cross-architecture descendant propagation (<Chain>, <ApiName>)
                     $expectedLibrary = Join-Path $sandbox.Launchers.$LauncherArchitecture.Root `
                         "WinPriv-$ExpectedArchitecture.dll"
                     ($modulePaths[0] -replace '^\\\\\?\\', '') | Should -Be $expectedLibrary
-                    @($State.winPrivMemoryImages) | Should -HaveCount 0
 
                     return [ordered]@{
                         Role = $Role

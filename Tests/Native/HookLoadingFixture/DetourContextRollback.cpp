@@ -29,7 +29,8 @@ DWORD TestDetourArm64Branches()
     instructions[8] = 0x52800540; // mov w0, #42
     instructions[9] = 0xd65f03c0; // ret
 
-    for (const LONG distance : { -0x8100000L, -0x200000L, -0x10000L, 0x10000L, 0x200000L, 0x8100000L })
+    for (const LONG distance : { -0x8100000L, -0x200000L, -0x10000L, -0x4000L,
+        0x4000L, 0x10000L, 0x200000L, 0x8100000L })
     {
         auto destination = source + distance;
         if (!VirtualAlloc(destination, 4096, MEM_COMMIT, PAGE_EXECUTE_READWRITE)) return GetLastError();
@@ -48,7 +49,90 @@ DWORD TestDetourArm64Branches()
                 !FlushInstructionCache(GetCurrentProcess(), destination, 32)) return GetLastError();
             if (reinterpret_cast<DWORD(*)()>(destination)() != 42) return ERROR_INVALID_DATA;
         }
+
+        // Branches that test x17 must use its incoming value, including when the far jump also needs x17.
+        for (const DWORD instruction : { 0xb4000111UL, 0xb5000111UL, 0x34000111UL,
+            0x35000111UL, 0x36000111UL, 0x37000111UL })
+        {
+            instructions[0] = instruction;
+            *reinterpret_cast<DWORD*>(destination) = 0xaa0003f1; // mov x17, x0
+            LONG extra = 0;
+            if (DetourCopyInstruction(destination + 4, source, extra) != source + 4 || extra < 0 || extra > 20)
+                return ERROR_INVALID_DATA;
+            auto continuation = reinterpret_cast<DWORD*>(destination + 8 + extra);
+            continuation[0] = 0xaa1103e0; // mov x0, x17
+            continuation[1] = 0xd65f03c0; // ret
+            if (!FlushInstructionCache(GetCurrentProcess(), source, 40) ||
+                !FlushInstructionCache(GetCurrentProcess(), destination, 40)) return GetLastError();
+            for (const DWORD value : { 0UL, 1UL })
+            {
+                const bool branch = (instruction & 0x01000000) != 0 ? value != 0 : value == 0;
+                if (reinterpret_cast<DWORD(*)(DWORD)>(destination)(value) != (branch ? 42 : value))
+                    return ERROR_INVALID_DATA;
+            }
+        }
+
+        // Relocated integer loads must read mutable memory and leave unrelated registers intact.
+        auto literal = reinterpret_cast<UINT64*>(source + 64);
+        for (DWORD size = 0; size < 3; ++size)
+        {
+            for (const DWORD reg : { 0UL, 31UL })
+            {
+                instructions[0] = 0x18000200 | (size << 30) | reg;
+                *literal = 1;
+                *reinterpret_cast<DWORD*>(destination) = 0xaa0003f1; // mov x17, x0
+                LONG extra = 0;
+                if (DetourCopyInstruction(destination + 4, source, extra) != source + 4) return ERROR_INVALID_DATA;
+                const auto delta = source + 64 - (destination + 4);
+                if (reg == 31 && (delta < -(1 << 20) || delta >= (1 << 20)))
+                {
+                    if (extra != -1) return ERROR_INVALID_DATA;
+                    continue;
+                }
+                if (extra < 0 || extra > 16) return ERROR_INVALID_DATA;
+                auto continuation = reinterpret_cast<DWORD*>(destination + 8 + extra);
+                continuation[0] = 0xf9000031; // str x17, [x1]
+                continuation[1] = 0xd65f03c0; // ret
+                if (!FlushInstructionCache(GetCurrentProcess(), destination, 32)) return GetLastError();
+                for (const UINT64 value : { 0x1122334480000000ULL, 0xfedcba9889abcdefULL })
+                {
+                    *literal = value;
+                    UINT64 scratch = 0;
+                    const UINT64 expected = reg == 31 ? 42 : size == 0 ? static_cast<DWORD>(value) :
+                        size == 1 ? value : static_cast<UINT64>(static_cast<LONG>(value));
+                    if (reinterpret_cast<UINT64(*)(UINT64, UINT64*)>(destination)(42, &scratch) != expected ||
+                        scratch != 42) return ERROR_INVALID_DATA;
+                }
+            }
+        }
     }
+
+    // The surrounding reservation forces far trampolines; a rejected zero-register load must abort the batch.
+    const std::array<DWORD, 4> rejectedCode{ 0x5800021f, 0xd503201f, 0xd503201f, 0xd65f03c0 };
+    const std::array<DWORD, 4> validCode{ 0x52800540, 0xd503201f, 0xd503201f, 0xd65f03c0 };
+    std::ranges::copy(rejectedCode, instructions);
+    std::ranges::copy(validCode, instructions + 32);
+    std::ranges::copy(validCode, instructions + 64);
+    DWORD protection = 0;
+    if (!VirtualProtect(source, 4096, PAGE_EXECUTE_READ, &protection) ||
+        !FlushInstructionCache(GetCurrentProcess(), source, 272)) return GetLastError();
+    using Function = DWORD(*)();
+    const auto original = reinterpret_cast<Function>(source + 128);
+    const auto unsupported = reinterpret_cast<Function>(source);
+    const auto replacement = reinterpret_cast<Function>(source + 256);
+    auto target = original;
+    auto rejected = unsupported;
+    winpriv::detours::transaction transaction;
+    transaction.attach(target, replacement);
+    if (transaction.error() != NO_ERROR) return transaction.error();
+    transaction.attach(rejected, replacement);
+    const LONG error = transaction.commit();
+    MEMORY_BASIC_INFORMATION memoryInfo{};
+    if (error != ERROR_INVALID_BLOCK || target != original || rejected != unsupported || target() != 42 ||
+        memcmp(source, rejectedCode.data(), sizeof(rejectedCode)) != 0 ||
+        memcmp(source + 128, validCode.data(), sizeof(validCode)) != 0 ||
+        VirtualQuery(source, &memoryInfo, sizeof(memoryInfo)) != sizeof(memoryInfo) ||
+        memoryInfo.Protect != PAGE_EXECUTE_READ) return ERROR_INVALID_DATA;
     return NO_ERROR;
 }
 #endif

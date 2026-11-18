@@ -440,7 +440,10 @@ EXTERN_C NTSTATUS WINAPI DetourNtEnumerateValueKey(_In_ HANDLE KeyHandle, _In_ U
 			KeyValueBasicInformation, tKeyInfo, iRequired, &iRequired);
 	}
 
-	if (iStatus != STATUS_SUCCESS) return iStatus;
+	// Preserve enumeration errors even for layouts implemented only by the override.
+	if (iStatus < 0) return iStatus;
+	if (iStatus != STATUS_SUCCESS) return TrueNtEnumerateValueKey(KeyHandle, Index,
+		KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
 
 	UNICODE_STRING sValue = { static_cast<USHORT>(tKeyInfo->NameLength),
 		static_cast<USHORT>(tKeyInfo->NameLength), tKeyInfo->Name };
@@ -729,20 +732,6 @@ static BOOL __stdcall DetourIsUserAnAdmin()
 
 static decltype(&CheckTokenMembership) TrueCheckTokenMembership = CheckTokenMembership;
 
-static PSID GetLocalAdministratorsGroup()
-{
-	// fetch and allocate the local admin structure (once)
-	static SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
-	static SmartPointer<PSID> LocalAdministratorsGroup(FreeSid, []() -> PSID {
-		PSID pSid = nullptr;
-		AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-			DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &pSid);
-		return pSid;
-	}());
-
-	return LocalAdministratorsGroup;
-}
-
 static BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 	_In_ PSID SidToCheck, _Out_ PBOOL IsMember)
 {
@@ -751,8 +740,7 @@ static BOOL APIENTRY DetourCheckTokenMembership(_In_opt_ HANDLE TokenHandle,
 	if (bRealResult == 0) return bRealResult;
 
 	// check if the local admin group is being requested
-	const PSID administrators = GetLocalAdministratorsGroup();
-	if (administrators != nullptr && EqualSid(SidToCheck, administrators))
+	if (IsWellKnownSid(SidToCheck, WinBuiltinAdministratorsSid))
 	{
 		// unconditionally say this user is running as an admin
 		*IsMember = TRUE;
@@ -1066,8 +1054,8 @@ static SQLRETURN SQL_API DetourSQLDriverConnectW(SQLHDBC hdbc, SQLHWND hwnd, _In
 //
 
 static std::atomic<bool> bComDetoursNeedToBeInitialized = true;
-static DWORD iComInitializationSlot = TLS_OUT_OF_INDEXES;
-static DWORD iAdoRewriteSlot = TLS_OUT_OF_INDEXES;
+static thread_local bool bComInitializing = false;
+static thread_local unsigned iAdoRewriteDepth = 0;
 static SRWLOCK tComDetourInitializationLock = SRWLOCK_INIT;
 
 using AdoConnectionOpen = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, BSTR, BSTR, BSTR, LONG);
@@ -1090,37 +1078,18 @@ static DISPID iAdoOpenDispatchId = DISPID_UNKNOWN;
 static DISPID iAdoConnectionStringDispatchId = DISPID_UNKNOWN;
 #endif
 
-static bool InitializeHookThreadState()
-{
-	// Dynamic slots support threads created after the in-memory library is initialized.
-	iComInitializationSlot = TlsAlloc();
-	iAdoRewriteSlot = TlsAlloc();
-	if (iComInitializationSlot != TLS_OUT_OF_INDEXES && iAdoRewriteSlot != TLS_OUT_OF_INDEXES) return true;
-	if (iComInitializationSlot != TLS_OUT_OF_INDEXES) TlsFree(iComInitializationSlot);
-	if (iAdoRewriteSlot != TLS_OUT_OF_INDEXES) TlsFree(iAdoRewriteSlot);
-	return false;
-}
-
-static ULONG_PTR GetHookThreadValue(DWORD slot)
-{
-	const DWORD error = GetLastError();
-	const auto value = reinterpret_cast<ULONG_PTR>(TlsGetValue(slot));
-	SetLastError(error);
-	return value;
-}
-
 class ComDetourInitializationScope final
 {
 public:
 	explicit ComDetourInitializationScope(SRWLOCK* pLock) noexcept : pLock_(pLock)
 	{
-		TlsSetValue(iComInitializationSlot, reinterpret_cast<PVOID>(1));
+		bComInitializing = true;
 	}
 
 	~ComDetourInitializationScope() noexcept
 	{
 		ReleaseSRWLockExclusive(pLock_);
-		TlsSetValue(iComInitializationSlot, nullptr);
+		bComInitializing = false;
 	}
 
 	ComDetourInitializationScope(const ComDetourInitializationScope&) = delete;
@@ -1135,11 +1104,11 @@ class AdoRewriteScope final
 public:
 	AdoRewriteScope()
 	{
-		TlsSetValue(iAdoRewriteSlot, reinterpret_cast<PVOID>(GetHookThreadValue(iAdoRewriteSlot) + 1));
+		++iAdoRewriteDepth;
 	}
 	~AdoRewriteScope()
 	{
-		TlsSetValue(iAdoRewriteSlot, reinterpret_cast<PVOID>(GetHookThreadValue(iAdoRewriteSlot) - 1));
+		--iAdoRewriteDepth;
 	}
 	AdoRewriteScope(const AdoRewriteScope&) = delete;
 	AdoRewriteScope& operator=(const AdoRewriteScope&) = delete;
@@ -1168,7 +1137,6 @@ static BSTR PrepareAdoConnectionString(BSTR sPassedString) noexcept
 	try
 	{
 		const std::wstring sPassed(sPassedString, SysStringLen(sPassedString));
-		std::wstring sRevised = sPassed;
 		if (VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 		{
 			std::wstring sCandidate;
@@ -1177,12 +1145,11 @@ static BSTR PrepareAdoConnectionString(BSTR sPassedString) noexcept
 			{
 				sReplacement = SysAllocStringLen(sCandidate.data(),
 					static_cast<UINT>(sCandidate.length()));
-				if (sReplacement != nullptr) sRevised = std::move(sCandidate);
 			}
 		}
 		if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1))
 		{
-			PrintMessage(L"SQL Connection String: %s\n", sRevised.c_str());
+			PrintMessage(L"SQL Connection String: %s\n", sReplacement != nullptr ? sReplacement : sPassedString);
 		}
 	}
 	catch (...)
@@ -1197,7 +1164,7 @@ static HRESULT STDMETHODCALLTYPE DetourAdoConnectionOpen(IUnknown* pConnection,
 	BSTR sConnectionString, BSTR sUserId, BSTR sPassword, LONG iOptions)
 {
 	if (TrueAdoConnectionOpen == nullptr) return E_UNEXPECTED;
-	if (GetHookThreadValue(iAdoRewriteSlot) != 0)
+	if (iAdoRewriteDepth != 0)
 	{
 		return TrueAdoConnectionOpen(pConnection, sConnectionString, sUserId,
 			sPassword, iOptions);
@@ -1233,16 +1200,11 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	UINT* pArgumentError)
 {
 	if (TrueAdoDispatchInvoke == nullptr) return E_UNEXPECTED;
-	if (iMember != iAdoOpenDispatchId ||
+	if (iAdoRewriteDepth != 0 || iMember != iAdoOpenDispatchId ||
 		(iFlags & DISPATCH_METHOD) == 0 || pParameters == nullptr ||
 		(pParameters->cArgs != 0 && pParameters->rgvarg == nullptr) ||
 		pParameters->cNamedArgs > pParameters->cArgs ||
 		(pParameters->cNamedArgs != 0 && pParameters->rgdispidNamedArgs == nullptr))
-	{
-		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
-			iFlags, pParameters, pResult, pException, pArgumentError);
-	}
-	if (GetHookThreadValue(iAdoRewriteSlot) != 0)
 	{
 		return TrueAdoDispatchInvoke(pDispatch, iMember, iInterface, iLocale,
 			iFlags, pParameters, pResult, pException, pArgumentError);
@@ -1262,18 +1224,12 @@ static HRESULT STDMETHODCALLTYPE DetourAdoDispatchInvoke(IDispatch* pDispatch,
 	// DISPID returned by GetIDsOfNames; otherwise use Automation's reverse-order
 	// positional layout, where Open's first argument is the final slot.
 	VARIANTARG* pConnectionString = nullptr;
-	if (pParameters->rgdispidNamedArgs != nullptr)
+	for (UINT iArgument = 0; iArgument < pParameters->cNamedArgs; iArgument++)
 	{
-		const UINT iNamedCount = pParameters->cNamedArgs < pParameters->cArgs
-			? pParameters->cNamedArgs : pParameters->cArgs;
-		for (UINT iArgument = 0; iArgument < iNamedCount; iArgument++)
+		if (pParameters->rgdispidNamedArgs[iArgument] == iAdoConnectionStringDispatchId)
 		{
-			if (pParameters->rgdispidNamedArgs[iArgument] ==
-				iAdoConnectionStringDispatchId)
-			{
-				pConnectionString = &pParameters->rgvarg[iArgument];
-				break;
-			}
+			pConnectionString = &pParameters->rgvarg[iArgument];
+			break;
 		}
 	}
 	if (pConnectionString == nullptr && pParameters->cArgs > pParameters->cNamedArgs)
@@ -1487,7 +1443,7 @@ static void AttachAdoOpenDetour()
 
 static void InitializeComDetoursForCurrentThread()
 {
-	if (GetHookThreadValue(iComInitializationSlot) != 0) return;
+	if (bComInitializing) return;
 	if (!TryAcquireSRWLockExclusive(&tComDetourInitializationLock)) return;
 	const ComDetourInitializationScope tInitializationScope(
 		&tComDetourInitializationLock);
@@ -1535,7 +1491,10 @@ EXTERN_C HRESULT STDAPICALLTYPE DetourCoInitialize(_In_opt_ LPVOID pvReserved)
 	return iResult;
 }
 
-static decltype(&CoCreateInstance) TrueCoCreateInstance = CoCreateInstance;
+_Success_(return >= 0) typedef HRESULT STDAPICALLTYPE CoCreateInstanceFunction(
+	_In_ REFCLSID rclsid, _In_opt_ LPUNKNOWN pUnkOuter, _In_ DWORD dwClsContext,
+	_In_ REFIID riid, _COM_Outptr_ LPVOID* ppv);
+static CoCreateInstanceFunction* TrueCoCreateInstance = CoCreateInstance;
 
 static HRESULT STDAPICALLTYPE DetourCoCreateInstance(_In_ REFCLSID rclsid,
 	_In_opt_ LPUNKNOWN pUnkOuter, _In_ DWORD dwClsContext, _In_ REFIID riid,
@@ -1636,7 +1595,6 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 
 	if (VariableIsSet(WINPRIV_EV_ADMIN_IMPERSONATE, 1))
 	{
-		(void)GetLocalAdministratorsGroup();
 		transaction.attach(TrueIsUserAnAdmin, DetourIsUserAnAdmin, L"shell32.dll", "IsUserAnAdmin");
 		transaction.attach(TrueCheckTokenMembership, DetourCheckTokenMembership);
 	}
@@ -1660,7 +1618,6 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 
 	if (VariableIsSet(WINPRIV_EV_SQL_CONNECT_SHOW, 1) || VariableNotEmpty(WINPRIV_EV_SQL_CONNECT_SEARCH))
 	{
-		if (!InitializeHookThreadState()) return false;
 		transaction.attach(TrueSQLDriverConnectW, DetourSQLDriverConnectW, L"odbc32.dll", "SQLDriverConnectW");
 		transaction.attach(TrueCoInitializeEx, DetourCoInitializeEx, L"ole32.dll", "CoInitializeEx");
 		transaction.attach(TrueCoInitialize, DetourCoInitialize, L"ole32.dll", "CoInitialize");
@@ -1672,7 +1629,7 @@ bool AttachExtraHooks(winpriv::detours::transaction& transaction)
 	{
 		// enable the comma-delimited privileges inherited from the launcher
 		std::vector<std::wstring> vPrivs;
-		for (const auto sPriv : std::wstring_view(_wgetenv(WINPRIV_EV_PRIVLIST)) | std::views::split(L','))
+		for (const auto& sPriv : std::wstring_view(_wgetenv(WINPRIV_EV_PRIVLIST)) | std::views::split(L','))
 			vPrivs.emplace_back(sPriv.begin(), sPriv.end());
 		if (!EnablePrivs(vPrivs).empty()) PrintMessage(L"%s", L"ERROR: Could not enable privileges in subprocess.\n");
 	}

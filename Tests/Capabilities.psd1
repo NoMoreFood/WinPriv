@@ -30,8 +30,8 @@
         @{ Id = 'process.logon-policy'; Surface = '/AllowCreateProcessAsSystem logon policy and creation arguments'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
 
         # Local smart-card access and its process propagation.
-        @{ Id = 'smartcard.local'; Surface = '/UseConsoleToken WinSCard reader routing'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
-        @{ Id = 'smartcard.propagation'; Surface = '/UseConsoleToken descendants and custom environments'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
+        @{ Id = 'smartcard.local'; Surface = '/UseConsoleToken WinSCard reader routing'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'SmartCardService'; Required = $true }
+        @{ Id = 'smartcard.propagation'; Surface = '/UseConsoleToken descendants and custom environments'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'SmartCardService'; Required = $true }
         @{ Id = 'smartcard.signing-pass-through'; Surface = '/UseConsoleToken software signing and silent requests'; Profile = 'Safe'; Test = 'SmartCards'; Required = $true }
         @{ Id = 'smartcard.session-routing'; Surface = '/UseConsoleToken signing across console and remote reconnects'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'smartcard.enrollment'; Surface = '/UseConsoleToken key creation and certificate installation PIN handling'; Profile = 'Safe'; Test = 'SmartCards'; Gate = 'NativeHookLoadingFixture'; Required = $true }
@@ -86,6 +86,7 @@
 
         @{ Id = 'mitigation.strict-cfg'; Surface = 'strict CFG hook loading and child registry interception'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'mitigation.dynamic-code-diagnostic'; Surface = 'ACG launcher error and policy diagnosis'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
+        @{ Id = 'mitigation.unhookable-descendants'; Surface = 'Microsoft-signed-only and AppContainer descendants launch without hooks'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixture'; Required = $true }
         @{ Id = 'mitigation.dynamic-code-allocation'; Surface = 'ACG trampoline allocation error and rollback'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
 
         @{ Id = 'mitigation.dynamic-code-optout-propagation'; Surface = 'ACG opt-out launchers, injected targets, descendants, and restored thread policy'; Profile = 'Safe'; Test = 'HookLoading'; Gate = 'NativeHookLoadingFixtureAndDynamicCodePolicy'; Required = $true }
@@ -174,8 +175,8 @@
         @{ Id = 'artifact.build-arm64'; Surface = 'Release ARM64 build'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.embedded-payloads'; Surface = 'embedded x86/x64/ARM64 DLL payloads'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.sidecar-library-loading'; Surface = 'loading a matching WinPriv DLL from the launcher directory'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
-        @{ Id = 'artifact.embedded-library-loading'; Surface = 'in-memory embedded library loading'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
-        @{ Id = 'artifact.memory-library-loading'; Surface = 'injection without temporary DLL files'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
+        @{ Id = 'artifact.embedded-library-loading'; Surface = 'temporary DLL extraction and native loading'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
+        @{ Id = 'artifact.temporary-library-cleanup'; Surface = 'temporary DLL cleanup and extraction failure handling'; Profile = 'Safe'; Test = 'Artifacts'; Required = $true }
         @{ Id = 'artifact.package'; Surface = 'Build/build.cmd ZIP and hash manifest'; Profile = 'Safe'; Test = 'Artifacts'; Architecture = 'All'; Required = $true }
     )
 }

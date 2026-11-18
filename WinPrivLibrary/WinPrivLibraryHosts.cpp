@@ -153,16 +153,21 @@ static INT WSAAPI DetourGetAddrInfoExA(_In_opt_ PCSTR sName, _In_opt_ PCSTR sSer
 		pProvider, pHints, pResults, pTimeout, pOverlapped, pCompletion, pCancel);
 }
 
+// The SDK's variable-length DNS_RECORD annotation incorrectly reads this output before initialization.
+#pragma warning(suppress: 6001)
 static DNS_STATUS WINAPI DetourDnsQueryW(_In_ PCWSTR sName, _In_ WORD iType, _In_ DWORD iOptions,
-	_Inout_opt_ PVOID pExtra, _Out_opt_ PDNS_RECORD* pResults, _Out_opt_ PVOID* pReserved)
+	_Inout_opt_ PVOID pExtra, _Outptr_result_maybenull_ PDNS_RECORD* pResults,
+	_Outptr_opt_result_maybenull_ PVOID* pReserved)
 {
 	const HostOverride* pOverride = IsHostAddressQuery(iType) ? FindHostOverride(sName, _ReturnAddress()) : nullptr;
 	return TrueDnsQueryW(pOverride == nullptr ? sName : pOverride->Replacement.c_str(),
 		iType, iOptions, pExtra, pResults, pReserved);
 }
 
+#pragma warning(suppress: 6001)
 static DNS_STATUS WINAPI DetourDnsQueryA(_In_ PCSTR sName, _In_ WORD iType, _In_ DWORD iOptions,
-	_Inout_opt_ PVOID pExtra, _Out_opt_ PDNS_RECORD* pResults, _Out_opt_ PVOID* pReserved)
+	_Inout_opt_ PVOID pExtra, _Outptr_result_maybenull_ PDNS_RECORD* pResults,
+	_Outptr_opt_result_maybenull_ PVOID* pReserved)
 {
 	const HostOverride* pOverride = IsHostAddressQuery(iType)
 		? FindHostOverride(sName, CP_ACP, _ReturnAddress()) : nullptr;
@@ -170,8 +175,10 @@ static DNS_STATUS WINAPI DetourDnsQueryA(_In_ PCSTR sName, _In_ WORD iType, _In_
 		iType, iOptions, pExtra, pResults, pReserved);
 }
 
+#pragma warning(suppress: 6001)
 static DNS_STATUS WINAPI DetourDnsQueryUtf8(_In_ PCSTR sName, _In_ WORD iType, _In_ DWORD iOptions,
-	_Inout_opt_ PVOID pExtra, _Out_opt_ PDNS_RECORD* pResults, _Out_opt_ PVOID* pReserved)
+	_Inout_opt_ PVOID pExtra, _Outptr_result_maybenull_ PDNS_RECORD* pResults,
+	_Outptr_opt_result_maybenull_ PVOID* pReserved)
 {
 	const HostOverride* pOverride = IsHostAddressQuery(iType)
 		? FindHostOverride(sName, CP_UTF8, _ReturnAddress()) : nullptr;

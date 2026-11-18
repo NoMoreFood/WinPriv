@@ -247,52 +247,6 @@ namespace WinPrivProbe
             return Convert.ToBase64String(data);
         }
 
-        public static Dictionary<string, object> ReadRegistry(string root, string subKey,
-            string valueName, string view)
-        {
-            Dictionary<string, object> result = MethodResult(true, false, null);
-            IntPtr key = IntPtr.Zero;
-            try
-            {
-                int open = RegOpenKeyExW(RegistryRoot(root), subKey, 0,
-                    KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | RegistryViewAccess(view), out key);
-                result["root"] = root;
-                result["key"] = subKey;
-                result["valueName"] = valueName;
-                result["view"] = view;
-                result["openStatus"] = open;
-                if (open != ERROR_SUCCESS)
-                {
-                    result["reason"] = Win32Message(open);
-                    return result;
-                }
-                result["win32"] = ReadRegistryWin32(key, valueName);
-                result["ntBasic"] = ReadRegistryNt(key, valueName, KeyValueBasicInformation);
-                result["ntPartial"] = ReadRegistryNt(key, valueName, KeyValuePartialInformation);
-                result["ntPartialAlign64"] = ReadRegistryNt(key, valueName, KeyValuePartialInformationAlign64);
-                result["ntFull"] = ReadRegistryNt(key, valueName, KeyValueFullInformation);
-                result["ntFullAlign64"] = ReadRegistryNt(key, valueName, KeyValueFullInformationAlign64);
-                result["ntEnumerate"] = EnumerateRegistryNt(key);
-                result["success"] = true;
-                return result;
-            }
-            catch (EntryPointNotFoundException error)
-            {
-                result["supported"] = false;
-                result["reason"] = error.Message;
-                return result;
-            }
-            catch (Exception error)
-            {
-                result["reason"] = error.GetType().FullName + ": " + error.Message;
-                return result;
-            }
-            finally
-            {
-                if (key != IntPtr.Zero) RegCloseKey(key);
-            }
-        }
-
         public static Dictionary<string, object> ReadRegistryMethod(string root, string subKey,
             string valueName, string view, string method)
         {

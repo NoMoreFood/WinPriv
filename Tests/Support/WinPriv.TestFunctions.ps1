@@ -314,10 +314,7 @@ function Get-WinPrivHostPath {
     param([string] $Architecture)
 
     $hostInfo = Get-WinPrivTestHost -Architecture $Architecture
-    if ($hostInfo -is [string]) { return $hostInfo }
-    foreach ($property in @('Path', 'HostPath', 'Executable')) {
-        if ($hostInfo.PSObject.Properties[$property] -and $hostInfo.$property) { return [string]$hostInfo.$property }
-    }
+    if ($hostInfo) { return $hostInfo }
     throw "No executable path was returned for the $Architecture PowerShell host."
 }
 

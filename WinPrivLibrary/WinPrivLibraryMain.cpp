@@ -4,7 +4,7 @@
 //
 
 #include "WinPrivLibrary.h"
-#include "WinPrivMemoryLoader.h"
+#include "WinPrivDllLoader.h"
 #include <array>
 #include <fcntl.h>
 #include <io.h>
@@ -12,7 +12,10 @@
 
 namespace winpriv::library
 {
-	const memory::LibraryBundle* libraryBundle = nullptr;
+	loader::LibraryBundle libraryBundle;
+	bool hooksInstalled = false;
+	const auto queryObject = LoadNtFunction<NTSTATUS(NTAPI*)(HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG)>(
+		"NtQueryObject");
 
 	auto trueCreateProcessA = &CreateProcessA;
 	auto trueCreateProcessW = &CreateProcessW;
@@ -123,16 +126,49 @@ namespace winpriv::library
 	{
 		if (!created) return FALSE;
 
-		// Initialize the child's hooks before allowing its primary thread to execute.
+		// Children that cannot hook, load non-Microsoft DLLs, or read ordinary files run without hooks.
 		DWORD error = NO_ERROR;
-		if (!memory::InjectLibrary(process->hProcess, libraryBundle, payload.data(),
-			static_cast<DWORD>(payload.size() * sizeof(WCHAR))))
-		{
+		PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamic{};
+		PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY signature{};
+		SmartPointer<HANDLE> token(CloseHandle, nullptr);
+		DWORD appContainer = FALSE;
+		DWORD length = 0;
+		if (!GetProcessMitigationPolicy(process->hProcess, ProcessDynamicCodePolicy, &dynamic, sizeof(dynamic)) ||
+			!GetProcessMitigationPolicy(process->hProcess, ProcessSignaturePolicy, &signature, sizeof(signature)) ||
+			!OpenProcessToken(process->hProcess, TOKEN_QUERY, &token) ||
+			!GetTokenInformation(token, TokenIsAppContainer, &appContainer, sizeof(appContainer), &length))
 			error = GetLastError();
-			if (error == ERROR_DYNAMIC_CODE_BLOCKED)
+		else if ((!dynamic.ProhibitDynamicCode || dynamic.AllowThreadOptOut) &&
+			!signature.MicrosoftSignedOnly && !signature.StoreSignedOnly && !appContainer)
+		{
+			try
 			{
-				error = NO_ERROR;
-				SetLastError(NO_ERROR);
+				std::vector<BYTE> data(sizeof(libraryBundle) + payload.size() * sizeof(WCHAR));
+				loader::LibraryBundle childBundle = libraryBundle;
+				for (ULONGLONG& file : childBundle.handles)
+				{
+					if (file == 0) continue;
+					HANDLE childFile = nullptr;
+					if (!DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(file)),
+						process->hProcess, &childFile, 0, FALSE, DUPLICATE_SAME_ACCESS))
+					{
+						error = GetLastError();
+						break;
+					}
+					file = reinterpret_cast<ULONG_PTR>(childFile);
+				}
+				memcpy(data.data(), &childBundle, sizeof(childBundle));
+				memcpy(data.data() + sizeof(childBundle), payload.data(), payload.size() * sizeof(WCHAR));
+				if (error == NO_ERROR && !loader::InjectLibrary(process->hProcess, data.data(),
+					static_cast<DWORD>(data.size()), trueCreateProcessW))
+				{
+					error = GetLastError();
+					if (error == NO_ERROR) error = ERROR_DLL_INIT_FAILED;
+				}
+			}
+			catch (...)
+			{
+				error = ERROR_NOT_ENOUGH_MEMORY;
 			}
 		}
 		if (error == NO_ERROR && !(creationFlags & CREATE_SUSPENDED) && ResumeThread(process->hThread) == MAXDWORD)
@@ -183,24 +219,50 @@ extern "C" BOOL WINAPI _DllMainCRTStartup(HINSTANCE instance, DWORD reason, LPVO
 extern "C" BOOL WINAPI WinPrivDllEntry(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
 	// System DLLs can still call WinPriv's hooks during process shutdown.
-	if (reason == DLL_PROCESS_DETACH && reserved != nullptr && winpriv::library::libraryBundle != nullptr)
+	if (reason == DLL_PROCESS_DETACH && reserved != nullptr && winpriv::library::hooksInstalled)
+	{
+		// Serialize final-owner cleanup without removing files that surviving descendants still need.
+		using namespace winpriv::library;
+		const HANDLE mutex = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(libraryBundle.handles[3]));
+		const DWORD wait = mutex != nullptr ? WaitForSingleObject(mutex, 5000) : WAIT_FAILED;
+		const bool locked = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+		for (size_t index = 0; index < std::size(libraryBundle.paths); ++index)
+		{
+			const HANDLE file = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(libraryBundle.handles[index]));
+			if (file == nullptr) continue;
+			PUBLIC_OBJECT_BASIC_INFORMATION information{};
+			if (locked && queryObject(file, ObjectBasicInformation, &information, sizeof(information), nullptr) >= 0 &&
+				information.HandleCount == 1)
+			{
+				FILE_DISPOSITION_INFO_EX disposition{ FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS };
+				SetFileInformationByHandle(file, FileDispositionInfoEx, &disposition, sizeof(disposition));
+			}
+			CloseHandle(file);
+		}
+		if (locked) ReleaseMutex(mutex);
+		if (mutex != nullptr) CloseHandle(mutex);
+		// shortcut: forced termination skips DLL cleanup; add an external owner if crash cleanup becomes required.
 		return TRUE;
+	}
 	return _DllMainCRTStartup(instance, reason, reserved);
 }
 
-extern "C" DWORD WINAPI WinPrivInitialize(const winpriv::memory::Initialization* context)
+extern "C" DWORD WINAPI WinPrivInitialize(const winpriv::loader::LibraryBundle* bundle)
 {
 	using namespace winpriv::library;
 	try
 	{
-		// Keep the launcher's library bundle available for subsequent child launches.
-		if (context->settingsSize != 0 && !ApplyWinPrivPayload(
-			reinterpret_cast<LPCVOID>(static_cast<ULONG_PTR>(context->settings)), context->settingsSize))
-			return GetLastError();
-		libraryBundle = reinterpret_cast<const winpriv::memory::LibraryBundle*>(static_cast<ULONG_PTR>(context->bundle));
+		if (hooksInstalled) return ERROR_ALREADY_INITIALIZED;
+		if (bundle == nullptr) return ERROR_INVALID_PARAMETER;
+		for (size_t index = 0; index < std::size(bundle->paths); ++index)
+		{
+			if (bundle->paths[index][0] == '\0' ||
+				memchr(bundle->paths[index], '\0', sizeof(bundle->paths[index])) == nullptr) return ERROR_INVALID_DATA;
+		}
+		libraryBundle = *bundle;
 
 		// Flush diagnostic output as it is written by the library's CRT.
-		if (const int output = _fileno(stdout); output >= 0) _setmode(output, _O_U8TEXT);
+		if (const int output = _fileno(stdout); output >= 0) (void)_setmode(output, _O_U8TEXT);
 		setvbuf(stdout, nullptr, _IONBF, 0);
 
 		// Install feature and child-process hooks in one transaction; the image remains loaded until process exit.
@@ -214,10 +276,30 @@ extern "C" DWORD WINAPI WinPrivInitialize(const winpriv::memory::Initialization*
 		}
 		transaction.attach(trueCreateProcessA, HookCreateProcessA);
 		transaction.attach(trueCreateProcessW, HookCreateProcessW);
-		return transaction.commit();
+		const DWORD error = transaction.commit();
+		hooksInstalled = error == NO_ERROR;
+		return error;
 	}
 	catch (...)
 	{
 		return ERROR_NOT_ENOUGH_MEMORY;
 	}
+}
+
+extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+{
+	if (reason != DLL_PROCESS_ATTACH || DetourIsHelperProcess()) return TRUE;
+
+	// Restore the executable's import table and settings before its TLS callbacks and entry point run.
+	DWORD size = 0;
+	const auto payload = static_cast<const BYTE*>(DetourFindPayload(winpriv::loader::payloadGuid, size));
+	if (payload == nullptr) return GetLastError() == ERROR_MOD_NOT_FOUND;
+	DWORD error = ERROR_INVALID_DATA;
+	if (size >= sizeof(winpriv::loader::LibraryBundle) && DetourRestoreAfterWith() &&
+		winpriv::library::ApplyWinPrivPayload(payload + sizeof(winpriv::loader::LibraryBundle),
+			size - sizeof(winpriv::loader::LibraryBundle)))
+		error = WinPrivInitialize(reinterpret_cast<const winpriv::loader::LibraryBundle*>(payload));
+	DetourFreePayload(const_cast<BYTE*>(payload));
+	SetLastError(error);
+	return error == NO_ERROR;
 }

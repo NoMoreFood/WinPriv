@@ -25,6 +25,11 @@ struct ManualTlsScope
     {
         if (tls == nullptr) return;
         const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll == nullptr)
+        {
+            error = GetLastError();
+            return;
+        }
         const auto lock = reinterpret_cast<Lock>(GetProcAddress(ntdll, "LdrLockLoaderLock"));
         unlock = reinterpret_cast<Unlock>(GetProcAddress(ntdll, "LdrUnlockLoaderLock"));
         ULONG disposition = 0;
@@ -274,6 +279,7 @@ static DWORD MapProbe(LPCWSTR path, const std::vector<BYTE>& bytes, bool section
 
     // Resolve the same import table through either public Win32 APIs or the native loader APIs.
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr) return GetLastError();
     const auto load = reinterpret_cast<NTSTATUS(NTAPI*)(PWSTR, PULONG, PUNICODE_STRING, PHANDLE)>(
         GetProcAddress(ntdll, "LdrLoadDll"));
     const auto procedure = reinterpret_cast<NTSTATUS(NTAPI*)(PVOID, PANSI_STRING, ULONG, PVOID*)>(
@@ -403,7 +409,8 @@ static FARPROC WINAPI MappedExport(HMODULE module, LPCSTR name)
         const auto separator = forward.find_last_of('.');
         if (separator == std::string::npos) return nullptr;
         const auto library = forward.substr(0, separator) + ".dll";
-        return GetProcAddress(GetModuleHandleA(library.c_str()), forward.c_str() + separator + 1);
+        const HMODULE target = GetModuleHandleA(library.c_str());
+        return target == nullptr ? nullptr : GetProcAddress(target, forward.c_str() + separator + 1);
     }
     return reinterpret_cast<FARPROC>(const_cast<BYTE*>(base + rva));
 }

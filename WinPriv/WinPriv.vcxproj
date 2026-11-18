@@ -28,7 +28,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="WinPriv.cpp" />
-    <ClCompile Include="..\WinPrivLibrary\WinPrivMemoryLoader.cpp" />
+    <ClCompile Include="..\WinPrivLibrary\WinPrivDllLoader.cpp" />
     <ClCompile Include="WinPrivMisc.cpp" />
     <ClCompile Include="WinPrivLogon.cpp" />
   </ItemGroup>

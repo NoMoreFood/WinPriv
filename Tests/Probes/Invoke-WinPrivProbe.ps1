@@ -315,9 +315,10 @@ function Invoke-CreateProcessProbe {
     $nativeResult['parentState'] = $parentState
     $nativeResult['childOutputPath'] = $childOutputPath
     $nativeResult['depth'] = $depth
-    if ([IO.File]::Exists($childOutputPath)) {
+    $childOutputFile = [WinPrivProbe.Native]::ExtendedPath($childOutputPath)
+    if ([IO.File]::Exists($childOutputFile)) {
         try {
-            $childResult = [IO.File]::ReadAllText($childOutputPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $childResult = [IO.File]::ReadAllText($childOutputFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
             $nativeResult['childResult'] = $childResult
             $childSuccessProperty = $childResult.PSObject.Properties['success']
             if ($null -eq $childSuccessProperty -or -not [bool]$childSuccessProperty.Value) {
@@ -356,6 +357,7 @@ function Invoke-InternalProbeChild {
         [int] $TimeoutMilliseconds = 10000
     )
 
+    $childOutputFile = [WinPrivProbe.Native]::ExtendedPath($ChildOutputPath)
     $childJson = $ChildArguments | ConvertTo-Json -Depth 32 -Compress
     $hostPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $commandArguments = @(
@@ -371,9 +373,9 @@ function Invoke-InternalProbeChild {
         $process = [WinPrivProbe.Native]::RunCreateProcess(
             'W', $hostPath, $commandLine, [Environment]::CurrentDirectory, $null, $TimeoutMilliseconds)
         [void]$processAttempts.Add($process)
-        if ([IO.File]::Exists($ChildOutputPath)) {
+        if ([IO.File]::Exists($childOutputFile)) {
             try {
-                return [IO.File]::ReadAllText($ChildOutputPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                return [IO.File]::ReadAllText($childOutputFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
             }
             catch {
                 return [pscustomobject][ordered]@{
@@ -456,7 +458,7 @@ try {
                 nativeSourceFiles = [string[]]@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'WinPrivProbe.*.cs' |
                     Sort-Object -Property Name | ForEach-Object { $_.Name })
                 powershellVersion = $PSVersionTable.PSVersion.ToString()
-                powershellEdition = if ($PSVersionTable.PSObject.Properties['PSEdition']) { $PSVersionTable.PSEdition } else { 'Desktop' }
+                powershellEdition = $PSVersionTable.PSEdition
             }
         }
         'state' {

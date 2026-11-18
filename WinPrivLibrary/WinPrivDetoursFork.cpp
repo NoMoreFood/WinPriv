@@ -1633,7 +1633,7 @@ class CDetourDis
 
 protected:
     static BYTE PureCopy32(BYTE* pSource, BYTE* pDest);
-    static BYTE EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate);
+    static void EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate);
     static BYTE CopyAdr(BYTE* pSource, BYTE* pDest, ULONG instruction);
     static BYTE CopyBcc(BYTE* pSource, BYTE* pDest, ULONG instruction);
     static BYTE CopyB_or_Bl(BYTE* pSource, BYTE* pDest, ULONG instruction);
@@ -1647,10 +1647,9 @@ protected:
         return ((PULONG)pSource)[0];
     }
 
-    static BYTE EmitInstruction(PULONG& pDstInst, ULONG instruction)
+    static void EmitInstruction(PULONG& pDstInst, ULONG instruction)
     {
         *pDstInst++ = instruction;
-        return sizeof(ULONG);
     }
 };
 
@@ -1683,25 +1682,23 @@ PBYTE CDetourDis::CopyInstruction(PBYTE pDst,
         CopiedSize = PureCopy32(pSrc, pDst);
     }
 
-    extra = CopiedSize - sizeof(DWORD);
+    extra = CopiedSize == 0 ? -1 : static_cast<LONG>(CopiedSize - sizeof(DWORD));
 
     return pSrc + 4;
 }
 
-BYTE CDetourDis::EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate)
+void CDetourDis::EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate)
 {
     DWORD piece[4];
     piece[3] = (DWORD)((immediate >> 48) & 0xffff);
     piece[2] = (DWORD)((immediate >> 32) & 0xffff);
     piece[1] = (DWORD)((immediate >> 16) & 0xffff);
     piece[0] = (DWORD)((immediate >> 0) & 0xffff);
-    int count = 0;
 
     // special case: MOVN with 32-bit dest
     if (piece[3] == 0 && piece[2] == 0 && piece[1] == 0xffff)
     {
         EmitInstruction(pDstInst, Mov16::AssembleMovn32(rd, piece[0] ^ 0xffff, 0));
-        count++;
     }
 
     // MOVN/MOVZ with 64-bit dest
@@ -1716,7 +1713,6 @@ BYTE CDetourDis::EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate)
             DWORD curPiece = piece[pieceNum];
             if (curPiece != defaultPiece || (pieceNum == 0 && first))
             {
-                count++;
                 if (first)
                 {
                     if (defaultPiece == 0xffff)
@@ -1736,7 +1732,6 @@ BYTE CDetourDis::EmitMovImmediate(PULONG& pDstInst, BYTE rd, UINT64 immediate)
             }
         }
     }
-    return (BYTE)(count * sizeof(DWORD));
 }
 
 BYTE CDetourDis::CopyAdr(BYTE* pSource, BYTE* pDest, ULONG instruction)
@@ -1881,12 +1876,14 @@ BYTE CDetourDis::CopyCbz(BYTE* pSource, BYTE* pDest, ULONG instruction)
         EmitInstruction(pDstInst, Branch26::AssembleB((LONG)delta4));
     }
 
-    // output as MOV x17, Target; CBNZ/Z <skip>; BR x17 (BIG assumption that x17 isn't being used for anything!!)
+    // Test the original register before using x17 for the far jump.
     else
     {
+        PULONG pSkip = pDstInst++;
         EmitMovImmediate(pDstInst, 17, (ULONG_PTR)pTarget);
-        EmitInstruction(pDstInst, Cbz19::Assemble(decoded.s.Size, decoded.s.Nz ^ 1, decoded.s.Rt, 8));
         EmitInstruction(pDstInst, Br::AssembleBr(17));
+        *pSkip = Cbz19::Assemble(decoded.s.Size, decoded.s.Nz ^ 1, decoded.s.Rt,
+            static_cast<LONG>(reinterpret_cast<PBYTE>(pDstInst) - pDest));
     }
 
     return (BYTE)((BYTE*)pDstInst - pDest);
@@ -1902,7 +1899,7 @@ BYTE CDetourDis::CopyTbz(BYTE* pSource, BYTE* pDest, ULONG instruction)
     LONG64 delta4 = pTarget - (pDest + 4);
 
     // output as TBZ/NZ
-    if (delta >= -(1 << 13) && delta < (1 << 13))
+    if (delta >= -(1 << 15) && delta < (1 << 15))
     {
         EmitInstruction(pDstInst, Tbz14::Assemble(decoded.s.Size, decoded.s.Nz, decoded.s.Rt, decoded.s.Bit, (LONG)delta));
     }
@@ -1914,12 +1911,14 @@ BYTE CDetourDis::CopyTbz(BYTE* pSource, BYTE* pDest, ULONG instruction)
         EmitInstruction(pDstInst, Branch26::AssembleB((LONG)delta4));
     }
 
-    // output as MOV x17, Target; TBNZ/Z <skip>; BR x17 (BIG assumption that x17 isn't being used for anything!!)
+    // Test the original register before using x17 for the far jump.
     else
     {
+        PULONG pSkip = pDstInst++;
         EmitMovImmediate(pDstInst, 17, (ULONG_PTR)pTarget);
-        EmitInstruction(pDstInst, Tbz14::Assemble(decoded.s.Size, decoded.s.Nz ^ 1, decoded.s.Rt, decoded.s.Bit, 8));
         EmitInstruction(pDstInst, Br::AssembleBr(17));
+        *pSkip = Tbz14::Assemble(decoded.s.Size, decoded.s.Nz ^ 1, decoded.s.Rt, decoded.s.Bit,
+            static_cast<LONG>(reinterpret_cast<PBYTE>(pDstInst) - pDest));
     }
 
     return (BYTE)((BYTE*)pDstInst - pDest);
@@ -1945,17 +1944,13 @@ BYTE CDetourDis::CopyLdrLiteral(BYTE* pSource, BYTE* pDest, ULONG instruction)
         EmitInstruction(pDstInst, 0xd503201f);
     }
 
-    // output as move immediate
+    // Preserve the memory access without changing another register.
     else if (decoded.s.FpNeon == 0)
     {
-        UINT64 value = 0;
-        switch (decoded.s.Size)
-        {
-            case 0: value = *(ULONG*)pTarget;       break;
-            case 1: value = *(UINT64*)pTarget;   break;
-            case 2: value = *(LONG*)pTarget;        break;
-        }
-        EmitMovImmediate(pDstInst, decoded.s.Rt, value);
+        if (decoded.s.Rt == 31) return 0;
+        constexpr DWORD loads[]{ 0xb9400000, 0xf9400000, 0xb9800000 };
+        EmitMovImmediate(pDstInst, decoded.s.Rt, (ULONG_PTR)pTarget);
+        EmitInstruction(pDstInst, loads[decoded.s.Size] | (decoded.s.Rt << 5) | decoded.s.Rt);
     }
 
     // FP/NEON register: compute address in x17 and load from there (BIG assumption that x17 isn't being used for anything!!)
@@ -2029,12 +2024,11 @@ inline ULONG_PTR detour_2gb_above(ULONG_PTR address)
 
 #if defined(_M_IX86) || defined(_M_X64)
 
-inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE pbJmpVal)
+inline void detour_gen_jmp_immediate(PBYTE pbCode, PBYTE pbJmpVal)
 {
     PBYTE pbJmpSrc = pbCode + 5;
     *pbCode++ = 0xE9;   // jmp +imm32
     *((INT32*&)pbCode)++ = (INT32)(pbJmpVal - pbJmpSrc);
-    return pbCode;
 }
 
 inline BOOL detour_does_code_end_function(PBYTE pbCode)
@@ -2230,13 +2224,12 @@ enum {
     SIZE_OF_TRAMPOLINE_JMP = 6
 };
 
-inline PBYTE detour_gen_jmp_indirect(PBYTE pbCode, PBYTE *ppbJmpVal)
+inline void detour_gen_jmp_indirect(PBYTE pbCode, PBYTE *ppbJmpVal)
 {
     PBYTE pbJmpSrc = pbCode + 6;
     *pbCode++ = 0xff;   // jmp [+imm32]
     *pbCode++ = 0x25;
     *((INT32*&)pbCode)++ = (INT32)((PBYTE)ppbJmpVal - pbJmpSrc);
-    return pbCode;
 }
 
 #endif // _M_X64
@@ -2335,7 +2328,7 @@ union ARM64_INDIRECT_IMM {
 
 #pragma warning(pop)
 
-inline PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
+inline void detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
 {
     // adrp x17, [jmpval]
     // ldr x17, [x17, jmpval]
@@ -2348,7 +2341,6 @@ inline PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
                        (((LONG64)pbCode) & 0xFFFFFFFFFFFFF000);
 
     pIndJmp = (struct ARM64_INDIRECT_JMP *)pbCode;
-    pbCode = (BYTE *)(pIndJmp + 1);
 
     pIndJmp->ardp.Rd = 17;
     pIndJmp->ardp.immhi = jmpIndAddr.adrp_immhi;
@@ -2366,11 +2358,9 @@ inline PBYTE detour_gen_jmp_indirect(BYTE *pbCode, ULONG64 *pbJmpVal)
     pIndJmp->ldr.size = 3;
 
     pIndJmp->br = 0xD61F0220;
-
-    return pbCode;
 }
 
-inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE *ppPool, PBYTE pbJmpVal)
+inline void detour_gen_jmp_immediate(PBYTE pbCode, PBYTE *ppPool, PBYTE pbJmpVal)
 {
     *ppPool -= 8;
     PBYTE pbLiteral = *ppPool;
@@ -2380,7 +2370,6 @@ inline PBYTE detour_gen_jmp_immediate(PBYTE pbCode, PBYTE *ppPool, PBYTE pbJmpVa
 
     write_opcode(pbCode, 0x58000011 | ((delta / 4) << 5));  // LDR X17,[PC+n]
     write_opcode(pbCode, 0xd61f0000 | (17 << 5));           // BR X17
-    return pbCode;
 }
 
 constexpr INT64 detour_sign_extend(UINT64 value, UINT bits)
