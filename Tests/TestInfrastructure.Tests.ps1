@@ -73,17 +73,12 @@ BeforeAll {
 
 Describe 'WinPriv LSA snapshot failures' -Tag 'Safe' {
     BeforeAll {
-        $probeRoot = Join-Path $TestDrive 'lsa-probe'
-        New-Item -ItemType Directory -Path $probeRoot | Out-Null
-        foreach ($file in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'Probes') -Filter 'WinPrivProbe.*.cs') {
-            $source = [IO.File]::ReadAllText($file.FullName).Replace(
-                'namespace WinPrivProbe', 'namespace WinPrivLsaProbeTests')
-            if ($file.Name -eq 'WinPrivProbe.CryptoData.cs') {
-                # Inject native enumeration outcomes without changing any account rights.
-                $declaration = '(?s)\[DllImport\("advapi32\.dll"\)\]\s*private static extern int ' +
-                    'LsaEnumerateAccountsWithUserRight\([^;]+;'
-                [regex]::Matches($source, $declaration).Count | Should -Be 1
-                $replacement = @'
+        $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Support\WinPriv.LsaPolicy.cs')).Replace(
+            'namespace WinPrivTests', 'namespace WinPrivLsaProbeTests')
+        $declaration = '(?s)\[DllImport\("advapi32\.dll"\)\]\s*private static extern int ' +
+            'LsaEnumerateAccountsWithUserRight\([^;]+;'
+        [regex]::Matches($source, $declaration).Count | Should -Be 1
+        $replacement = @'
 private static int LsaEnumerateAccountsWithUserRight(IntPtr policyHandle,
             ref LSA_UNICODE_STRING userRight, out IntPtr buffer, out uint countReturned)
         {
@@ -93,27 +88,50 @@ private static int LsaEnumerateAccountsWithUserRight(IntPtr policyHandle,
                 ? STATUS_NO_MORE_ENTRIES : unchecked((int)0xC0000022);
         }
 '@
-                $source = [regex]::Replace($source, $declaration, $replacement)
-            }
-            [IO.File]::WriteAllText((Join-Path $probeRoot $file.Name), $source)
-        }
-        Add-Type -Path @(Get-ChildItem -LiteralPath $probeRoot -Filter '*.cs' | ForEach-Object FullName)
+        Add-Type -TypeDefinition ([regex]::Replace($source, $declaration, $replacement))
     }
 
-    It 'reports <Outcome> enumeration as success=<Success>' -ForEach @(
-        @{ Outcome = 'Denied'; Success = $false }, @{ Outcome = 'Empty'; Success = $true }
-    ) {
-        $result = [WinPrivLsaProbeTests.Native]::ReadLsa('', '', $Outcome)
-        $result.success | Should -Be $Success
-        if ($Success) {
-            $result.accountsWithRight.success | Should -BeTrue
-            @($result.accountsWithRight.accounts) | Should -HaveCount 0
-        }
-        else { $result.reason | Should -Match 'System.ComponentModel.Win32Exception' }
+    It 'returns an empty snapshot when no accounts have the right' {
+        @([WinPrivLsaProbeTests.LsaPolicy]::GetAccountSidsWithRight('Empty')) | Should -HaveCount 0
+    }
+
+    It 'rejects a snapshot when account enumeration is denied' {
+        { [WinPrivLsaProbeTests.LsaPolicy]::GetAccountSidsWithRight('Denied') } |
+            Should -Throw '*LsaEnumerateAccountsWithUserRight*'
     }
 }
 
 Describe 'WinPriv release test tooling' -Tag 'Safe' {
+    It 'accepts complete coverage and rejects unmanifested evidence' {
+        $manifest = Join-Path $TestDrive 'capabilities.json'
+        $events = Join-Path $TestDrive 'capability-results.jsonl'
+        $reportPath = Join-Path $TestDrive 'coverage.json'
+        [IO.File]::WriteAllText($manifest, '{"Capabilities":[{"Id":"coverage.present","Profile":"Safe"}]}')
+        $evidence = [ordered]@{
+            Id = 'coverage.present'; Architecture = 'x64'; Status = 'Verified'; Reason = 'Verified'
+            Evidence = $null; Profile = 'Safe'; TimestampUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        [IO.File]::WriteAllLines($events, @($evidence | ConvertTo-Json -Compress))
+        $previous = [Environment]::GetEnvironmentVariable('WINPRIV_TEST_CAPABILITY_RESULTS_PATH', 'Process')
+        try {
+            [Environment]::SetEnvironmentVariable('WINPRIV_TEST_CAPABILITY_RESULTS_PATH', $events, 'Process')
+            $report = Complete-WinPrivCapabilityReport -ManifestPath $manifest -OutputPath $reportPath `
+                -Architecture x64 -Profile Safe
+            $report.HasFailures | Should -BeFalse
+            @($report.UnmanifestedResults) | Should -HaveCount 0
+
+            $evidence.Id = 'coverage.unmanifested'
+            [IO.File]::AppendAllLines($events, [string[]]@($evidence | ConvertTo-Json -Compress))
+            $report = Complete-WinPrivCapabilityReport -ManifestPath $manifest -OutputPath $reportPath `
+                -Architecture x64 -Profile Safe
+            $report.HasFailures | Should -BeTrue
+            @($report.UnmanifestedResults) | Should -HaveCount 1
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('WINPRIV_TEST_CAPABILITY_RESULTS_PATH', $previous, 'Process')
+        }
+    }
+
     It 'stages source without cached test work or generated binaries' {
         $runner = Join-Path $PSScriptRoot 'Invoke-WinPrivTests.ps1'
         $ast = [Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$null)

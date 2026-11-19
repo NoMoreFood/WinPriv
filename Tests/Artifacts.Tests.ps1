@@ -29,16 +29,16 @@ Describe 'WinPriv build artifacts' -Tag 'Safe' {
     }
 
     It 'contains matching configured launchers for <Architecture>' -ForEach @(
-        @{ Architecture = 'x86'; Machine = 0x014C; Capability = 'artifact.build-x86' },
-        @{ Architecture = 'x64'; Machine = 0x8664; Capability = 'artifact.build-x64' },
-        @{ Architecture = 'ARM64'; Machine = 0xAA64; Capability = 'artifact.build-arm64' }
+        @{ Architecture = 'x86'; Capability = 'artifact.build-x86' },
+        @{ Architecture = 'x64'; Capability = 'artifact.build-x64' },
+        @{ Architecture = 'ARM64'; Capability = 'artifact.build-arm64' }
     ) {
         Invoke-WinPrivCapability -Id $Capability -Architecture $Architecture -Body {
             $directory = Join-Path $binaryRoot $Architecture
             $paths = @((Join-Path $directory 'WinPriv.exe'), (Join-Path $directory 'WinPrivCmd.exe'))
             foreach ($path in $paths) {
                 $path | Should -Exist
-                (Get-PeMachine $path) | Should -Be $Machine
+                (Get-WinPrivPeArchitecture -Path $path) | Should -Be $Architecture
             }
             ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[0]).FileVersion) |
                 Should -Be ([Diagnostics.FileVersionInfo]::GetVersionInfo($paths[1]).FileVersion)
@@ -82,15 +82,15 @@ Describe 'WinPriv library payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
 
         Invoke-WinPrivCapability -Id 'artifact.embedded-payloads' -Architecture $Architecture -Body {
             $libraries = @(
-                @{ File = 'WinPriv-x86.dll'; Architecture = 'x86'; Machine = 0x014C },
-                @{ File = 'WinPriv-x64.dll'; Architecture = 'x64'; Machine = 0x8664 },
-                @{ File = 'WinPriv-ARM64.dll'; Architecture = 'ARM64'; Machine = 0xAA64 }
+                @{ File = 'WinPriv-x86.dll'; Architecture = 'x86' },
+                @{ File = 'WinPriv-x64.dll'; Architecture = 'x64' },
+                @{ File = 'WinPriv-ARM64.dll'; Architecture = 'ARM64' }
             )
             foreach ($library in $libraries) {
                 $extracted = Join-Path $launcherDirectory $library.File
                 $built = Join-Path (Join-Path $env:WINPRIV_TEST_BINARY_ROOT $library.Architecture) 'WinPrivLibrary.dll'
                 $extracted | Should -Exist
-                (Get-PeMachine $extracted) | Should -Be $library.Machine
+                (Get-WinPrivPeArchitecture -Path $extracted) | Should -Be $library.Architecture
                 $built | Should -Exist
                 (Get-FileHash $extracted -Algorithm SHA256).Hash | Should -Be `
                     (Get-FileHash $built -Algorithm SHA256).Hash

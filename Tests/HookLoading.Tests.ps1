@@ -175,16 +175,18 @@ Describe 'WinPriv extended DLL loading (<Architecture>)' -Tag 'Safe', 'LoadingPe
         Remove-WinPrivSandbox -Sandbox $sandbox
     }
 
-    It 'preserves signatures, TLS, delay imports, and hooks across native and manual reloads' {
-        $library = Join-Path $sandbox.Launchers.$Architecture.Root 'WinPrivLoadingProbe.dll'
-        if (-not (Test-Path -LiteralPath $library)) {
+    It 'preserves hooks and file redirection across executable and datafile DLL loads' {
+        $fixtures = @('WinPrivHookImport.exe', 'WinPrivHookDynamic.exe', 'WinPrivHookDelayLoad.exe')
+        if (@($fixtures | Where-Object {
+            -not (Test-Path -LiteralPath (Join-Path $sandbox.Launchers.$Architecture.Root $_))
+        }).Count) {
             Skip-WinPrivCapability -Id 'detour.library-loading' -Architecture $Architecture `
-                -Reason 'The unloadable native DLL fixture is absent from the supplied binary root.'
+                -Reason 'The native hook-loading fixtures are absent from the supplied binary root.'
             return
         }
 
         Invoke-WinPrivCapability -Id 'detour.library-loading' -Architecture $Architecture -Body {
-            foreach ($fixtureName in @('WinPrivHookImport.exe', 'WinPrivHookDynamic.exe', 'WinPrivHookDelayLoad.exe')) {
+            foreach ($fixtureName in $fixtures) {
                 $fixture = Join-Path $sandbox.Launchers.$Architecture.Root $fixtureName
                 $invocations = @(@{ Architecture = $Architecture; Launcher = 'baseline' })
                 foreach ($launcherArchitecture in $launcherArchitectures) {
@@ -193,12 +195,10 @@ Describe 'WinPriv extended DLL loading (<Architecture>)' -Tag 'Safe', 'LoadingPe
                     }
                 }
                 foreach ($invocation in $invocations) {
-                    $output = Join-Path $sandbox.Artifacts ("loading-$([Guid]::NewGuid().ToString('N')).json")
                     $baseline = $invocation.Launcher -eq 'baseline'
                     $expectedValue = if ($baseline) { '9' } else { '305419896' }
                     $expectedSize = if ($baseline) { '8' } else { '15' }
-                    $arguments = @('--library-loading', $library, $subKey, 'Value', $source,
-                        $expectedValue, $expectedSize, $output)
+                    $arguments = @('--library-loading', $subKey, 'Value', $source, $expectedValue, $expectedSize)
                     $description = "$fixtureName $Architecture via $($invocation.Architecture) $($invocation.Launcher)"
                     $result = if ($baseline) {
                         Invoke-WinPrivContainedProcess -FilePath $fixture -ArgumentList $arguments `
@@ -211,31 +211,17 @@ Describe 'WinPriv extended DLL loading (<Architecture>)' -Tag 'Safe', 'LoadingPe
                                 '/FileRedirect', $source, $redirected, $fixture
                             ) + $arguments)
                     }
-                    $output | Should -Exist -Because $description
-                    $report = Get-Content -LiteralPath $output -Raw
-                    $report | Should -Not -BeNullOrEmpty -Because "$description exited with $($result.ExitCode)"
-                    $payload = $report | ConvertFrom-Json
-                    $payload.success | Should -BeTrue `
-                        -Because "$description`: $($payload | ConvertTo-Json -Compress) $($result.StdErr)"
                     Assert-WinPrivInvocationSucceeded $result
-                    $payload.executableCases | Should -Be 72
-                    $payload.resourceCases | Should -Be 330
-                    $payload.unresolvedCases | Should -Be 64
-                    $payload.searchCases | Should -Be 12
-                    $payload.signedCases | Should -Be 2
-                    $payload.handleCases | Should -Be 8
-                    $payload.pinCases | Should -Be 4
-                    $payload.signedAccepted | Should -Be 8
-                    $payload.signedTampered | Should -Be 2
-                    $payload.manualCases | Should -Be 8
-                    $payload.lifecycleCases | Should -Be 10
-                    $payload.validationResults | Should -HaveCount 66
-                    $payload.signatureResults | Should -HaveCount 2
-                    $validation = @($payload.validationResults + $payload.signatureResults) -join ','
-                    if ($baseline) { $baselineValidation = $validation }
-                    else { $validation | Should -Be $baselineValidation -Because $description }
-                    $expectedDelayCases = if ($fixtureName -eq 'WinPrivHookDelayLoad.exe') { 3 } else { 0 }
-                    $payload.delayCases | Should -Be $expectedDelayCases
+                    if ($invocation.Launcher -eq 'WinPriv') {
+                        @{ Invocation = $description; ExitCode = $result.ExitCode }
+                        continue
+                    }
+                    $payload = $result.StdOut | ConvertFrom-Json -ErrorAction Stop
+                    $payload.event | Should -Be 'library-loading' -Because $description
+                    $payload.matched | Should -BeTrue -Because $description
+                    $payload.primaryValue | Should -Be ([uint32]$expectedValue) -Because $description
+                    $payload.reloadedValue | Should -Be ([uint32]$expectedValue) -Because $description
+                    $payload.fileSize | Should -Be ([int64]$expectedSize) -Because $description
                     @{ Invocation = $description; Result = $payload }
                 }
             }

@@ -48,9 +48,9 @@ Describe 'WinPriv LSA account-right operations (<Architecture>)' -Tag 'Admin' -F
                     -Launcher WinPrivCmd -Sandbox $sandbox -TimeoutSeconds 20
                 Assert-WinPrivInvocationSucceeded $result
             }
-            $state = Get-WinPrivLsaState -Architecture $Architecture -Sandbox $sandbox -Account $principal.Account
-            @($state.accountRights.rights | Where-Object { $_ -eq 'SeBatchLogonRight' }) | Should -HaveCount 1
-            return $state.accountRights.rights
+            $state = Get-WinPrivLsaState -Account $principal.Account
+            @($state.AccountRights | Where-Object { $_ -eq 'SeBatchLogonRight' }) | Should -HaveCount 1
+            return $state.AccountRights
         }
     }
 
@@ -65,9 +65,9 @@ Describe 'WinPriv LSA account-right operations (<Architecture>)' -Tag 'Admin' -F
                     -Launcher WinPrivCmd -Sandbox $sandbox -TimeoutSeconds 20
                 Assert-WinPrivInvocationSucceeded $result
             }
-            $state = Get-WinPrivLsaState -Architecture $Architecture -Sandbox $sandbox -Account $principal.Account
-            $state.accountRights.rights | Should -Not -Contain 'SeBatchLogonRight'
-            return $state.accountRights.rights
+            $state = Get-WinPrivLsaState -Account $principal.Account
+            $state.AccountRights | Should -Not -Contain 'SeBatchLogonRight'
+            return $state.AccountRights
         }
     }
 
@@ -89,9 +89,9 @@ Describe 'WinPriv LSA account-right operations (<Architecture>)' -Tag 'Admin' -F
                 -Arguments @('/ClearDenyRights', $principal.Account) -Launcher WinPrivCmd `
                 -Sandbox $sandbox -TimeoutSeconds 30
             Assert-WinPrivInvocationSucceeded $clear
-            $state = Get-WinPrivLsaState -Architecture $Architecture -Sandbox $sandbox -Account $principal.Account
-            foreach ($right in $denyRights) { $state.accountRights.rights | Should -Not -Contain $right }
-            return $state.accountRights.rights
+            $state = Get-WinPrivLsaState -Account $principal.Account
+            foreach ($right in $denyRights) { $state.AccountRights | Should -Not -Contain $right }
+            return $state.AccountRights
         }
     }
 
@@ -101,11 +101,11 @@ Describe 'WinPriv LSA account-right operations (<Architecture>)' -Tag 'Admin' -F
                 -Arguments @('/GrantAllRights', $principal.Account) -Launcher WinPrivCmd `
                 -Sandbox $sandbox -TimeoutSeconds 60
             Assert-WinPrivInvocationSucceeded $grant
-            $state = Get-WinPrivLsaState -Architecture $Architecture -Sandbox $sandbox -Account $principal.Account
-            $expected = @($state.availableRights.rights.name) + $allowLogonRights
-            foreach ($right in $expected) { $state.accountRights.rights | Should -Contain $right }
-            foreach ($right in $denyRights) { $state.accountRights.rights | Should -Not -Contain $right }
-            return @{ Expected = $expected.Count; Actual = @($state.accountRights.rights).Count }
+            $state = Get-WinPrivLsaState -Account $principal.Account
+            $expected = @($state.AvailablePrivileges) + $allowLogonRights
+            foreach ($right in $expected) { $state.AccountRights | Should -Contain $right }
+            foreach ($right in $denyRights) { $state.AccountRights | Should -Not -Contain $right }
+            return @{ Expected = $expected.Count; Actual = @($state.AccountRights).Count }
         }
     }
 
@@ -118,8 +118,8 @@ Describe 'WinPriv LSA account-right operations (<Architecture>)' -Tag 'Admin' -F
         Invoke-WinPrivCapability -Id 'rights.clear-deny-global' -Architecture $Architecture -Body {
             $snapshot = @()
             foreach ($right in $denyRights) {
-                $state = Get-WinPrivLsaState -Architecture $Architecture -Sandbox $sandbox -Right $right
-                foreach ($account in @($state.accountsWithRight.accounts)) {
+                $state = Get-WinPrivLsaState -Right $right
+                foreach ($account in $state.AccountsWithRight) {
                     $snapshot += [pscustomobject]@{ Right = $right; Account = ($account.account ?? $account.sid) }
                 }
             }
@@ -136,8 +136,8 @@ Describe 'WinPriv LSA account-right operations (<Architecture>)' -Tag 'Admin' -F
                     -Launcher WinPrivCmd -Sandbox $sandbox -TimeoutSeconds 60
                 Assert-WinPrivInvocationSucceeded $clear
                 foreach ($right in $denyRights) {
-                    $after = Get-WinPrivLsaState -Architecture $Architecture -Sandbox $sandbox -Right $right
-                    @($after.accountsWithRight.accounts) | Should -HaveCount 0
+                    $after = Get-WinPrivLsaState -Right $right
+                    @($after.AccountsWithRight) | Should -HaveCount 0
                 }
             }
             finally {

@@ -245,7 +245,8 @@ Describe 'WinPriv command-line contract (<Architecture>)' -Tag 'Safe' -ForEach $
                 -Environment @{ WINPRIV_TEST_ROUNDTRIP = 'snowman-☃' } `
                 -WorkingDirectory $sandbox.Working -Sandbox $sandbox -TimeoutSeconds 20
             Assert-WinPrivInvocationSucceeded $state
-            $probe = Get-WinPrivProbeValue $state
+            $probe = $state.ProbeResult
+            $probe | Should -Not -BeNullOrEmpty
             $probe.success | Should -BeTrue
             $probe.result.cwd | Should -Be ([IO.Path]::GetFullPath($sandbox.Working).TrimEnd('\'))
             $probe.result.environment.WINPRIV_TEST_ROUNDTRIP | Should -Be 'snowman-☃'

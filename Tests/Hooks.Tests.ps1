@@ -475,7 +475,7 @@ Describe 'WinPriv network and AMSI hooks (<Architecture>)' -Tag 'Safe' -ForEach 
             Invoke-WinPrivCapability -Id $method.Id -Architecture $Architecture -Body {
                 foreach ($item in $items) {
                     $actualAddress = if ($method.Collection -eq 'transports') { $item.transportAddress } else { $item.addressHex }
-                    (Convert-PhysicalAddressText $actualAddress) | Should -Be $expected
+                    (([string]$actualAddress -replace '[-:\s]', '').ToUpperInvariant()) | Should -Be $expected
                 }
                 return @{ Count = $items.Count }
             }

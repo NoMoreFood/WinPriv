@@ -186,13 +186,13 @@ function Get-WinPrivLsaState {
     if (-not ('WinPrivTests.LsaPolicy' -as [type])) {
         Add-Type -Path (Join-Path $PSScriptRoot 'WinPriv.LsaPolicy.cs')
     }
-    $accountRights = if ($Account) { @([WinPrivTests.LsaPolicy]::GetRights($Account)) } else { @() }
-    $accountsWithRight = if ($Right) {
-        @([WinPrivTests.LsaPolicy]::GetAccountSidsWithRight($Right) | ForEach-Object {
+    $accountRights = @(if ($Account) { [WinPrivTests.LsaPolicy]::GetRights($Account) })
+    $accountsWithRight = @(if ($Right) {
+        [WinPrivTests.LsaPolicy]::GetAccountSidsWithRight($Right) | ForEach-Object {
             $name = try { [Security.Principal.SecurityIdentifier]::new($_).Translate([Security.Principal.NTAccount]).Value } catch { $_ }
             [pscustomobject]@{ Sid = $_; Account = $name }
-        })
-    } else { @() }
+        }
+    })
     return [pscustomobject]@{
         AccountRights       = $accountRights
         AccountsWithRight   = $accountsWithRight

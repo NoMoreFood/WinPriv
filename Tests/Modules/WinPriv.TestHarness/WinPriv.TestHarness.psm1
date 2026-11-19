@@ -71,7 +71,7 @@ function Get-WinPrivObjectValue {
     param($Object, [string]$Name)
     if ($null -eq $Object) { return $null }
     if ($Object -is [Collections.IDictionary]) {
-        return $(if ($Object.Contains($Name)) { $Object[$Name] } else { $null })
+        return $(if (([Collections.IDictionary]$Object).Contains($Name)) { $Object[$Name] } else { $null })
     }
     $property = $Object.PSObject.Properties[$Name]
     if ($null -ne $property) { return $property.Value }
@@ -1241,7 +1241,7 @@ function Complete-WinPrivCapabilityReport {
     }
 
     $manifestIds = @($capabilities | ForEach-Object { [string](Get-WinPrivObjectValue $_ 'Id') } | Select-Object -Unique)
-    $unmanifested = if ($manifestIds.Count -gt 0) { @($results | Where-Object { $_.Id -notin $manifestIds }) } else { @() }
+    $unmanifested = @(if ($manifestIds.Count -gt 0) { $results | Where-Object { $_.Id -notin $manifestIds } })
     $requiredMissing = @($missing | Where-Object Required)
     $report = [ordered]@{
         SchemaVersion = 1; GeneratedUtc = [DateTime]::UtcNow.ToString('o'); ManifestPath = $ManifestPath; Profile = $Profile

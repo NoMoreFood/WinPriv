@@ -250,6 +250,18 @@ try {
             $result = [WinPrivProbe.Native]::GetState((ConvertTo-StringArray $RemainingArguments), (ConvertTo-StringArray (Get-ArgumentValue 'environmentNames')))
             $result['argumentsJson'] = $script:ProbeArguments
         }
+        'args' {
+            $state = [WinPrivProbe.Native]::GetState(
+                (ConvertTo-StringArray $RemainingArguments),
+                (ConvertTo-StringArray (Get-ArgumentValue 'environmentNames')))
+            $result = [ordered]@{
+                commandLine = $state['commandLine']
+                argv = $state['argv']
+                remainingArguments = $state['remainingArguments']
+                argumentsJson = $script:ProbeArguments
+                argumentsJsonRaw = $ArgumentsJson
+            }
+        }
         'exit' {
             $requestedExitCode = [int](Get-ArgumentValue 'exitCode' 0)
             if ($requestedExitCode -lt 0 -or $requestedExitCode -gt 255) { throw 'exitCode must be between 0 and 255.' }
@@ -360,9 +372,15 @@ try {
     $envelope.result = $result
     if ($null -ne $result) {
         $isDict = $result -is [Collections.IDictionary]
-        $envelope.supported = if ($isDict -and $result.Contains('supported')) { [bool]$result['supported'] } else { $true }
-        $envelope.success = if ($isDict -and $result.Contains('success')) { [bool]$result['success'] } else { $true }
-        if ($isDict -and $result.Contains('reason')) { $envelope.reason = [string]$result['reason'] }
+        $envelope.supported = if ($isDict -and ([Collections.IDictionary]$result).Contains('supported')) {
+            [bool]$result['supported']
+        } else { $true }
+        $envelope.success = if ($isDict -and ([Collections.IDictionary]$result).Contains('success')) {
+            [bool]$result['success']
+        } else { $true }
+        if ($isDict -and ([Collections.IDictionary]$result).Contains('reason')) {
+            $envelope.reason = [string]$result['reason']
+        }
     }
 }
 catch {
