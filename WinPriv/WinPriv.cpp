@@ -203,10 +203,25 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			break;
 		}
 
-		// use the plus variant of the session token's integrity level for run-as targets
-		else if (IsSwitch(L"/MediumPlus"))
+		// handle switches that map directly to a process environment setting
+		struct EnvSwitch { LPCWSTR Switch; LPCWSTR Variable; LPCWSTR Value; };
+		static constexpr std::array<EnvSwitch, 10> vEnvSwitches{ {
+			{ L"/MediumPlus", WINPRIV_EV_MEDIUM_PLUS, L"1" },
+			{ L"/UseConsoleToken", WINPRIV_EV_CONSOLE_TOKEN, L"1" },
+			{ L"/AllowCreateProcessAsSystem", WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM, L"1" },
+			{ L"/AmsiOn", WINPRIV_EV_DISABLE_AMSI, L"0" },
+			{ L"/AmsiOff", WINPRIV_EV_DISABLE_AMSI, L"1" },
+			{ L"/ClmOn", WINPRIV_EV_CLM, L"1" },
+			{ L"/ClmOff", WINPRIV_EV_CLM, L"0" },
+			{ L"/BreakRemoteLocks", WINPRIV_EV_BREAK_LOCKS, L"1" },
+			{ L"/ServerEdition", WINPRIV_EV_SERVER_EDITION, L"1" },
+			{ L"/SqlConnectShow", WINPRIV_EV_SQL_CONNECT_SHOW, L"1" },
+		} };
+		if (const auto pSwitch = std::ranges::find_if(vEnvSwitches,
+			[&](const EnvSwitch& tEntry) { return IsSwitch(tEntry.Switch); });
+			pSwitch != vEnvSwitches.end())
 		{
-			if (!SetSetting(WINPRIV_EV_MEDIUM_PLUS, L"1")) return __LINE__;
+			if (!SetSetting(pSwitch->Variable, pSwitch->Value)) return __LINE__;
 		}
 
 		// launch the remaining command in the console user's or a named user's session
@@ -404,30 +419,6 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				sRegistryOverride += std::wstring(sKey) + L" N/A REG_BLOCK N/A ";
 		}
 
-		// use locally attached smart cards and hardware keys from remote sessions
-		else if (IsSwitch(L"/UseConsoleToken"))
-		{
-			if (!SetSetting(WINPRIV_EV_CONSOLE_TOKEN, L"1")) return __LINE__;
-		}
-
-		// allow LocalSystem targets to create processes with explicit user credentials
-		else if (IsSwitch(L"/AllowCreateProcessAsSystem"))
-		{
-			if (!SetSetting(WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM, L"1")) return __LINE__;
-		}
-
-		// control amsi scanning
-		else if (IsSwitch(L"/AmsiOn") || IsSwitch(L"/AmsiOff"))
-		{
-			if (!SetSetting(WINPRIV_EV_DISABLE_AMSI, IsSwitch(L"/AmsiOff") ? L"1" : L"0")) return __LINE__;
-		}
-
-		// control powershell constrained language mode
-		else if (IsSwitch(L"/ClmOn") || IsSwitch(L"/ClmOff"))
-		{
-			if (!SetSetting(WINPRIV_EV_CLM, IsSwitch(L"/ClmOn") ? L"1" : L"0")) return __LINE__;
-		}
-
 		// override host name lookups: <host name to override> <host override value>
 		else if (IsSwitch(L"/HostOverride"))
 		{
@@ -448,8 +439,7 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			// Verify that the replacement resolves without pinning its addresses in child processes.
 			WSADATA tWSAData;
 			int iResolveError = WSAStartup(MAKEWORD(2, 2), &tWSAData);
-			SmartPointer<LPWSADATA> oWinsockCleanup([](LPWSADATA) { WSACleanup(); },
-				iResolveError == 0 ? &tWSAData : nullptr);
+			ScopeExit oWinsockCleanup([&] { if (iResolveError == 0) WSACleanup(); });
 			PADDRINFOW tResult = nullptr;
 			if (iResolveError == 0) iResolveError = GetAddrInfoW(sReplacementHost.c_str(), nullptr, nullptr, &tResult);
 			SmartPointer<PADDRINFOW> oAddressCleanup(FreeAddrInfoW, tResult);
@@ -471,23 +461,11 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 			if (!SetSetting(WINPRIV_EV_BACKUP_RESTORE, L"1")) return __LINE__;
 		}
 
-		// break remote file locks when a file operation fails because of one
-		else if (IsSwitch(L"/BreakRemoteLocks"))
-		{
-			if (!SetSetting(WINPRIV_EV_BREAK_LOCKS, L"1")) return __LINE__;
-		}
-
 		// report administrator membership regardless of security tokens or group memberships
 		else if (IsSwitch(L"/AdminImpersonate"))
 		{
 			if (!SetSetting(L"__COMPAT_LAYER", L"RunAsInvoker") ||
 				!SetSetting(WINPRIV_EV_ADMIN_IMPERSONATE, L"1")) return __LINE__;
-		}
-
-		// report a server operating system
-		else if (IsSwitch(L"/ServerEdition"))
-		{
-			if (!SetSetting(WINPRIV_EV_SERVER_EDITION, L"1")) return __LINE__;
 		}
 
 		// record encrypt/decrypt operations to a directory, or display them when 'SHOW' is specified
@@ -509,12 +487,6 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 				sRecordCrypto = tDirectory.wstring();
 			}
 			if (!SetSetting(WINPRIV_EV_RECORD_CRYPTO, sRecordCrypto.c_str())) return __LINE__;
-		}
-
-		// show sql connection information
-		else if (IsSwitch(L"/SqlConnectShow"))
-		{
-			if (!SetSetting(WINPRIV_EV_SQL_CONNECT_SHOW, L"1")) return __LINE__;
 		}
 
 		// search and replace sql connection information
@@ -714,7 +686,8 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 	// wait for our process to complete
 	SmartPointer<HANDLE> hProcess(CloseHandle, o_ProcessInfo.hProcess);
 	SmartPointer<HANDLE> hThread(CloseHandle, o_ProcessInfo.hThread);
-	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED)
+	DWORD iExitCode = 0;
+	if (!WaitForProcessExitCode(hProcess, iExitCode))
 	{
 		PrintMessage(L"ERROR: Problem waiting for process to complete.");
 		return __LINE__;
@@ -726,10 +699,6 @@ int RunProgram(int iArgc, wchar_t* aArgv[])
 		const double fSeconds = static_cast<double>(GetTickCount64() - iTimeStart) / 1000.0;
 		PrintMessage(L"Execution Time In Seconds: %.3f\n", fSeconds);
 	}
-
-	// fetch process exit code
-	DWORD iExitCode = 0;
-	GetExitCodeProcess(hProcess, &iExitCode);
 	return iExitCode;
 }
 

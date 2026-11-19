@@ -4,13 +4,10 @@
 //
 
 #include <Windows.h>
-#include <winternl.h>
-#include <cstdio>
 #include <wincred.h>
 #include <wtsapi32.h>
 #include <userenv.h>
 #include <LMCons.h>
-#include <Sddl.h>
 #include <shellapi.h>
 
 #include <array>
@@ -24,9 +21,33 @@
 #pragma comment(lib,"advapi32.lib")
 #pragma comment(lib,"userenv.lib")
 
-static std::wstring GetSidStringForUser(const std::wstring& username);
+static constexpr DWORD INVALID_SESSION = 0xFFFFFFFF;
+using SidBuffer = std::array<BYTE, SECURITY_MAX_SID_SIZE>;
 
-int LaunchElevated(const int iArgc, wchar_t *aArgv[])
+static bool LookupUserSid(const std::wstring& username, SidBuffer& sidBuffer)
+{
+	WCHAR domainBuffer[DNLEN + 1];
+	DWORD sidSize = static_cast<DWORD>(sidBuffer.size());
+	DWORD domainSize = ARRAYSIZE(domainBuffer);
+	SID_NAME_USE sidUse{};
+	return LookupAccountNameW(nullptr, username.c_str(), sidBuffer.data(), &sidSize,
+		domainBuffer, &domainSize, &sidUse) != FALSE;
+}
+
+static bool GetSessionUserSid(const DWORD sessionId, SidBuffer& sidBuffer)
+{
+	// Query session for domain\username and resolve its binary SID.
+	SmartPointer<LPWSTR> pUserName(WTSFreeMemory, nullptr);
+	SmartPointer<LPWSTR> pDomainName(WTSFreeMemory, nullptr);
+	DWORD bytesReturned = 0;
+	if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSUserName, &pUserName, &bytesReturned) ||
+		bytesReturned <= sizeof(WCHAR) ||
+		!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSDomainName, &pDomainName, &bytesReturned) ||
+		bytesReturned <= sizeof(WCHAR)) return false;
+	return LookupUserSid(std::wstring(pDomainName) + L"\\" + std::wstring(pUserName), sidBuffer);
+}
+
+int LaunchElevated(const int iArgc, wchar_t* aArgv[])
 {
 	// construct a command line containing just the argument passed this executable
 	const std::wstring sCommand = L"/RelaunchComplete " + ArgvToCommandLine(2, iArgc - 1,
@@ -50,7 +71,7 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 		.lpDirectory = sCurrentDir,
 		.nShow = SW_SHOWNORMAL
 	};
-	
+
 	if (ShellExecuteEx(&tShellExecInfo) == FALSE)
 	{
 		PrintMessage(L"ERROR: Could not relaunch as elevated.\n");
@@ -64,30 +85,28 @@ int LaunchElevated(const int iArgc, wchar_t *aArgv[])
 
 	// wait for completion and return process exit code
 	SmartPointer<HANDLE> hProcess(CloseHandle, tShellExecInfo.hProcess);
-	WaitForSingleObject(hProcess, INFINITE);
 	DWORD iExitCode = 0;
-	GetExitCodeProcess(hProcess, &iExitCode);
+	WaitForProcessExitCode(hProcess, iExitCode);
 	return iExitCode;
 }
 
-int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
+int LaunchNewLogon(const int iArgc, wchar_t* aArgv[])
 {
 	// setup the interface parameters for credential solicitation
 	CREDUI_INFO cui{ .cbSize = sizeof(CREDUI_INFO) };
-	cui.pszMessageText = L"In order to activate the privileges that you requested, " \
-		"you must enter your credentials to acquire a new logon token.";
+	cui.pszMessageText = L"In order to activate the privileges that you requested, "
+		L"you must enter your credentials to acquire a new logon token.";
 	cui.pszCaptionText = L"Enter Your Credentials";
 
 	// prompt the user for a set of credentials
 	DWORD iOutInformationSize = 0;
 	SmartPointer<PVOID> oOutInformation([&](PVOID p) { SecureZeroMemory(p, iOutInformationSize); CoTaskMemFree(p); }, nullptr);
 	DWORD iAuthPackage = 0;
-	DWORD iErr = 0;
 	DWORD iPromptFlags = CREDUIWIN_GENERIC;
 	BOOL bWow64 = FALSE;
 	if (IsWow64Process(GetCurrentProcess(), &bWow64) && bWow64) iPromptFlags |= CREDUIWIN_PACK_32_WOW;
-	if ((iErr = CredUIPromptForWindowsCredentials(&cui, 0, &iAuthPackage, nullptr, 0,
-		&oOutInformation, &iOutInformationSize, nullptr, iPromptFlags)) != NO_ERROR)
+	if (CredUIPromptForWindowsCredentials(&cui, 0, &iAuthPackage, nullptr, 0,
+		&oOutInformation, &iOutInformationSize, nullptr, iPromptFlags) != NO_ERROR)
 	{
 		PrintMessage(L"A problem occurred while soliciting the credentials.\n");
 		return __LINE__;
@@ -97,27 +116,25 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	WCHAR sUserName[CREDUI_MAX_USERNAME_LENGTH + 1] = L"";
 	DWORD iUserName = _countof(sUserName);
 	WCHAR sPassword[CREDUI_MAX_PASSWORD_LENGTH + 1] = L"";
-	SmartPointer<PWSTR> oPasswordCleanup([&](PWSTR p) { SecureZeroMemory(p, sizeof(sPassword)); }, sPassword);
+	ScopeExit oPasswordCleanup([&] { SecureZeroMemory(sPassword, sizeof(sPassword)); });
 	DWORD iPassword = _countof(sPassword);
-	if ((iErr = CredUnPackAuthenticationBuffer(0,
-		oOutInformation, iOutInformationSize, sUserName, &iUserName, nullptr, nullptr, sPassword, &iPassword)) == FALSE)
+	if (CredUnPackAuthenticationBuffer(0, oOutInformation, iOutInformationSize,
+		sUserName, &iUserName, nullptr, nullptr, sPassword, &iPassword) == FALSE)
 	{
 		PrintMessage(L"A problem occurred while decoding the credentials.\n");
 		return __LINE__;
 	}
-	SmartPointer<HANDLE> hCurrentToken(CloseHandle, nullptr);
-	alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aCurrentUserBuffer{};
-	DWORD iCurrentUserBytes = 0;
-	SmartPointer<LPWSTR> sCurrentUserSid(LocalFree, nullptr);
-	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hCurrentToken) ||
-		!GetTokenInformation(hCurrentToken, TokenUser, aCurrentUserBuffer.data(),
-			static_cast<DWORD>(aCurrentUserBuffer.size()), &iCurrentUserBytes) ||
-		!ConvertSidToStringSidW(reinterpret_cast<PTOKEN_USER>(aCurrentUserBuffer.data())->User.Sid, &sCurrentUserSid))
+
+	// Verify the prompted credentials belong to the current process token's user.
+	alignas(TOKEN_USER) TokenUserBuffer aCurrentUserBuffer{};
+	const PSID pCurrentSid = GetTokenUserSid(nullptr, aCurrentUserBuffer);
+	if (pCurrentSid == nullptr)
 	{
 		PrintMessage(L"ERROR: Could not validate the current user identity.\n");
 		return __LINE__;
 	}
-	if (GetSidStringForUser(sUserName) != std::wstring(sCurrentUserSid))
+	SidBuffer aEnteredSid{};
+	if (!LookupUserSid(sUserName, aEnteredSid) || !EqualSid(aEnteredSid.data(), pCurrentSid))
 	{
 		PrintMessage(L"ERROR: Credentials must be for the current user.\n");
 		return __LINE__;
@@ -125,10 +142,9 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 
 	// pull apart the domain from the user name
 	WCHAR sUserNameShort[CREDUI_MAX_USERNAME_LENGTH + 1] = L"";
-	constexpr DWORD iUserNameShort = _countof(sUserNameShort);
 	WCHAR sDomainName[CREDUI_MAX_DOMAIN_TARGET_LENGTH + 1] = L"";
-	constexpr DWORD iDomainName = _countof(sDomainName);
-	if (CredUIParseUserName(sUserName, sUserNameShort, iUserNameShort, sDomainName, iDomainName) != NO_ERROR)
+	if (CredUIParseUserName(sUserName, sUserNameShort, _countof(sUserNameShort),
+		sDomainName, _countof(sDomainName)) != NO_ERROR)
 	{
 		PrintMessage(L"ERROR: Could not parse the credential account name.\n");
 		return __LINE__;
@@ -139,7 +155,6 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 		.dwFlags = STARTF_USESHOWWINDOW,
 		.wShowWindow = SW_HIDE
 	};
-	
 	PROCESS_INFORMATION o_ProcessInfo{};
 
 	// reconstruct a command line with a flag to indicate relaunch
@@ -154,7 +169,7 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 		PrintMessage(L"ERROR: Problem obtaining current directory.\n");
 		return __LINE__;
 	}
-	
+
 	// relaunch process under altered security policy
 	const LPCWSTR pDomainName = sDomainName[0] == L'\0' ? nullptr : sDomainName;
 	const BOOL bCreateResult = CreateProcessWithLogonW(sUserNameShort, pDomainName, sPassword,
@@ -173,50 +188,9 @@ int LaunchNewLogon(const int iArgc, wchar_t *aArgv[])
 	// return process exit code
 	SmartPointer<HANDLE> hProcess(CloseHandle, o_ProcessInfo.hProcess);
 	SmartPointer<HANDLE> hThread(CloseHandle, o_ProcessInfo.hThread);
-	WaitForSingleObject(hProcess, INFINITE);
 	DWORD iExitCode = 0;
-	GetExitCodeProcess(hProcess, &iExitCode);
+	WaitForProcessExitCode(hProcess, iExitCode);
 	return iExitCode;
-}
-
-static constexpr WCHAR SYSTEM_SID_STRING[] = L"S-1-5-18";
-static constexpr DWORD INVALID_SESSION = 0xFFFFFFFF;
-
-static std::wstring GetSidStringForUser(const std::wstring& username)
-{
-	// Prepare buffers for SID and domain lookup
-	std::array<BYTE, SECURITY_MAX_SID_SIZE> sidBuffer{};
-	WCHAR domainBuffer[DNLEN + 1];
-	DWORD sidSize = static_cast<DWORD>(sidBuffer.size());
-	DWORD domainSize = DNLEN + 1;
-	SID_NAME_USE sidUse;
-	SmartPointer<LPWSTR> sidString(LocalFree, nullptr);
-
-	// Resolve username to SID and convert to string
-	if (!LookupAccountNameW(nullptr, username.c_str(), sidBuffer.data(), &sidSize, domainBuffer, &domainSize, &sidUse) ||
-		!ConvertSidToStringSidW(sidBuffer.data(), &sidString))
-	{
-		return {};
-	}
-
-	return std::wstring(sidString);
-}
-
-static std::wstring GetSessionUserSidString(const DWORD sessionId)
-{
-	// Query session for username and domain
-	SmartPointer<LPWSTR> pUserName(WTSFreeMemory, nullptr);
-	SmartPointer<LPWSTR> pDomainName(WTSFreeMemory, nullptr);
-	DWORD bytesReturned = 0;
-
-	if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSUserName, &pUserName, &bytesReturned) || bytesReturned <= sizeof(WCHAR) ||
-		!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessionId, WTSDomainName, &pDomainName, &bytesReturned) || bytesReturned <= sizeof(WCHAR))
-	{
-		return {};
-	}
-
-	// Convert domain\username to SID string
-	return GetSidStringForUser(std::wstring(pDomainName) + L"\\" + std::wstring(pUserName));
 }
 
 static DWORD FindTargetSession(const std::wstring& username)
@@ -224,18 +198,12 @@ static DWORD FindTargetSession(const std::wstring& username)
 	// Enumerate all sessions on the system
 	SmartPointer<PWTS_SESSION_INFOW> pSessionInfo(WTSFreeMemory, nullptr);
 	DWORD sessionCount = 0;
-
 	if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pSessionInfo, &sessionCount))
-	{
 		return INVALID_SESSION;
-	}
 
 	// Resolve target username to SID if specified
-	const std::wstring targetSidString = username.empty() ? std::wstring{} : GetSidStringForUser(username);
-	if (!username.empty() && targetSidString.empty())
-	{
-		return INVALID_SESSION;
-	}
+	SidBuffer targetSid{};
+	if (!username.empty() && !LookupUserSid(username, targetSid)) return INVALID_SESSION;
 
 	// Iterate sessions to find best match
 	const DWORD consoleSessionId = username.empty() ? WTSGetActiveConsoleSessionId() : INVALID_SESSION;
@@ -244,15 +212,16 @@ static DWORD FindTargetSession(const std::wstring& username)
 	{
 		const DWORD sessionId = pSessionInfo[i].SessionId;
 		const WTS_CONNECTSTATE_CLASS state = pSessionInfo[i].State;
-		const std::wstring sessionSidString = GetSessionUserSidString(sessionId);
+		SidBuffer sessionSid{};
+		if (!GetSessionUserSid(sessionId, sessionSid)) continue;
 		if (username.empty())
 		{
 			// Prefer the active console session, then the first other active non-SYSTEM user session
-			if (state != WTSActive || sessionSidString.empty() || sessionSidString == SYSTEM_SID_STRING) continue;
+			if (state != WTSActive || IsWellKnownSid(sessionSid.data(), WinLocalSystemSid)) continue;
 			if (sessionId == consoleSessionId) return sessionId;
 			if (fallbackSessionId == INVALID_SESSION) fallbackSessionId = sessionId;
 		}
-		else if (sessionSidString == targetSidString)
+		else if (EqualSid(sessionSid.data(), targetSid.data()))
 		{
 			// Prefer an active session for the named user, then the first disconnected one
 			if (state == WTSActive) return sessionId;
@@ -262,23 +231,20 @@ static DWORD FindTargetSession(const std::wstring& username)
 	return fallbackSessionId;
 }
 
-int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait, const std::vector<std::wstring>& vProcessesToKill)
+int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, bool bWait,
+	const std::vector<std::wstring>& vProcessesToKill)
 {
 	// Reject a missing target before selecting a session or terminating any processes.
 	if (commandLine.empty()) return ERROR_INVALID_PARAMETER;
 
 	// Find appropriate session for target user
 	const DWORD targetSessionId = FindTargetSession(username);
-	if (targetSessionId == INVALID_SESSION)
-	{
-		return __LINE__;
-	}
+	if (targetSessionId == INVALID_SESSION) return __LINE__;
 
 	// Get user token and create environment block
 	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
 	SmartPointer<HANDLE> hPrimaryToken(CloseHandle, nullptr);
 	SmartPointer<LPVOID> pEnvironment(DestroyEnvironmentBlock, nullptr);
-
 	if (!WTSQueryUserToken(targetSessionId, &hToken) ||
 		!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &hPrimaryToken) ||
 		!CreateEnvironmentBlock(&pEnvironment, hPrimaryToken, FALSE))
@@ -289,12 +255,10 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 	// Session IDs can be reused; verify the acquired token still belongs to the requested account.
 	if (!username.empty())
 	{
-		alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> buffer{};
-		DWORD bytes = 0;
-		SmartPointer<LPWSTR> tokenSid(LocalFree, nullptr);
-		if (!GetTokenInformation(hPrimaryToken, TokenUser, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes) ||
-			!ConvertSidToStringSidW(reinterpret_cast<PTOKEN_USER>(buffer.data())->User.Sid, &tokenSid) ||
-			GetSidStringForUser(username) != std::wstring(tokenSid))
+		alignas(TOKEN_USER) TokenUserBuffer buffer{};
+		const PSID pTokenSid = GetTokenUserSid(hPrimaryToken, buffer);
+		SidBuffer targetSid{};
+		if (pTokenSid == nullptr || !LookupUserSid(username, targetSid) || !EqualSid(pTokenSid, targetSid.data()))
 		{
 			PrintMessage(L"ERROR: The session token does not match the requested user.\n");
 			return __LINE__;
@@ -312,9 +276,7 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 			PrintMessage(L"ERROR: Could not allocate the MediumPlus integrity SID: %lu\n", GetLastError());
 			return __LINE__;
 		}
-		TOKEN_MANDATORY_LABEL tml{};
-		tml.Label.Attributes = SE_GROUP_INTEGRITY;
-		tml.Label.Sid = pNewSid;
+		TOKEN_MANDATORY_LABEL tml{ .Label = { .Sid = pNewSid, .Attributes = SE_GROUP_INTEGRITY } };
 		if (!SetTokenInformation(hPrimaryToken, TokenIntegrityLevel, &tml,
 			sizeof(TOKEN_MANDATORY_LABEL) + GetLengthSid(pNewSid)))
 		{
@@ -327,7 +289,7 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 		.dwFlags = STARTF_USESHOWWINDOW, .wShowWindow = SW_SHOW };
 
 	// Launch process as the target user
-	PROCESS_INFORMATION pi = {};
+	PROCESS_INFORMATION pi{};
 	std::wstring cmdLineCopy = commandLine;
 	int iCommandArgc = 0;
 	LPWSTR* pParsedCommand = CommandLineToArgvW(commandLine.c_str(), &iCommandArgc);
@@ -360,7 +322,8 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 	// Terminate requested processes only after validating the token and command.
 	KillProcesses(vProcessesToKill, targetSessionId);
 
-	if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
+	if (!CreateProcessAsUserW(hPrimaryToken, nullptr, cmdLineCopy.data(), nullptr, nullptr, FALSE,
+		CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE, pEnvironment, nullptr, &si, &pi))
 	{
 		return __LINE__;
 	}
@@ -370,8 +333,6 @@ int LaunchAsUser(const std::wstring& commandLine, const std::wstring& username, 
 	if (!bWait) return 0;
 
 	// Wait for process to complete and clean up handles
-	if (WaitForSingleObject(hProcess, INFINITE) == WAIT_FAILED) return __LINE__;
 	DWORD iExitCode = 0;
-	GetExitCodeProcess(hProcess, &iExitCode);
-	return iExitCode;
+	return WaitForProcessExitCode(hProcess, iExitCode) ? static_cast<int>(iExitCode) : __LINE__;
 }

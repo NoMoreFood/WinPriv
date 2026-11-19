@@ -5,6 +5,7 @@
     <WinPrivSolutionDir Condition="'$(SolutionPath)'=='' Or '$(SolutionPath)'=='*Undefined*' Or '$(WinPrivSolutionDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\'))</WinPrivSolutionDir>
     <WinPrivOutputArchitecture Condition="'$(Platform)'=='Win32'">x86</WinPrivOutputArchitecture>
     <WinPrivOutputArchitecture Condition="'$(Platform)'!='Win32'">$(Platform)</WinPrivOutputArchitecture>
+    <TargetName>$(ProjectName)</TargetName>
     <OutDir>$(WinPrivSolutionDir)Tests\Native\Build\$(Configuration)\$(WinPrivOutputArchitecture)\</OutDir>
     <IntDir>$(OutDir)Temp\$(ProjectName)\</IntDir>
     <LinkIncremental>false</LinkIncremental>
@@ -23,6 +24,7 @@
       <DebugInformationFormat Condition="'$(Configuration)'=='Debug'">ProgramDatabase</DebugInformationFormat>
       <DebugInformationFormat Condition="'$(Configuration)'!='Debug'">None</DebugInformationFormat>
       <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>..\..\..\WinPrivShared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>STRICT;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;$(WinPrivHookLoadingMode);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
@@ -30,8 +32,11 @@
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
       <GenerateDebugInformation Condition="'$(Configuration)'=='Debug'">true</GenerateDebugInformation>
       <GenerateDebugInformation Condition="'$(Configuration)'!='Debug'">false</GenerateDebugInformation>
-      <AdditionalDependencies>$(WinPrivHookAdditionalDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(WinPrivHookAdditionalDependencies)'!=''">$(WinPrivHookAdditionalDependencies);%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs Condition="'$(WinPrivHookDelayLoadDlls)'!=''">$(WinPrivHookDelayLoadDlls);%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
   </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="HookLoadingFixture.cpp" />
+  </ItemGroup>
 </Project>

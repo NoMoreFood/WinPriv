@@ -7,7 +7,6 @@
 #include "WinPrivLibrary.h"
 #include <WinSock2.h>
 #include <WS2tcpip.h>
-#include <ShlObj.h>
 #include <windns.h>
 #include <intrin.h>
 
@@ -25,8 +24,8 @@ static std::vector<HostOverride> vHostOverrides;
 static const HostOverride* FindHostOverride(_In_opt_ LPCWSTR sName, const void* pCaller) noexcept
 {
 	if (sName == nullptr) return nullptr;
-	DWORD iError = GetLastError();
-	SmartPointer<DWORD*> tErrorCleanup([](DWORD* pError) { SetLastError(*pError); }, &iError);
+	const DWORD iError = GetLastError();
+	ScopeExit tErrorCleanup([iError] { SetLastError(iError); });
 
 	// Native resolvers can dispatch work across threads; only application requests select an override.
 	HMODULE hCaller = nullptr;
@@ -49,8 +48,8 @@ static const HostOverride* FindHostOverride(_In_opt_ LPCWSTR sName, const void* 
 static const HostOverride* FindHostOverride(_In_opt_ LPCSTR sName, UINT iCodePage, const void* pCaller) noexcept
 {
 	if (sName == nullptr) return nullptr;
-	DWORD iError = GetLastError();
-	SmartPointer<DWORD*> tErrorCleanup([](DWORD* pError) { SetLastError(*pError); }, &iError);
+	const DWORD iError = GetLastError();
+	ScopeExit tErrorCleanup([iError] { SetLastError(iError); });
 	try
 	{
 		const int iLength = MultiByteToWideChar(iCodePage, 0, sName, -1, nullptr, 0);
@@ -214,14 +213,12 @@ bool AttachHostHooks(winpriv::detours::transaction& transaction)
 	// Read ordered rules before publishing hooks; replacement names stay stable for pending queries.
 	try
 	{
-		INT iCount = 0;
-		const std::wstring sCommand = std::wstring(L"WinPriv ") + _wgetenv(WINPRIV_EV_HOST_OVERRIDE);
-		LPWSTR* pArguments = CommandLineToArgvW(sCommand.c_str(), &iCount);
-		SmartPointer<LPWSTR*> tArgumentsCleanup(LocalFree, pArguments);
-		if (pArguments == nullptr || (iCount - 1) % 2 != 0) return false;
-		for (int i = 1; i + 1 < iCount; i += 2)
+		std::vector<std::wstring> vArguments;
+		if (!ParseEnvironmentArguments(WINPRIV_EV_HOST_OVERRIDE, vArguments) ||
+			vArguments.size() % 2 != 0) return false;
+		for (size_t i = 0; i < vArguments.size(); i += 2)
 		{
-			HostOverride tOverride{ NormalizeHostName(pArguments[i]), pArguments[i + 1], {} };
+			HostOverride tOverride{ NormalizeHostName(vArguments[i]), std::move(vArguments[i + 1]), {} };
 			if (tOverride.Name.empty() || tOverride.Replacement.empty()) return false;
 			for (wchar_t character : tOverride.Replacement)
 				tOverride.NarrowReplacement += static_cast<char>(character);

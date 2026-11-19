@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <WinPrivSolutionDir>$(SolutionDir)</WinPrivSolutionDir>
+    <WinPrivSolutionDir Condition="'$(SolutionPath)'=='' Or '$(SolutionPath)'=='*Undefined*' Or '$(WinPrivSolutionDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))</WinPrivSolutionDir>
+    <LinkControlFlowGuard Condition="'$(ConfigurationType)'!='StaticLibrary'">true</LinkControlFlowGuard>
+    <LinkIncremental Condition="'$(Configuration)'=='Debug'">true</LinkIncremental>
+    <LinkIncremental Condition="'$(Configuration)'!='Debug'">false</LinkIncremental>
+    <OutDir Condition="'$(Configuration)'=='Debug'">$(WinPrivSolutionDir)Build\Debug\$(PlatformTarget)\</OutDir>
+    <OutDir Condition="'$(Configuration)'!='Debug'">$(WinPrivSolutionDir)Build\$(PlatformTarget)\</OutDir>
+    <IntDir>$(OutDir)Temp\$(ProjectName)\</IntDir>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath)</IncludePath>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
+      <WarningLevel>Level3</WarningLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <PreprocessorDefinitions>STRICT;_CRT_SECURE_NO_WARNINGS;WINVER=_WIN32_WINNT_WIN10;_WIN32_WINNT=_WIN32_WINNT_WIN10;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Platform)'=='Win32'">WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)'=='Debug'">_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)'!='Debug'">NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Optimization Condition="'$(Configuration)'=='Debug'">Disabled</Optimization>
+      <Optimization Condition="'$(Configuration)'!='Debug'">Full</Optimization>
+      <FunctionLevelLinking Condition="'$(Configuration)'!='Debug'">true</FunctionLevelLinking>
+      <IntrinsicFunctions Condition="'$(Configuration)'!='Debug'">true</IntrinsicFunctions>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'!='Debug'">MultiThreaded</RuntimeLibrary>
+      <DebugInformationFormat Condition="'$(Configuration)'=='Debug'">ProgramDatabase</DebugInformationFormat>
+      <DebugInformationFormat Condition="'$(Configuration)'!='Debug'">None</DebugInformationFormat>
+    </ClCompile>
+    <Link Condition="'$(ConfigurationType)'!='StaticLibrary'">
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation Condition="'$(Configuration)'=='Debug'">true</GenerateDebugInformation>
+      <GenerateDebugInformation Condition="'$(Configuration)'!='Debug'">false</GenerateDebugInformation>
+      <EnableCOMDATFolding Condition="'$(Configuration)'!='Debug'">true</EnableCOMDATFolding>
+      <OptimizeReferences Condition="'$(Configuration)'!='Debug'">true</OptimizeReferences>
+      <SetChecksum Condition="'$(Configuration)'!='Debug'">true</SetChecksum>
+      <LinkTimeCodeGeneration Condition="'$(Configuration)'!='Debug'">UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(ConfigurationType)'=='Application'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>..\WinPrivShared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>PROJECT_NAME=L&quot;$(ProjectName)&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <StringPooling Condition="'$(Configuration)'!='Debug'">true</StringPooling>
+      <InlineFunctionExpansion Condition="'$(Configuration)'!='Debug'">AnySuitable</InlineFunctionExpansion>
+      <OmitFramePointers Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</OmitFramePointers>
+    </ClCompile>
+    <Link>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
+      <AdditionalDependencies>kernel32.lib;user32.lib;advapi32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <DelayLoadDLLs>ws2_32.dll;shell32.dll;ole32.dll;cabinet.dll;credui.dll;wtsapi32.dll;userenv.dll;normaliz.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>true</UseLibraryDependencyInputs>
+    </ProjectReference>
+    <ResourceCompile>
+      <PreprocessorDefinitions Condition="'$(Configuration)'=='Debug'">_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)'!='Debug'">_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+</Project>

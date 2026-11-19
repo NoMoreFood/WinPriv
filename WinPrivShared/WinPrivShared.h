@@ -123,7 +123,7 @@ class SmartPointer final
 public:
 
 	SmartPointer(const SmartPointer&) = delete; // non-copyable
-	T operator=(const SmartPointer& lp) = delete; // copy assignment forbidden
+	SmartPointer& operator=(const SmartPointer&) = delete; // copy assignment forbidden
 
 	SmartPointer(std::function<void(T)> cleanup, T data) : m_Cleanup(std::move(cleanup)), m_Data(data) {}
 
@@ -166,3 +166,39 @@ private:
 	std::function<void(T)> m_Cleanup;
 	T m_Data;
 };
+
+template <typename Cleanup>
+class ScopeExit final
+{
+public:
+	explicit ScopeExit(Cleanup cleanup) noexcept : m_Cleanup(std::move(cleanup)) {}
+	ScopeExit(const ScopeExit&) = delete;
+	ScopeExit& operator=(const ScopeExit&) = delete;
+	~ScopeExit() { if (m_Active) m_Cleanup(); }
+	void Dismiss() noexcept { m_Active = false; }
+
+private:
+	Cleanup m_Cleanup;
+	bool m_Active = true;
+};
+
+using TokenUserBuffer = std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE>;
+
+inline PSID GetTokenUserSid(HANDLE hToken, TokenUserBuffer& aBuffer)
+{
+	SmartPointer<HANDLE> hOwnedToken(CloseHandle, nullptr);
+	if (hToken == nullptr)
+	{
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hOwnedToken)) return nullptr;
+		hToken = hOwnedToken;
+	}
+	DWORD iBytes = 0;
+	if (!GetTokenInformation(hToken, TokenUser, aBuffer.data(), static_cast<DWORD>(aBuffer.size()), &iBytes))
+		return nullptr;
+	return reinterpret_cast<PTOKEN_USER>(aBuffer.data())->User.Sid;
+}
+
+inline bool WaitForProcessExitCode(HANDLE hProcess, DWORD& iExitCode)
+{
+	return WaitForSingleObject(hProcess, INFINITE) != WAIT_FAILED && GetExitCodeProcess(hProcess, &iExitCode) != FALSE;
+}

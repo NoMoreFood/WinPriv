@@ -1,139 +1,45 @@
-# WinPriv test suite
+# WinPriv Test Suite
 
-The suite exercises the public command-line contract, injected Win32/NT API hooks,
-process propagation, build artifacts, and local security-policy operations. The
-runner and assertions use PowerShell; most native calls are made through C#
-definitions compiled at runtime with `Add-Type`. Source builds also compile three
-small native fixtures that call the same detoured registry API through a normal PE
-import, an MSVC delay-load import, and `LoadLibraryW`/`GetProcAddress`. No test
-executable is checked in. The dynamic fixture also launches WinPriv with strict
-Control Flow Guard (CFG) on the launcher and injected target, or Arbitrary Code
-Guard (ACG). It checks allocation errors against the production Detours source.
-Mitigation settings apply only to the fixture processes and disappear when those processes exit. Strict ACG cases verify rejection and accurate errors. Cases with thread opt-out permission verify registry hooks in protected targets and descendants, successful attachment, destructor abort, failed commit, nested transaction failure, and preservation of an already opted-out thread. Assertions check that process ACG remains enabled and the original thread policy is restored.
-An unhooked native fixture first verifies ACG policy enforcement with executable
-allocation. Windows ARM64 emulation can leave ACG disabled for x86/x64 processes;
-those ACG cases are reported as unavailable with baseline evidence, while strict
-CFG and ordinary hooking tests still run.
-
-The dynamic fixture also checks process identity before termination, incomplete privilege enumeration, temporary logon-right concurrency, and smart-card routing using controlled native API failures. It does not require a physical token or create real user logons for those cases.
+The test suite verifies the public CLI contract, injected Win32/NT hooks, process propagation, build artifacts, and local security-policy operations. PowerShell drives Pester specs and assertions, runtime C# probes exercise native APIs via `Add-Type`, and three native fixtures (`WinPrivHookImport.exe`, `WinPrivHookDelayLoad.exe`, `WinPrivHookDynamic.exe`) verify load-time import, MSVC delay-load, dynamic `LoadLibraryW`/`GetProcAddress`, CFG/ACG mitigations, and controlled native API failure paths without checking binaries into the repository.
 
 ## Requirements
 
-- Windows and PowerShell 7.6 for the main runner.
-- Visual Studio/MSBuild with the v145 C++ toolset and Windows SDK 10 when the
-  runner builds from source. The x86, x64, and ARM64 C++ components are all
-  required because every launcher embeds all three injection payloads. Use
-  `-BinaryRoot` to test an existing complete build without installing build
-  tools on the test workstation. A release-only binary tree without the native
-  hook-loading fixtures can still be tested; the explicitly gated loading-path
-  and mitigation capabilities are reported as unavailable.
-- Network access on the first run to download the Pester version pinned in `RequiredModules.psd1` into `Tests/.tools`; later runs can use `-Offline`.
-- The Admin profile must run from an elevated administrator token.
-- Fresh-user Admin cases require the Secondary Logon service and a local policy
-  that permits the builtin Users alias to log on locally.
+- Windows with PowerShell 7.6 for `Invoke-WinPrivTests.ps1`.
+- Visual Studio/MSBuild with the `v145` C++ toolset (x86, x64, and ARM64 components) and Windows 10 SDK when building from source. Pass `-BinaryRoot` to test existing binaries without local build tools; missing native fixtures are reported as explicitly gated `Unavailable` capabilities.
+- Network access on the first run to download the pinned Pester package from `RequiredModules.psd1` into `Tests\.tools` (subsequent runs accept `-Offline`).
+- Elevated administrator token on a workstation or member server for `Admin` and `Full` profiles (domain controllers are unsupported). Fresh-user cases require the Secondary Logon service and a local policy allowing builtin `Users` interactive logon.
 
-The Admin profile uses only the workstation's local SAM and is supported on a
-standalone/workgroup PC; it does not require a domain account or domain
-controller. Domain controllers are outside this local-SAM test contract.
-
-The x86 launcher is paired with 32-bit Windows PowerShell 5.1. The x64 and
-ARM64 launchers are paired with matching PowerShell 7.6 hosts. Override host
-discovery with `WINPRIV_TEST_POWERSHELL_X86`,
-`WINPRIV_TEST_POWERSHELL_X64`, or `WINPRIV_TEST_POWERSHELL_ARM64`.
-The cross-architecture propagation tests explicitly override that default
-pairing to exercise x86 -> x64 -> x86 and x64 -> x86 -> x64 process trees.
-
-## Probe contract
-
-`Probes\Invoke-WinPrivProbe.ps1` is compatible with Windows PowerShell 5.1 and
-PowerShell 7.6. It accepts `-Operation`, `-OutputPath`, and either
-`-ArgumentsJson` or UTF-8 `-ArgumentsBase64`, then writes one atomic JSON
-envelope containing `supported`, `success`, `reason`, `result`, and `error`.
-Operations cover process/token state, arguments, environment/current directory, registry Win32 and NT queries, networking, AMSI, identity/version, crypto, ODBC/ADO, Win32 and native file redirection, clock offsets, smart-card routing, LSA rights, and CreateProcessA/W descendants. The harness always invokes it through the architecture-matched host.
+The x86 launcher pairs with 32-bit Windows PowerShell 5.1; x64 and ARM64 launchers pair with matching PowerShell 7.6 hosts. Override discovery with `WINPRIV_TEST_POWERSHELL_X86`, `WINPRIV_TEST_POWERSHELL_X64`, or `WINPRIV_TEST_POWERSHELL_ARM64`.
 
 ## Running
 
-Build an isolated copy of the current working tree and run safe tests:
-
 ```powershell
+# Build an isolated source copy and run Safe tests
 pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Safe
-```
 
-Use `-Configuration Debug` to build the isolated source copy with the Debug
-configuration and run the same suite against `Build\Debug`:
+# Build and run Debug binaries
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Safe -Configuration Debug
 
-```powershell
-pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 `
-  -Profile Safe -Configuration Debug
-```
-
-Run the elevated, machine-state-sensitive tests:
-
-```powershell
+# Run elevated Admin tests
 pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Admin
+
+# Run Safe + Admin tests and keep all sandbox artifacts
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Full -Architecture Auto -KeepArtifacts
+
+# Test existing binaries without rebuilding
+pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 -Profile Safe -BinaryRoot .\Build -Architecture Auto
 ```
 
-Run all local profiles and retain every per-test artifact:
+`-ResultsPath` must be a new path or an empty directory. `-AllowGlobalPolicyMutation` opts in to testing no-username `/ClearDenyRights` (snapshot-journaled and restored in `finally`); use it only on a disposable VM.
 
-```powershell
-pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 `
-  -Profile Full -Architecture Auto -KeepArtifacts
-```
+## Profiles and Containment
 
-Test previously built binaries instead of compiling a staged source copy:
+- **Safe** isolates files, GUID-named HKCU keys, processes, and extracted DLLs under a marked run root without mutating local security policy.
+- **Admin** creates GUID-named local group/user fixtures (in builtin `Users`, without loading user profiles), copies probes into an ACL-scoped sandbox, and journals every principal, ACL, and LSA right for restoration before cleanup.
+- **Full** runs both `Safe` and `Admin` suites. Interactive dialog tests run only when an input desktop is available.
 
-```powershell
-pwsh -NoProfile -NonInteractive -File .\Tests\Invoke-WinPrivTests.ps1 `
-  -Profile Safe -BinaryRoot .\Build -Architecture Auto
-```
+Every launched process runs inside a mandatory kill-on-close Windows Job Object with a timeout. The runner reconciles current-run and stale-run journals by exact ownership markers, refusing reparse points. Out-of-scope paths (SYSTEM/WTS run-as, two-host SMB lock breaking, interactive credential relaunch) remain visible in `Capabilities.psd1` as `Unavailable`.
 
-`-ResultsPath` must name either a path that does not yet exist or an existing
-empty directory. The runner refuses files and nonempty directories so reports
-and JSONL event streams from separate runs cannot be mixed.
+## Output
 
-`-AllowGlobalPolicyMutation` enables the no-username form of
-`/ClearDenyRights`. It is never implied by `Admin` or `Full`. Before invoking
-it, the suite snapshots all deny-right assignments and records a recovery
-journal; restoration is verified in `finally`. Use it only on a disposable VM.
-
-## Profiles and safety
-
-- **Safe** confines files, registry values, processes, and temporary DLLs to a
-  GUID-named suite root. It does not intentionally change local security policy.
-- **Admin** uses a GUID-named empty local group for account-right tests and a
-  temporary local user only for fresh-logon token tests. Principal creation is
-  journaled before the local SAM is changed, and the user is placed in the
-  locale-independent builtin Users alias. Fresh-user probe files are copied
-  into the ACL-scoped sandbox; no repository access or loaded user profile is
-  required. Every SID/right/ACL is journaled and restored before the test root
-  is removed.
-- **Full** selects both Safe and Admin tests. Interactive dialog tests run only when an input desktop is available.
-
-Every launched process is bounded by a timeout and placed in a Windows Job
-Object when the host permits it. Process cleanup is by recorded PID, image path,
-and start time—not by a broad executable name. ACL fixtures live on NTFS under
-the suite root and preserve their original owner, SDDL, and content hash.
-The runner performs a second exact-marker journal reconciliation in `finally`,
-so an aborted Pester teardown cannot discard the only recovery record.
-
-The selected scope deliberately does not perform positive SYSTEM/WTS run-as
-tests, the true two-host SMB lock-breaking path, or interactive credential/UAC
-privilege relaunch. Those capabilities remain in `Capabilities.psd1` and appear
-as explicitly unavailable rather than silently disappearing.
-
-## Results
-
-The results directory contains:
-
-- `WinPriv.Tests.xml` — NUnit test results;
-- `run-summary.json` — the main runner host path, PowerShell version/edition,
-  process and OS architectures, elevation state, binary hashes, gates, and totals;
-- `coverage.json` — one terminal result for every capability in the manifest;
-- `cleanup-delta.json` — processes, files, ACLs, principals, and LSA deltas observed
-  during teardown;
-- `process-events.jsonl` — bounded Job Object launch evidence; any timeout,
-  start failure, or uncontained process tree fails the run;
-- `artifacts/` — retained failure evidence, or all evidence with
-  `-KeepArtifacts`.
-
-Known WinPriv defects are not allowlisted. A test failure, timeout, unexpected skip, missing capability result, or residual-state delta makes the runner exit nonzero.
+Each run writes `WinPriv.Tests.xml` (NUnit), `run-summary.json`, `coverage.json`, `cleanup-delta.json`, `process-events.jsonl`, and (on failure or `-KeepArtifacts`) `artifacts/`. Any test failure, timeout, unexpected skip, missing capability, uncontained process, or residual state causes a nonzero exit code.

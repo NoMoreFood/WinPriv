@@ -4,14 +4,12 @@
 //
 
 #include "WinPrivLibrary.h"
-#include <Shellapi.h>
 #include <LM.h>
 #include <algorithm>
 #include <array>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <regex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -377,10 +375,6 @@ static NTSTATUS NTAPI DetourNtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK
 //  |    | |___ |___    \__/ |    |___ | \|
 //
 
-// Compile the path formats before hooks can run concurrently on application threads.
-static const std::wregex tRegexLocal(LR"(\\\?\?\\(.*))", std::wregex::optimize);
-static const std::wregex tRegexUnc(LR"(\\\?\?\\UNC\\([^\\]+?)\\([^\\]+?)\\(.*))", std::wregex::optimize);
-
 static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 {
 	if (sFileNameUnicodeString == nullptr || sFileNameUnicodeString->Buffer == nullptr ||
@@ -389,34 +383,36 @@ static bool CloseFileHandle(PUNICODE_STRING sFileNameUnicodeString)
 	std::wstring sComputerName;
 	std::wstring sPath;
 
-	const std::wstring sFileName(sFileNameUnicodeString->Buffer, sFileNameUnicodeString->Length / sizeof(WCHAR));
+	const std::wstring_view sFileName(sFileNameUnicodeString->Buffer,
+		sFileNameUnicodeString->Length / sizeof(WCHAR));
+	constexpr std::wstring_view sUncPrefix = L"\\??\\UNC\\";
+	constexpr std::wstring_view sLocalPrefix = L"\\??\\";
 
-	// see if the path looks like a unc path
-	std::wsmatch tMatches;
-	if (std::regex_match(sFileName, tMatches, tRegexUnc))
+	// Resolve UNC paths through NetShareGetInfo and strip the NT device prefix from local paths.
+	if (sFileName.starts_with(sUncPrefix))
 	{
-		// extract the important parts of the regular expression result
-		sComputerName = tMatches[1].str();
-		const std::wstring sShareName = tMatches[2].str();
-		const std::wstring sLocalPath = tMatches[3].str();
+		const std::wstring_view sRest = sFileName.substr(sUncPrefix.size());
+		const size_t iShareSep = sRest.find(L'\\');
+		const size_t iPathSep = iShareSep == std::wstring_view::npos
+			? std::wstring_view::npos : sRest.find(L'\\', iShareSep + 1);
+		if (iShareSep == 0 || iShareSep == std::wstring_view::npos ||
+			iPathSep == iShareSep + 1 || iPathSep == std::wstring_view::npos) return false;
+		sComputerName = sRest.substr(0, iShareSep);
+		std::wstring sShareName(sRest.substr(iShareSep + 1, iPathSep - iShareSep - 1));
+		const std::wstring_view sLocalPath = sRest.substr(iPathSep + 1);
 
-		// get the real path name using the computer and share name
 		SmartPointer<PSHARE_INFO_502> tShareInfo(NetApiBufferFree, nullptr);
-		if (NetShareGetInfo((LPWSTR)sComputerName.c_str(), (LPWSTR)sShareName.c_str(),
-			502, (LPBYTE*)&tShareInfo) != NERR_Success || tShareInfo == nullptr) return false;
-		const size_t iSharePathLength = tShareInfo->shi502_path == nullptr ? 0 : wcslen(tShareInfo->shi502_path);
-		if (iSharePathLength == 0) return false;
-		const bool bNeedsBackslash = tShareInfo->shi502_path[iSharePathLength - 1] != L'\\';
-		sPath = std::wstring(tShareInfo->shi502_path) + ((bNeedsBackslash) ? L"\\" : L"") + sLocalPath;
+		if (NetShareGetInfo(sComputerName.data(), sShareName.data(),
+			502, reinterpret_cast<LPBYTE*>(&tShareInfo)) != NERR_Success || tShareInfo == nullptr) return false;
+		const std::wstring_view sSharePath = tShareInfo->shi502_path == nullptr
+			? std::wstring_view{} : std::wstring_view(tShareInfo->shi502_path);
+		if (sSharePath.empty()) return false;
+		sPath = std::wstring(sSharePath) + (sSharePath.back() == L'\\' ? L"" : L"\\") + std::wstring(sLocalPath);
 	}
-
-	// see if the path looks like a local path
-	else if (std::regex_match(sFileName, tMatches, tRegexLocal))
+	else if (sFileName.starts_with(sLocalPrefix))
 	{
-		sPath = tMatches[1].str();
+		sPath = sFileName.substr(sLocalPrefix.size());
 	}
-
-	// unrecognized path type
 	else
 	{
 		return false;
@@ -512,16 +508,14 @@ bool AttachFileHooks(winpriv::detours::transaction& transaction)
 	{
 		try
 		{
-			int count = 0;
-			const std::wstring command = std::wstring(L"WinPriv ") + _wgetenv(WINPRIV_EV_FILE_RULES);
-			SmartPointer<LPWSTR*> arguments(LocalFree, CommandLineToArgvW(command.c_str(), &count));
-			if (arguments == nullptr || (count - 1) % 2 != 0) return false;
-			for (int index = 1; index < count; index += 2)
+			std::vector<std::wstring> arguments;
+			if (!ParseEnvironmentArguments(WINPRIV_EV_FILE_RULES, arguments) ||
+				arguments.size() % 2 != 0) return false;
+			for (size_t index = 0; index < arguments.size(); index += 2)
 			{
 				std::wstring source = FileMatchPath(arguments[index]);
-				std::wstring destination = arguments[index + 1];
-				if (source.empty() || destination.empty()) return false;
-				fileRules.push_back({ std::move(source), std::move(destination) });
+				if (source.empty() || arguments[index + 1].empty()) return false;
+				fileRules.push_back({ std::move(source), std::move(arguments[index + 1]) });
 			}
 		}
 		catch (...)

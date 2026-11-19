@@ -73,15 +73,7 @@ static void WINAPI DetourGetSystemTimeAsFileTime(LPFILETIME pTime)
 static void WINAPI DetourGetSystemTimePreciseAsFileTime(LPFILETIME pTime)
 {
 	// Call the native trampoline directly so a nested hook cannot apply the offset twice.
-	if (TrueRtlGetSystemTimePrecise != nullptr)
-	{
-		const LONGLONG iTime = DetourRtlGetSystemTimePrecise();
-		pTime->dwLowDateTime = static_cast<DWORD>(iTime);
-		pTime->dwHighDateTime = static_cast<DWORD>(iTime >> 32);
-		return;
-	}
-	TrueGetSystemTimePreciseAsFileTime(pTime);
-	const LONGLONG iTime = ShiftMockTime(static_cast<LONGLONG>(pTime->dwHighDateTime) << 32 | pTime->dwLowDateTime);
+	const LONGLONG iTime = DetourRtlGetSystemTimePrecise();
 	pTime->dwLowDateTime = static_cast<DWORD>(iTime);
 	pTime->dwHighDateTime = static_cast<DWORD>(iTime >> 32);
 }
@@ -105,52 +97,13 @@ static void WINAPI DetourGetLocalTime(LPSYSTEMTIME pTime)
 	SetLastError(iLastError);
 }
 
-static int WINAPI DetourGetDateFormatA(LCID iLocale, DWORD iFlags, const SYSTEMTIME* pTime,
-	LPCSTR sFormat, LPSTR sOutput, int iCount)
+template <auto* TrueFunction, typename Locale, typename Char, typename... Extra>
+static int WINAPI DetourFormatLocalTime(Locale iLocale, DWORD iFlags, const SYSTEMTIME* pTime,
+	const Char* sFormat, Char* sOutput, int iCount, Extra... extra)
 {
 	SYSTEMTIME tTime{};
 	if (pTime == nullptr) { DetourGetLocalTime(&tTime); pTime = &tTime; }
-	return TrueGetDateFormatA(iLocale, iFlags, pTime, sFormat, sOutput, iCount);
-}
-
-static int WINAPI DetourGetDateFormatW(LCID iLocale, DWORD iFlags, const SYSTEMTIME* pTime,
-	LPCWSTR sFormat, LPWSTR sOutput, int iCount)
-{
-	SYSTEMTIME tTime{};
-	if (pTime == nullptr) { DetourGetLocalTime(&tTime); pTime = &tTime; }
-	return TrueGetDateFormatW(iLocale, iFlags, pTime, sFormat, sOutput, iCount);
-}
-
-static int WINAPI DetourGetDateFormatEx(LPCWSTR sLocale, DWORD iFlags, const SYSTEMTIME* pTime,
-	LPCWSTR sFormat, LPWSTR sOutput, int iCount, LPCWSTR sCalendar)
-{
-	SYSTEMTIME tTime{};
-	if (pTime == nullptr) { DetourGetLocalTime(&tTime); pTime = &tTime; }
-	return TrueGetDateFormatEx(sLocale, iFlags, pTime, sFormat, sOutput, iCount, sCalendar);
-}
-
-static int WINAPI DetourGetTimeFormatA(LCID iLocale, DWORD iFlags, const SYSTEMTIME* pTime,
-	LPCSTR sFormat, LPSTR sOutput, int iCount)
-{
-	SYSTEMTIME tTime{};
-	if (pTime == nullptr) { DetourGetLocalTime(&tTime); pTime = &tTime; }
-	return TrueGetTimeFormatA(iLocale, iFlags, pTime, sFormat, sOutput, iCount);
-}
-
-static int WINAPI DetourGetTimeFormatW(LCID iLocale, DWORD iFlags, const SYSTEMTIME* pTime,
-	LPCWSTR sFormat, LPWSTR sOutput, int iCount)
-{
-	SYSTEMTIME tTime{};
-	if (pTime == nullptr) { DetourGetLocalTime(&tTime); pTime = &tTime; }
-	return TrueGetTimeFormatW(iLocale, iFlags, pTime, sFormat, sOutput, iCount);
-}
-
-static int WINAPI DetourGetTimeFormatEx(LPCWSTR sLocale, DWORD iFlags, const SYSTEMTIME* pTime,
-	LPCWSTR sFormat, LPWSTR sOutput, int iCount)
-{
-	SYSTEMTIME tTime{};
-	if (pTime == nullptr) { DetourGetLocalTime(&tTime); pTime = &tTime; }
-	return TrueGetTimeFormatEx(sLocale, iFlags, pTime, sFormat, sOutput, iCount);
+	return (*TrueFunction)(iLocale, iFlags, pTime, sFormat, sOutput, iCount, extra...);
 }
 
 template <winpriv::detours::function_pointer Function>
@@ -190,10 +143,10 @@ void AttachTimeHooks(winpriv::detours::transaction& transaction)
 	AttachClockDetour(transaction, TrueGetLocalTime, TrueBaseGetLocalTime, DetourGetLocalTime, "GetLocalTime");
 
 	// A null formatting input requests the current local date/time; explicit inputs remain conversions.
-	transaction.attach(TrueGetDateFormatA, DetourGetDateFormatA);
-	transaction.attach(TrueGetDateFormatW, DetourGetDateFormatW);
-	transaction.attach(TrueGetDateFormatEx, DetourGetDateFormatEx);
-	transaction.attach(TrueGetTimeFormatA, DetourGetTimeFormatA);
-	transaction.attach(TrueGetTimeFormatW, DetourGetTimeFormatW);
-	transaction.attach(TrueGetTimeFormatEx, DetourGetTimeFormatEx);
+	transaction.attach(TrueGetDateFormatA, DetourFormatLocalTime<&TrueGetDateFormatA, LCID, CHAR>);
+	transaction.attach(TrueGetDateFormatW, DetourFormatLocalTime<&TrueGetDateFormatW, LCID, WCHAR>);
+	transaction.attach(TrueGetDateFormatEx, DetourFormatLocalTime<&TrueGetDateFormatEx, LPCWSTR, WCHAR, LPCWSTR>);
+	transaction.attach(TrueGetTimeFormatA, DetourFormatLocalTime<&TrueGetTimeFormatA, LCID, CHAR>);
+	transaction.attach(TrueGetTimeFormatW, DetourFormatLocalTime<&TrueGetTimeFormatW, LCID, WCHAR>);
+	transaction.attach(TrueGetTimeFormatEx, DetourFormatLocalTime<&TrueGetTimeFormatEx, LPCWSTR, WCHAR>);
 }

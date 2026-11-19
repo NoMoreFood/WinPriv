@@ -38,15 +38,12 @@ void PrintMessage(_Printf_format_string_ const wchar_t* format, ...)
 	va_end(args);
 	if (length < 0) return;
 
-	auto* message = static_cast<wchar_t*>(std::calloc(static_cast<size_t>(length) + 1, sizeof(wchar_t)));
-	if (message == nullptr) return;
-
+	std::wstring message(static_cast<size_t>(length) + 1, L'\0');
 	va_start(args, format);
-	_vsnwprintf_s(message, static_cast<size_t>(length) + 1, _TRUNCATE, format, args);
+	_vsnwprintf_s(message.data(), message.size(), _TRUNCATE, format, args);
 	va_end(args);
-	if (WinPrivUsesConsoleSubsystem()) std::wprintf(L"%s", message);
-	else MessageBoxW(nullptr, message, L"WinPriv Message", MB_OK | MB_SYSTEMMODAL);
-	std::free(message);
+	if (WinPrivUsesConsoleSubsystem()) std::wprintf(L"%s", message.c_str());
+	else MessageBoxW(nullptr, message.c_str(), L"WinPriv Message", MB_OK | MB_SYSTEMMODAL);
 }
 
 std::wstring NormalizeHostName(std::wstring_view name)
@@ -307,12 +304,9 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 	if (vPrivsToGrant.empty()) return TRUE;
 
 	// get the current user sid out of the token
-	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
-	alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> aBuffer{};
-	const auto tTokenUser = reinterpret_cast<PTOKEN_USER>(aBuffer.data());
-	DWORD iBytesFilled = 0;
-	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) ||
-		!GetTokenInformation(hToken, TokenUser, tTokenUser, static_cast<DWORD>(aBuffer.size()), &iBytesFilled))
+	alignas(TOKEN_USER) TokenUserBuffer aBuffer{};
+	const PSID pSid = GetTokenUserSid(nullptr, aBuffer);
+	if (pSid == nullptr)
 	{
 		PrintMessage(L"ERROR: Could not retrieve process token information.\n");
 		return FALSE;
@@ -322,7 +316,6 @@ BOOL AlterCurrentUserPrivs(const std::vector<std::wstring>& vPrivsToGrant, const
 
 	// Preserve rights already assigned to the account but absent from its current logon token.
 	std::vector<std::wstring> vAssignedPrivs;
-	const PSID pSid = tTokenUser->User.Sid;
 	NTSTATUS iResult = bAddRights ? EnumerateAccountRights(hPolicy, pSid, vAssignedPrivs) : STATUS_SUCCESS;
 	if (iResult != STATUS_SUCCESS)
 	{

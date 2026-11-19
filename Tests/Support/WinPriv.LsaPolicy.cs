@@ -13,6 +13,7 @@ namespace WinPrivTests
         private const uint POLICY_CREATE_ACCOUNT = 0x00000010;
         private const uint POLICY_LOOKUP_NAMES = 0x00000800;
         private const int STATUS_SUCCESS = 0;
+        private const int STATUS_MORE_ENTRIES = 0x00000105;
         private const int STATUS_NO_MORE_ENTRIES = unchecked((int)0x8000001A);
         private const int STATUS_OBJECT_NAME_NOT_FOUND = unchecked((int)0xC0000034);
 
@@ -36,10 +37,13 @@ namespace WinPrivTests
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct LSA_ENUMERATION_INFORMATION
-        {
-            public IntPtr Sid;
-        }
+        private struct LSA_ENUMERATION_INFORMATION { public IntPtr Sid; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LUID { public uint LowPart; public int HighPart; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POLICY_PRIVILEGE_DEFINITION { public LSA_UNICODE_STRING Name; public LUID LocalValue; }
 
         [DllImport("advapi32.dll")]
         private static extern int LsaOpenPolicy(IntPtr systemName,
@@ -71,10 +75,9 @@ namespace WinPrivTests
         private static extern int LsaEnumerateAccountsWithUserRight(IntPtr policyHandle,
             ref LSA_UNICODE_STRING userRight, out IntPtr buffer, out uint countReturned);
 
-        public static string ResolveSid(string accountOrSid)
-        {
-            return GetSid(accountOrSid).Value;
-        }
+        [DllImport("advapi32.dll")]
+        private static extern int LsaEnumeratePrivileges(IntPtr policyHandle,
+            ref uint enumerationContext, out IntPtr buffer, uint preferredMaximumLength, out uint countReturned);
 
         public static string[] GetRights(string accountOrSid)
         {
@@ -106,7 +109,7 @@ namespace WinPrivTests
             }
         }
 
-        public static void SetRights(string accountOrSid, string[] desiredRights)
+        public static bool SetRights(string accountOrSid, string[] desiredRights)
         {
             SecurityIdentifier sid = GetSid(accountOrSid);
             string[] desired = (desiredRights ?? new string[0])
@@ -115,21 +118,24 @@ namespace WinPrivTests
             string[] current = GetRights(sid.Value);
             string[] remove = current.Except(desired, StringComparer.OrdinalIgnoreCase).ToArray();
             string[] add = desired.Except(current, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (remove.Length == 0 && add.Length == 0) return false;
             IntPtr policy = OpenPolicy(POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT);
             try
             {
+                byte[] sidBytes = SidBytes(sid);
                 if (remove.Length != 0)
                 {
                     WithStrings(remove, values => ThrowStatus(
-                        LsaRemoveAccountRights(policy, SidBytes(sid), false, values, (uint)values.Length),
+                        LsaRemoveAccountRights(policy, sidBytes, false, values, (uint)values.Length),
                         "LsaRemoveAccountRights"));
                 }
                 if (add.Length != 0)
                 {
                     WithStrings(add, values => ThrowStatus(
-                        LsaAddAccountRights(policy, SidBytes(sid), values, (uint)values.Length),
+                        LsaAddAccountRights(policy, sidBytes, values, (uint)values.Length),
                         "LsaAddAccountRights"));
                 }
+                return true;
             }
             finally { LsaClose(policy); }
         }
@@ -166,23 +172,63 @@ namespace WinPrivTests
             }
         }
 
-        public static void SetAccountsWithRight(string right, string[] desiredAccountsOrSids)
+        public static bool SetAccountsWithRight(string right, string[] desiredAccountsOrSids)
         {
             string[] desired = (desiredAccountsOrSids ?? new string[0])
-                .Where(value => !String.IsNullOrWhiteSpace(value)).Select(ResolveSid)
+                .Where(value => !String.IsNullOrWhiteSpace(value)).Select(value => GetSid(value).Value)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             string[] current = GetAccountSidsWithRight(right);
-            foreach (string sid in current.Except(desired, StringComparer.OrdinalIgnoreCase))
+            string[] toRemove = current.Except(desired, StringComparer.OrdinalIgnoreCase).ToArray();
+            string[] toAdd = desired.Except(current, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (toRemove.Length == 0 && toAdd.Length == 0) return false;
+            IntPtr policy = OpenPolicy(POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT);
+            try
             {
-                string[] rights = GetRights(sid).Where(value =>
-                    !String.Equals(value, right, StringComparison.OrdinalIgnoreCase)).ToArray();
-                SetRights(sid, rights);
+                WithStrings(new string[] { right }, values =>
+                {
+                    foreach (string sid in toRemove)
+                        ThrowStatus(LsaRemoveAccountRights(policy, SidBytes(GetSid(sid)), false, values, 1),
+                            "LsaRemoveAccountRights");
+                    foreach (string sid in toAdd)
+                        ThrowStatus(LsaAddAccountRights(policy, SidBytes(GetSid(sid)), values, 1),
+                            "LsaAddAccountRights");
+                });
+                return true;
             }
-            foreach (string sid in desired.Except(current, StringComparer.OrdinalIgnoreCase))
+            finally { LsaClose(policy); }
+        }
+
+        public static string[] GetAvailablePrivileges()
+        {
+            IntPtr policy = OpenPolicy(POLICY_VIEW_LOCAL_INFORMATION);
+            try
             {
-                string[] rights = GetRights(sid).Concat(new string[] { right }).ToArray();
-                SetRights(sid, rights);
+                List<string> names = new List<string>();
+                uint context = 0;
+                int size = Marshal.SizeOf(typeof(POLICY_PRIVILEGE_DEFINITION));
+                while (true)
+                {
+                    IntPtr buffer = IntPtr.Zero;
+                    uint count;
+                    int status = LsaEnumeratePrivileges(policy, ref context, out buffer, 0xFFFFFFFFu, out count);
+                    try
+                    {
+                        if (status == STATUS_NO_MORE_ENTRIES) break;
+                        if (status != STATUS_SUCCESS && status != STATUS_MORE_ENTRIES)
+                            ThrowStatus(status, "LsaEnumeratePrivileges");
+                        for (uint index = 0; index < count; index++)
+                        {
+                            POLICY_PRIVILEGE_DEFINITION entry = (POLICY_PRIVILEGE_DEFINITION)Marshal.PtrToStructure(
+                                IntPtr.Add(buffer, checked((int)(index * size))), typeof(POLICY_PRIVILEGE_DEFINITION));
+                            names.Add(ReadString(entry.Name));
+                        }
+                        if (status == STATUS_SUCCESS) break;
+                    }
+                    finally { if (buffer != IntPtr.Zero) LsaFreeMemory(buffer); }
+                }
+                return names.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
             }
+            finally { LsaClose(policy); }
         }
 
         private static SecurityIdentifier GetSid(string accountOrSid)

@@ -122,13 +122,10 @@ bool AttachLogonHooks(winpriv::detours::transaction& transaction)
 	if (!VariableIsSet(WINPRIV_EV_ALLOW_CREATE_PROCESS_AS_SYSTEM, 1)) return true;
 
 	// Only LocalSystem lacks the caller logon SID required by CreateProcessWithLogonW.
-	SmartPointer<HANDLE> hToken(CloseHandle, nullptr);
-	alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> vBuffer{};
-	const auto pUser = reinterpret_cast<PTOKEN_USER>(vBuffer.data());
-	DWORD iSize = 0;
-	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) ||
-		!GetTokenInformation(hToken, TokenUser, pUser, static_cast<DWORD>(vBuffer.size()), &iSize)) return false;
-	if (IsWellKnownSid(pUser->User.Sid, WinLocalSystemSid))
+	alignas(TOKEN_USER) TokenUserBuffer vBuffer{};
+	const PSID pSid = GetTokenUserSid(nullptr, vBuffer);
+	if (pSid == nullptr) return false;
+	if (IsWellKnownSid(pSid, WinLocalSystemSid))
 		transaction.attach(TrueCreateProcessWithLogonW, DetourCreateProcessWithLogonW);
 	return true;
 }

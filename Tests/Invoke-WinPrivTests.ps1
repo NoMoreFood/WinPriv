@@ -30,6 +30,8 @@ $ProgressPreference = 'SilentlyContinue'
 $script:TestsRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $script:Utf8NoBom = [Text.UTF8Encoding]::new($false)
+$script:ProductFiles = @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll', 'WinPriv-x86.dll', 'WinPriv-x64.dll', 'WinPriv-ARM64.dll')
+$script:FixtureFiles = @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe', 'WinPrivHookDynamic.exe')
 
 function Write-WinPrivTestJson {
     param(
@@ -37,10 +39,7 @@ function Write-WinPrivTestJson {
         [Parameter(Mandatory = $true)]$Value,
         [int]$Depth = 40
     )
-    $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        [void](New-Item -ItemType Directory -Path $directory -Force)
-    }
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth $Depth), $script:Utf8NoBom)
 }
 
@@ -51,39 +50,22 @@ function Write-WinPrivInfrastructureNUnit {
         [Parameter(Mandatory = $true)][DateTime]$StartedUtc,
         [Parameter(Mandatory = $true)][DateTime]$EndedUtc
     )
-    $document = [Xml.XmlDocument]::new()
-    $declaration = $document.CreateXmlDeclaration('1.0', 'utf-8', $null)
-    [void]$document.AppendChild($declaration)
-    $root = $document.CreateElement('test-results')
-    foreach ($pair in ([ordered]@{ name = 'WinPriv infrastructure'; total = '1'; errors = '1'; failures = '0'; 'not-run' = '0'; date = $EndedUtc.ToString('yyyy-MM-dd'); time = $EndedUtc.ToString('HH:mm:ss') }).GetEnumerator()) {
-        $root.SetAttribute($pair.Key, $pair.Value)
-    }
-    [void]$document.AppendChild($root)
-    $suite = $document.CreateElement('test-suite')
-    $suite.SetAttribute('name', 'WinPriv test runner')
-    $suite.SetAttribute('executed', 'True')
-    $suite.SetAttribute('result', 'Error')
-    $suite.SetAttribute('success', 'False')
-    $suite.SetAttribute('time', [Math]::Round(($EndedUtc - $StartedUtc).TotalSeconds, 3).ToString([Globalization.CultureInfo]::InvariantCulture))
-    [void]$root.AppendChild($suite)
-    $results = $document.CreateElement('results')
-    [void]$suite.AppendChild($results)
-    $testCase = $document.CreateElement('test-case')
-    $testCase.SetAttribute('name', 'Test runner infrastructure')
-    $testCase.SetAttribute('executed', 'True')
-    $testCase.SetAttribute('result', 'Error')
-    $testCase.SetAttribute('success', 'False')
-    [void]$results.AppendChild($testCase)
-    $failure = $document.CreateElement('failure')
-    $messageElement = $document.CreateElement('message')
-    $messageElement.InnerText = $Message
-    [void]$failure.AppendChild($messageElement)
-    [void]$testCase.AppendChild($failure)
-    $settings = [Xml.XmlWriterSettings]::new()
-    $settings.Encoding = $script:Utf8NoBom
-    $settings.Indent = $true
-    $writer = [Xml.XmlWriter]::Create($Path, $settings)
-    try { $document.Save($writer) } finally { $writer.Dispose() }
+    $elapsed = [Math]::Round(($EndedUtc - $StartedUtc).TotalSeconds, 3).ToString([Globalization.CultureInfo]::InvariantCulture)
+    $escaped = [Security.SecurityElement]::Escape($Message)
+    $xml = @"
+<?xml version="1.0" encoding="utf-8"?>
+<test-results name="WinPriv infrastructure" total="1" errors="1" failures="0" not-run="0" date="$($EndedUtc.ToString('yyyy-MM-dd'))" time="$($EndedUtc.ToString('HH:mm:ss'))">
+  <test-suite name="WinPriv test runner" executed="True" result="Error" success="False" time="$elapsed">
+    <results>
+      <test-case name="Test runner infrastructure" executed="True" result="Error" success="False">
+        <failure><message>$escaped</message></failure>
+      </test-case>
+    </results>
+  </test-suite>
+</test-results>
+"@
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
+    [IO.File]::WriteAllText($Path, $xml, $script:Utf8NoBom)
 }
 
 function Get-WinPrivPackageTreeHash {
@@ -92,11 +74,9 @@ function Get-WinPrivPackageTreeHash {
     $records = foreach ($file in Get-ChildItem -LiteralPath $rootPath -File -Recurse) {
         if ($file.Name -eq '.winpriv-package-integrity.json') { continue }
         $relative = $file.FullName.Substring($rootPath.Length).TrimStart('\', '/') -replace '\\', '/'
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-        '{0}|{1}|{2}' -f $relative, $file.Length, $hash
+        '{0}|{1}|{2}' -f $relative, $file.Length, (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
     }
-    $payload = ($records | Sort-Object) -join "`n"
-    $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+    $bytes = [Text.Encoding]::UTF8.GetBytes((($records | Sort-Object) -join "`n"))
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
 }
 
@@ -124,26 +104,20 @@ function Test-WinPrivPesterExtraction {
         if ($integrity.PackageSha256 -ne $PackageHash) { return $false }
         return (Get-WinPrivPackageTreeHash -Root $ModuleDirectory) -eq $integrity.TreeSha256
     }
-    catch {
-        return $false
-    }
+    catch { return $false }
 }
 
 function Import-WinPrivPinnedPester {
     param([switch]$OfflineMode)
 
-    $requirements = Import-PowerShellDataFile -LiteralPath (Join-Path $script:TestsRoot 'RequiredModules.psd1')
-    $requirement = $requirements.Pester
+    $requirement = (Import-PowerShellDataFile -LiteralPath (Join-Path $script:TestsRoot 'RequiredModules.psd1')).Pester
     $toolsRoot = Join-Path $script:TestsRoot '.tools'
     $packagesRoot = Join-Path $toolsRoot 'packages'
-    $modulesRoot = Join-Path $toolsRoot 'Modules'
+    $moduleDirectory = Join-Path $toolsRoot 'Modules' 'Pester' $requirement.Version
     $packagePath = Join-Path $packagesRoot ("Pester.{0}.nupkg" -f $requirement.Version)
-    $moduleDirectory = Join-Path (Join-Path $modulesRoot 'Pester') $requirement.Version
     $manifestPath = Join-Path $moduleDirectory 'Pester.psd1'
-    foreach ($directory in @($toolsRoot, $packagesRoot, $modulesRoot, (Split-Path -Parent $moduleDirectory))) {
-        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-            [void](New-Item -ItemType Directory -Path $directory -Force)
-        }
+    foreach ($directory in @($toolsRoot, $packagesRoot, (Split-Path -Parent $moduleDirectory))) {
+        [void][IO.Directory]::CreateDirectory($directory)
     }
 
     $loadedPester = Get-Module -Name Pester
@@ -175,18 +149,20 @@ function Import-WinPrivPinnedPester {
     } until ($null -ne $lock)
 
     try {
-        $packageValid = (Test-Path -LiteralPath $packagePath -PathType Leaf) -and
-            ((Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash -eq $requirement.Sha256)
-        if (-not $packageValid) {
+        $packageHash = if (Test-Path -LiteralPath $packagePath -PathType Leaf) {
+            (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
+        }
+        else { $null }
+        if ($packageHash -ne $requirement.Sha256) {
             if ($OfflineMode) {
                 throw "Offline mode requires the verified Pester $($requirement.Version) package at '$packagePath'."
             }
             $downloadPath = "$packagePath.$([Guid]::NewGuid().ToString('N')).download"
             try {
                 Invoke-WebRequest -Uri $requirement.PackageUri -OutFile $downloadPath -MaximumRetryCount 2 -ConnectionTimeoutSeconds 30
-                $actualHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash
-                if ($actualHash -ne $requirement.Sha256) {
-                    throw "Pester package checksum mismatch. Expected $($requirement.Sha256), received $actualHash."
+                $packageHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash
+                if ($packageHash -ne $requirement.Sha256) {
+                    throw "Pester package checksum mismatch. Expected $($requirement.Sha256), received $packageHash."
                 }
                 if (Test-Path -LiteralPath $packagePath) { Remove-Item -LiteralPath $packagePath -Force }
                 Move-Item -LiteralPath $downloadPath -Destination $packagePath
@@ -196,10 +172,6 @@ function Import-WinPrivPinnedPester {
             }
         }
 
-        $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
-        if ($packageHash -ne $requirement.Sha256) {
-            throw "Cached Pester package checksum mismatch at '$packagePath'."
-        }
         if (-not (Test-WinPrivPesterExtraction -ModuleDirectory $moduleDirectory -Requirement $requirement -PackageHash $packageHash)) {
             if ($null -ne $loadedPinnedPester) {
                 throw 'The pinned Pester module cache failed integrity validation after it was loaded. Start a fresh pwsh -NoProfile process so the cache can be repaired safely.'
@@ -213,11 +185,10 @@ function Import-WinPrivPinnedPester {
                     -not (Test-Path -LiteralPath (Join-Path $temporaryDirectory 'bin\net8.0\Pester.dll') -PathType Leaf)) {
                     throw 'The verified Pester package did not contain the expected module payload.'
                 }
-                $treeHash = Get-WinPrivPackageTreeHash -Root $temporaryDirectory
                 Write-WinPrivTestJson -Path (Join-Path $temporaryDirectory '.winpriv-package-integrity.json') -Value ([ordered]@{
                     SchemaVersion = 1
                     PackageSha256 = $packageHash
-                    TreeSha256    = $treeHash
+                    TreeSha256    = Get-WinPrivPackageTreeHash -Root $temporaryDirectory
                     Version       = $requirement.Version
                     Guid          = $requirement.Guid
                 })
@@ -251,7 +222,7 @@ function Copy-WinPrivSourceStage {
     if (Test-Path -LiteralPath $Destination) {
         throw "Source staging destination already exists: '$Destination'."
     }
-    [void](New-Item -ItemType Directory -Path $Destination -Force)
+    [void][IO.Directory]::CreateDirectory($Destination)
     $robocopy = Join-Path $env:WINDIR 'System32\robocopy.exe'
     $excludeDirectories = @(
         (Join-Path $script:RepositoryRoot '.git'),
@@ -261,7 +232,6 @@ function Copy-WinPrivSourceStage {
         (Join-Path $script:TestsRoot '.work'),
         (Join-Path $script:TestsRoot 'Native\Build'),
         (Join-Path $script:TestsRoot 'Results'),
-        (Join-Path $script:TestsRoot 'results'),
         (Join-Path $script:TestsRoot 'TestResults')
     )
     if (-not [string]::IsNullOrWhiteSpace($ResultsPath)) {
@@ -277,15 +247,12 @@ function Copy-WinPrivSourceStage {
         '/NP', '/NFL', '/NDL', '/NJH', '/NJS', '/XD'
     ) + $excludeDirectories
     & $robocopy @arguments *> $LogPath
-    $code = $LASTEXITCODE
-    if ($code -gt 7) {
-        throw "robocopy failed while staging the source tree (exit code $code). See '$LogPath'."
+    if ($LASTEXITCODE -gt 7) {
+        throw "robocopy failed while staging the source tree (exit code $LASTEXITCODE). See '$LogPath'."
     }
-    # Build contains committed release artifacts as well as the packaging entry
-    # point.  Keep stale artifacts out of the stage, but retain the script that
-    # the isolated packaging contract test exercises after the fresh build.
+    # Retain only Build\build.cmd so the isolated packaging test can exercise it without stale binaries.
     $destinationBuild = Join-Path $Destination 'Build'
-    [void](New-Item -ItemType Directory -Path $destinationBuild -Force)
+    [void][IO.Directory]::CreateDirectory($destinationBuild)
     Copy-Item -LiteralPath (Join-Path $script:RepositoryRoot 'Build\build.cmd') -Destination $destinationBuild -Force
 }
 
@@ -329,8 +296,6 @@ function Build-WinPrivStage {
         'WinPrivLibrary\WinPrivLibrary.vcxproj',
         'WinPriv\WinPriv.vcxproj',
         'WinPrivCmd\WinPrivCmd.vcxproj',
-        'Tests\Native\HookLoadingFixture\HookLoadingFixture.Probe.vcxproj',
-        'Tests\Native\HookLoadingFixture\HookLoadingFixture.Lifecycle.vcxproj',
         'Tests\Native\HookLoadingFixture\HookLoadingFixture.Import.vcxproj',
         'Tests\Native\HookLoadingFixture\HookLoadingFixture.DelayLoad.vcxproj',
         'Tests\Native\HookLoadingFixture\HookLoadingFixture.Dynamic.vcxproj'
@@ -356,22 +321,16 @@ function Build-WinPrivStage {
             }
         }
     }
-    $binaryRoot = if ($Configuration -eq 'Debug') {
-        Join-Path (Join-Path $SourceRoot 'Build') 'Debug'
-    } else {
-        Join-Path $SourceRoot 'Build'
-    }
+    $binaryRoot = if ($Configuration -eq 'Debug') { Join-Path $SourceRoot 'Build' 'Debug' } else { Join-Path $SourceRoot 'Build' }
     foreach ($platform in @('x86', 'x64', 'ARM64')) {
         $output = Join-Path $binaryRoot $platform
-        foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll',
-            'WinPriv-x86.dll', 'WinPriv-x64.dll', 'WinPriv-ARM64.dll')) {
+        foreach ($name in $script:ProductFiles) {
             if (-not (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf)) {
                 throw "$Configuration|$platform did not produce '$name' in '$output'."
             }
         }
-        $fixtureOutput = Join-Path (Join-Path (Join-Path $SourceRoot 'Tests\Native\Build') $Configuration) $platform
-        foreach ($name in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe',
-            'WinPrivHookDynamic.exe', 'WinPrivLoadingProbe.dll', 'WinPrivLifecycleProbe.dll')) {
+        $fixtureOutput = Join-Path $SourceRoot 'Tests\Native\Build' $Configuration $platform
+        foreach ($name in $script:FixtureFiles) {
             if (-not (Test-Path -LiteralPath (Join-Path $fixtureOutput $name) -PathType Leaf)) {
                 throw "$Configuration|$platform did not produce native test fixture '$name' in '$fixtureOutput'."
             }
@@ -392,7 +351,7 @@ function Copy-WinPrivFailureArtifacts {
         [Parameter(Mandatory = $true)][string]$ResultsRoot
     )
     $destination = Join-Path $ResultsRoot 'artifacts'
-    [void](New-Item -ItemType Directory -Path $destination -Force)
+    [void][IO.Directory]::CreateDirectory($destination)
     foreach ($name in @('build-logs', 'sandboxes')) {
         $source = Join-Path $RunRoot $name
         if (Test-Path -LiteralPath $source -PathType Container) {
@@ -407,25 +366,25 @@ if (-not $IsWindows) {
 }
 $runId = '{0:yyyyMMddTHHmmssZ}-{1}' -f [DateTime]::UtcNow, [Guid]::NewGuid().ToString('N').Substring(0, 8)
 if ([string]::IsNullOrWhiteSpace($ResultsPath)) {
-    $ResultsPath = Join-Path (Join-Path $script:TestsRoot 'TestResults') $runId
+    $ResultsPath = Join-Path $script:TestsRoot 'TestResults' $runId
 }
 $ResultsPath = [IO.Path]::GetFullPath($ResultsPath)
 if (Test-Path -LiteralPath $ResultsPath) {
     if (-not (Test-Path -LiteralPath $ResultsPath -PathType Container)) {
         throw "ResultsPath must not be an existing file: '$ResultsPath'."
     }
-    $existingResult = Get-ChildItem -LiteralPath $ResultsPath -Force | Select-Object -First 1
-    if ($null -ne $existingResult) {
+    if ($null -ne (Get-ChildItem -LiteralPath $ResultsPath -Force | Select-Object -First 1)) {
         throw "ResultsPath must not be an existing nonempty directory: '$ResultsPath'. Choose a new path or an empty directory."
     }
 }
 else {
-    [void](New-Item -ItemType Directory -Path $ResultsPath)
+    [void][IO.Directory]::CreateDirectory($ResultsPath)
 }
+
 $suiteRunRoot = Join-Path ([IO.Path]::GetTempPath()) 'WinPrivTests'
 $runRoot = Join-Path $suiteRunRoot $runId
 $buildLogs = Join-Path $runRoot 'build-logs'
-[void](New-Item -ItemType Directory -Path $buildLogs -Force)
+[void][IO.Directory]::CreateDirectory($buildLogs)
 $runMarkerId = [Guid]::NewGuid().ToString('D')
 $ownerProcess = Get-Process -Id $PID
 $runnerIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -480,7 +439,6 @@ $exitCode = 1
 $infrastructureError = $null
 $pesterResult = $null
 $coverageReport = $null
-$cleanupReport = $null
 $selectedArchitectures = @()
 $architectureDetails = @()
 $effectiveBinaryRoot = $null
@@ -489,23 +447,12 @@ $sourceWasBuilt = $false
 $artifactsPath = $null
 $staleReconciliation = $null
 $currentRunReconciliation = $null
-$binaryInventory = @()
+$binaryInventory = [Collections.Generic.List[object]]::new()
 $processEvents = @()
 $unexpectedProcessEvents = @()
+$expectedSkipCount = 0
 $savedEnvironment = @{}
-$environmentNames = @(
-    'WINPRIV_TEST_ROOT', 'WINPRIV_TEST_REPOSITORY_ROOT', 'WINPRIV_TEST_BINARY_ROOT',
-    'WINPRIV_TEST_RESULTS_PATH', 'WINPRIV_TEST_RUN_ROOT', 'WINPRIV_TEST_PROFILE',
-    'WINPRIV_TEST_ARCHITECTURES', 'WINPRIV_TEST_ALLOW_GLOBAL_POLICY_MUTATION',
-    'WINPRIV_TEST_OFFLINE', 'WINPRIV_TEST_KEEP_ARTIFACTS', 'WINPRIV_TEST_PROBE_PATH',
-    'WINPRIV_TEST_CAPABILITY_MANIFEST', 'WINPRIV_TEST_CAPABILITY_RESULTS_PATH',
-    'WINPRIV_TEST_COVERAGE_PATH', 'WINPRIV_TEST_CLEANUP_PATH',
-    'WINPRIV_TEST_CLEANUP_EVENTS_PATH', 'WINPRIV_TEST_SUMMARY_PATH',
-    'WINPRIV_TEST_DEFER_SANDBOX_CLEANUP', 'WINPRIV_TEST_SOURCE_ROOT',
-    'WINPRIV_TEST_NATIVE_FIXTURE_ROOT',
-    'WINPRIV_TEST_EXPECTED_SKIP_EVENTS_PATH', 'WINPRIV_TEST_PROCESS_EVENTS_PATH'
-)
-foreach ($name in $environmentNames) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+$fixtureRootOverride = [Environment]::GetEnvironmentVariable('WINPRIV_TEST_NATIVE_FIXTURE_ROOT', 'Process')
 
 try {
     Import-Module -Name $harnessManifest -Force -ErrorAction Stop
@@ -526,7 +473,7 @@ try {
         throw '-AllowGlobalPolicyMutation requires the Admin or Full profile.'
     }
     if ($Profile -in @('Admin', 'Full')) {
-        if (-not (Test-WinPrivElevated)) {
+        if (-not $runnerHostInfo.Elevated) {
             throw "The $Profile profile requires an elevated administrator PowerShell process."
         }
         $productOptions = Get-ItemProperty -LiteralPath `
@@ -538,7 +485,6 @@ try {
     }
 
     [void](Import-WinPrivPinnedPester -OfflineMode:$Offline)
-    Import-Module -Name $harnessManifest -Force -ErrorAction Stop
 
     if ([string]::IsNullOrWhiteSpace($BinaryRoot)) {
         $stageRoot = Join-Path $runRoot 'source'
@@ -553,15 +499,14 @@ try {
         }
     }
 
-    $fixtureRootOverride = [string]$savedEnvironment['WINPRIV_TEST_NATIVE_FIXTURE_ROOT']
     $nativeFixtureCandidate = if (-not [string]::IsNullOrWhiteSpace($fixtureRootOverride)) {
         [IO.Path]::GetFullPath($fixtureRootOverride)
     }
     elseif ($sourceWasBuilt) {
-        Join-Path (Join-Path $stageRoot 'Tests\Native\Build') $BuildConfiguration
+        Join-Path $stageRoot 'Tests\Native\Build' $BuildConfiguration
     }
     else {
-        Join-Path (Join-Path $script:RepositoryRoot 'Tests\Native\Build') $BuildConfiguration
+        Join-Path $script:RepositoryRoot 'Tests\Native\Build' $BuildConfiguration
     }
     if (Test-Path -LiteralPath $nativeFixtureCandidate -PathType Container) {
         $nativeFixtureRoot = [IO.Path]::GetFullPath($nativeFixtureCandidate)
@@ -570,10 +515,10 @@ try {
     $architectureDetails = @(Get-WinPrivTestArchitectures -Requested $Architecture -BinaryRoot $effectiveBinaryRoot -Detailed)
     $selectedArchitectures = @($architectureDetails | Where-Object Compatible | ForEach-Object Architecture)
     Write-WinPrivTestJson -Path $architectureGatePath -Value ([ordered]@{
-        SchemaVersion = 1
-        Requested     = @($Architecture)
+        SchemaVersion  = 1
+        Requested      = @($Architecture)
         OsArchitecture = $architectureDetails[0].OsArchitecture
-        Gates         = $architectureDetails
+        Gates          = $architectureDetails
     })
     if ($Architecture -notcontains 'Auto') {
         $unavailable = @($architectureDetails | Where-Object { -not $_.Compatible })
@@ -586,83 +531,60 @@ try {
     }
 
     foreach ($item in @('x86', 'x64', 'ARM64')) {
-        $directory = Join-Path $effectiveBinaryRoot $item
-        foreach ($name in @('WinPriv.exe', 'WinPrivCmd.exe', 'WinPrivLibrary.dll',
-            'WinPriv-x86.dll', 'WinPriv-x64.dll', 'WinPriv-ARM64.dll')) {
-            $path = Join-Path $directory $name
-            if (Test-Path -LiteralPath $path -PathType Leaf) {
-                $file = Get-Item -LiteralPath $path
-                $binaryInventory += [pscustomobject]@{
-                    Architecture = $item
-                    Name = $name
-                    Path = $file.FullName
-                    Length = $file.Length
-                    Sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-                    FileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($file.FullName).FileVersion
-                }
-            }
-        }
+        $groups = @(@{ Directory = (Join-Path $effectiveBinaryRoot $item); Files = $script:ProductFiles })
         if (-not [string]::IsNullOrWhiteSpace($nativeFixtureRoot)) {
-            $fixtureDirectory = Join-Path $nativeFixtureRoot $item
-            foreach ($name in @('WinPrivHookImport.exe', 'WinPrivHookDelayLoad.exe',
-                'WinPrivHookDynamic.exe', 'WinPrivLoadingProbe.dll', 'WinPrivLifecycleProbe.dll')) {
-                $path = Join-Path $fixtureDirectory $name
+            $groups += @{ Directory = (Join-Path $nativeFixtureRoot $item); Files = $script:FixtureFiles }
+        }
+        foreach ($group in $groups) {
+            foreach ($name in $group.Files) {
+                $path = Join-Path $group.Directory $name
                 if (Test-Path -LiteralPath $path -PathType Leaf) {
                     $file = Get-Item -LiteralPath $path
-                    $binaryInventory += [pscustomobject]@{
+                    [void]$binaryInventory.Add([pscustomobject]@{
                         Architecture = $item
-                        Name = $name
-                        Path = $file.FullName
-                        Length = $file.Length
-                        Sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-                        FileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($file.FullName).FileVersion
-                    }
+                        Name         = $name
+                        Path         = $file.FullName
+                        Length       = $file.Length
+                        Sha256       = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+                        FileVersion  = [Diagnostics.FileVersionInfo]::GetVersionInfo($file.FullName).FileVersion
+                    })
                 }
             }
         }
     }
 
     $environment = [ordered]@{
-        WINPRIV_TEST_ROOT                         = $script:TestsRoot
-        WINPRIV_TEST_REPOSITORY_ROOT              = $script:RepositoryRoot
         WINPRIV_TEST_BINARY_ROOT                  = $effectiveBinaryRoot
-        WINPRIV_TEST_RESULTS_PATH                 = $ResultsPath
         WINPRIV_TEST_RUN_ROOT                     = $runRoot
         WINPRIV_TEST_PROFILE                      = $Profile
         WINPRIV_TEST_ARCHITECTURES                = $selectedArchitectures -join ';'
         WINPRIV_TEST_ALLOW_GLOBAL_POLICY_MUTATION = if ($AllowGlobalPolicyMutation) { '1' } else { '0' }
-        WINPRIV_TEST_OFFLINE                      = if ($Offline) { '1' } else { '0' }
         WINPRIV_TEST_KEEP_ARTIFACTS               = if ($KeepArtifacts) { '1' } else { '0' }
         WINPRIV_TEST_PROBE_PATH                   = $probePath
         WINPRIV_TEST_CAPABILITY_MANIFEST          = $manifestPath
         WINPRIV_TEST_CAPABILITY_RESULTS_PATH      = $capabilityEventsPath
         WINPRIV_TEST_COVERAGE_PATH                = $coveragePath
-        WINPRIV_TEST_CLEANUP_PATH                 = $cleanupPath
         WINPRIV_TEST_CLEANUP_EVENTS_PATH          = $cleanupEventsPath
         WINPRIV_TEST_PROCESS_EVENTS_PATH          = $processEventsPath
-        WINPRIV_TEST_SUMMARY_PATH                 = $summaryPath
         WINPRIV_TEST_DEFER_SANDBOX_CLEANUP        = '1'
-        WINPRIV_TEST_SOURCE_ROOT                  = if ($sourceWasBuilt) { Join-Path $runRoot 'source' } else { $script:RepositoryRoot }
-        WINPRIV_TEST_NATIVE_FIXTURE_ROOT           = $nativeFixtureRoot
+        WINPRIV_TEST_SOURCE_ROOT                  = if ($sourceWasBuilt) { $stageRoot } else { $script:RepositoryRoot }
+        WINPRIV_TEST_NATIVE_FIXTURE_ROOT          = $nativeFixtureRoot
         WINPRIV_TEST_EXPECTED_SKIP_EVENTS_PATH    = $expectedSkipEventsPath
     }
+    foreach ($item in $selectedArchitectures) {
+        $environment['WINPRIV_TEST_HOST_' + $item.ToUpperInvariant()] = Get-WinPrivTestHost -Architecture $item
+    }
     foreach ($entry in $environment.GetEnumerator()) {
+        $savedEnvironment[$entry.Key] = [Environment]::GetEnvironmentVariable($entry.Key, 'Process')
         [Environment]::SetEnvironmentVariable($entry.Key, [string]$entry.Value, 'Process')
     }
-    foreach ($item in $selectedArchitectures) {
-        $hostPath = Get-WinPrivTestHost -Architecture $item
-        [Environment]::SetEnvironmentVariable(('WINPRIV_TEST_HOST_' + $item.ToUpperInvariant()), $hostPath, 'Process')
-    }
-    Clear-WinPrivCapabilityResults -Confirm:$false
+    Clear-WinPrivCapabilityResults
 
     $testFiles = @(Get-ChildItem -LiteralPath $script:TestsRoot -Filter '*.Tests.ps1' -File | Sort-Object FullName)
     if ($testFiles.Count -eq 0) {
         throw "No Pester test files were found beneath '$script:TestsRoot'."
     }
-    # Pester performs discovery and execution in separate scopes.  Load the
-    # shared wrappers in the runner scope as well so functions used inside It
-    # blocks remain resolvable even though each spec also loads discovery-time
-    # helpers for its -ForEach data.
+    # Load shared wrappers in the runner scope so helpers invoked inside It blocks resolve across Pester scopes.
     . (Join-Path $script:TestsRoot 'TestCommon.ps1')
 
     $configuration = New-PesterConfiguration
@@ -681,24 +603,15 @@ try {
     $configuration.TestResult.OutputPath = $nunitPath
     $pesterResult = Invoke-Pester -Configuration $configuration
 
-    $processEvents = @(Read-WinPrivJsonLines -Path $processEventsPath)
-    $unexpectedProcessEvents = @($processEvents | Where-Object {
-        [bool]$_.TimedOut -or -not [string]::IsNullOrWhiteSpace([string]$_.StartError) -or -not [bool]$_.JobAssigned
-    })
     $coverageReport = Complete-WinPrivCapabilityReport -ManifestPath $manifestPath -OutputPath $coveragePath -Architecture $selectedArchitectures -Profile $Profile
     $expectedSkipCount = @(Read-WinPrivJsonLines -Path $expectedSkipEventsPath).Count
     $unexpectedSkipCount = [Math]::Max(0, $pesterResult.SkippedCount - $expectedSkipCount)
-    # Pester includes tests rejected by the profile tag filter in NotRunCount.
-    # Those are expected (for example, Admin tests in the Safe lane).  Container
-    # discovery failures can set Result to Failed without incrementing FailedCount.
     $pesterFailed = [string]$pesterResult.Result -ne 'Passed' -or
         $pesterResult.FailedCount -gt 0 -or
         $pesterResult.FailedBlocksCount -gt 0 -or
         $pesterResult.FailedContainersCount -gt 0 -or
-        $unexpectedSkipCount -gt 0 -or
-        $unexpectedProcessEvents.Count -gt 0
-    $coverageFailed = [bool]$coverageReport.HasFailures
-    $exitCode = if ($pesterFailed -or $coverageFailed) { 1 } else { 0 }
+        $unexpectedSkipCount -gt 0
+    $exitCode = if ($pesterFailed -or [bool]$coverageReport.HasFailures) { 1 } else { 0 }
 }
 catch {
     $infrastructureError = $_ | Out-String
@@ -706,42 +619,31 @@ catch {
     $exitCode = 2
 }
 finally {
-    try {
-        $currentRunReconciliation = Invoke-WinPrivCurrentRunReconciliation -RunRoot $runRoot
-    }
+    try { $currentRunReconciliation = Invoke-WinPrivCurrentRunReconciliation -RunRoot $runRoot }
     catch {
         $currentRunReconciliation = [pscustomobject][ordered]@{
-            SchemaVersion      = 1
-            RunRoot            = $runRoot
-            Sandboxes          = @()
-            UnexpectedDeltas   = @()
-            ManualRecovery     = @([pscustomobject]@{
+            SchemaVersion = 1; RunRoot = $runRoot; Sandboxes = @(); UnexpectedDeltas = @()
+            ManualRecovery = @([pscustomobject]@{
                 Kind = 'CurrentRunReconciliation'; Identifier = $runRoot; Reason = $_.Exception.Message
             })
-            HasFailures        = $true
-            HasManualRecovery  = $true
+            HasFailures = $true; HasManualRecovery = $true
         }
     }
-    if ($currentRunReconciliation.HasFailures -and $exitCode -eq 0) {
-        $exitCode = 3
-    }
+    if ($currentRunReconciliation.HasFailures -and $exitCode -eq 0) { $exitCode = 3 }
+
     $processEvents = @(Read-WinPrivJsonLines -Path $processEventsPath)
     $unexpectedProcessEvents = @($processEvents | Where-Object {
         [bool]$_.TimedOut -or -not [string]::IsNullOrWhiteSpace([string]$_.StartError) -or -not [bool]$_.JobAssigned
     })
-    if ($unexpectedProcessEvents.Count -gt 0 -and $exitCode -eq 0) {
-        $exitCode = 1
-    }
+    if ($unexpectedProcessEvents.Count -gt 0 -and $exitCode -eq 0) { $exitCode = 1 }
+
     $cleanupEvents = @(Read-WinPrivJsonLines -Path $cleanupEventsPath)
     $unexpectedCleanupEvents = @($cleanupEvents | Where-Object {
         $_.Status -in @('RecoveredUnexpectedDelta', 'RepairFailed', 'Residual')
     })
-    $residualPaths = New-Object 'System.Collections.Generic.List[string]'
+    $residualPaths = [Collections.Generic.List[string]]::new()
     $ephemeralRemovalError = $null
     $artifactPreservationError = $null
-    $artifactPreservationAttempted = $false
-    $shouldPreserve = $KeepArtifacts -or $exitCode -ne 0 -or $unexpectedCleanupEvents.Count -gt 0 -or
-        [bool]$currentRunReconciliation.HasFailures
     $reparsePoints = @()
     if (Test-Path -LiteralPath $runRoot -PathType Container) {
         $reparsePoints = @(Get-ChildItem -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {
@@ -751,33 +653,29 @@ finally {
             $ephemeralRemovalError = "Refused artifact copying and recursive cleanup because the run contains reparse points: $(($reparsePoints.FullName) -join '; ')"
         }
     }
-    if ($shouldPreserve -and $reparsePoints.Count -eq 0 -and (Test-Path -LiteralPath $runRoot -PathType Container)) {
-        $artifactPreservationAttempted = $true
-        try { $artifactsPath = Copy-WinPrivFailureArtifacts -RunRoot $runRoot -ResultsRoot $ResultsPath }
-        catch { $artifactPreservationError = $_.Exception.Message }
-    }
-
     if ([bool]$currentRunReconciliation.HasManualRecovery -and $null -eq $ephemeralRemovalError) {
         $ephemeralRemovalError = 'Current-run journal reconciliation requires manual recovery; the marked run root was retained.'
     }
-
-    if ((Test-Path -LiteralPath $runRoot -PathType Container) -and $reparsePoints.Count -eq 0) {
-        if ($null -eq $ephemeralRemovalError -and $null -eq $artifactPreservationError) {
-            try { Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction Stop }
-            catch { $ephemeralRemovalError = $_.Exception.Message }
+    $shouldPreserve = $KeepArtifacts -or $exitCode -ne 0 -or $unexpectedCleanupEvents.Count -gt 0 -or
+        [bool]$currentRunReconciliation.HasFailures -or $null -ne $ephemeralRemovalError
+    if ($shouldPreserve -and $reparsePoints.Count -eq 0 -and (Test-Path -LiteralPath $runRoot -PathType Container)) {
+        try { $artifactsPath = Copy-WinPrivFailureArtifacts -RunRoot $runRoot -ResultsRoot $ResultsPath }
+        catch { $artifactPreservationError = $_.Exception.Message }
+    }
+    if ((Test-Path -LiteralPath $runRoot -PathType Container) -and $reparsePoints.Count -eq 0 -and
+        $null -eq $ephemeralRemovalError -and $null -eq $artifactPreservationError) {
+        try { Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction Stop }
+        catch {
+            $ephemeralRemovalError = $_.Exception.Message
+            if ($null -eq $artifactsPath) {
+                try { $artifactsPath = Copy-WinPrivFailureArtifacts -RunRoot $runRoot -ResultsRoot $ResultsPath }
+                catch { $artifactPreservationError = $_.Exception.Message }
+            }
         }
     }
     if (Test-Path -LiteralPath $runRoot) { [void]$residualPaths.Add($runRoot) }
     $cleanupFailed = $null -ne $ephemeralRemovalError -or $residualPaths.Count -gt 0 -or $unexpectedCleanupEvents.Count -gt 0
-    if ($cleanupFailed -and -not $artifactPreservationAttempted -and $reparsePoints.Count -eq 0 -and
-        (Test-Path -LiteralPath $runRoot -PathType Container)) {
-        $artifactPreservationAttempted = $true
-        try { $artifactsPath = Copy-WinPrivFailureArtifacts -RunRoot $runRoot -ResultsRoot $ResultsPath }
-        catch { $artifactPreservationError = $_.Exception.Message }
-    }
-    if ($cleanupFailed -or $null -ne $artifactPreservationError) {
-        if ($exitCode -eq 0) { $exitCode = 3 }
-    }
+    if (($cleanupFailed -or $null -ne $artifactPreservationError) -and $exitCode -eq 0) { $exitCode = 3 }
 
     $cleanupReport = [ordered]@{
         SchemaVersion             = 1
@@ -787,13 +685,14 @@ finally {
         EphemeralRootRemoved      = -not (Test-Path -LiteralPath $runRoot)
         RemovalError              = $ephemeralRemovalError
         ArtifactPreservationError = $artifactPreservationError
-        ResidualPaths             = @($residualPaths | ForEach-Object { $_ })
+        ResidualPaths             = $residualPaths.ToArray()
         UnexpectedDeltas          = @($unexpectedCleanupEvents)
         CurrentRunReconciliation  = $currentRunReconciliation
         ArtifactsPreserved        = $null -ne $artifactsPath
         ArtifactsPath             = $artifactsPath
         HasUnexpectedDelta        = $unexpectedCleanupEvents.Count -gt 0
-        HasResidualState          = $residualPaths.Count -gt 0 -or $null -ne $ephemeralRemovalError -or $null -ne $artifactPreservationError -or
+        HasResidualState          = $residualPaths.Count -gt 0 -or $null -ne $ephemeralRemovalError -or
+            $null -ne $artifactPreservationError -or
             @($unexpectedCleanupEvents | Where-Object { $_.Status -in @('RepairFailed', 'Residual') }).Count -gt 0
     }
     try { Write-WinPrivTestJson -Path $cleanupPath -Value $cleanupReport }
@@ -847,20 +746,18 @@ finally {
     }
     $pesterSummary = if ($null -ne $pesterResult) {
         [ordered]@{
-            Result       = [string]$pesterResult.Result
-            TotalCount   = $pesterResult.TotalCount
-            PassedCount  = $pesterResult.PassedCount
-            FailedCount  = $pesterResult.FailedCount
-            FailedBlocksCount = $pesterResult.FailedBlocksCount
-            FailedContainersCount = $pesterResult.FailedContainersCount
-            SkippedCount = $pesterResult.SkippedCount
-            ExpectedSkippedCount = @(Read-WinPrivJsonLines -Path $expectedSkipEventsPath).Count
-            UnexpectedSkippedCount = if ($null -ne $coverageReport) {
-                [Math]::Max(0, $pesterResult.SkippedCount - @(Read-WinPrivJsonLines -Path $expectedSkipEventsPath).Count)
-            } else { $pesterResult.SkippedCount }
-            NotRunCount  = $pesterResult.NotRunCount
-            Duration     = [string]$pesterResult.Duration
-            NUnitPath    = $nunitPath
+            Result                 = [string]$pesterResult.Result
+            TotalCount             = $pesterResult.TotalCount
+            PassedCount            = $pesterResult.PassedCount
+            FailedCount            = $pesterResult.FailedCount
+            FailedBlocksCount      = $pesterResult.FailedBlocksCount
+            FailedContainersCount  = $pesterResult.FailedContainersCount
+            SkippedCount           = $pesterResult.SkippedCount
+            ExpectedSkippedCount   = $expectedSkipCount
+            UnexpectedSkippedCount = [Math]::Max(0, $pesterResult.SkippedCount - $expectedSkipCount)
+            NotRunCount            = $pesterResult.NotRunCount
+            Duration               = [string]$pesterResult.Duration
+            NUnitPath              = $nunitPath
         }
     } else { $null }
     $coverageSummary = if ($null -ne $coverageReport) {
@@ -885,7 +782,7 @@ finally {
         Architectures             = @($selectedArchitectures)
         BinaryRoot                = $effectiveBinaryRoot
         NativeFixtureRoot         = $nativeFixtureRoot
-        BinaryInventory           = @($binaryInventory)
+        BinaryInventory           = $binaryInventory.ToArray()
         ArchitectureGates         = @($architectureDetails)
         SourceWasBuilt            = $sourceWasBuilt
         Offline                   = [bool]$Offline
@@ -893,10 +790,10 @@ finally {
         AllowGlobalPolicyMutation = [bool]$AllowGlobalPolicyMutation
         RunnerHost                = $runnerHostInfo
         ProcessContainment        = [ordered]@{
-            EventCount      = @($processEvents).Count
-            FailureCount    = @($unexpectedProcessEvents).Count
-            Failures        = @($unexpectedProcessEvents)
-            EventsPath      = $processEventsPath
+            EventCount   = @($processEvents).Count
+            FailureCount = @($unexpectedProcessEvents).Count
+            Failures     = @($unexpectedProcessEvents)
+            EventsPath   = $processEventsPath
         }
         Pester                    = $pesterSummary
         Coverage                  = $coverageSummary
@@ -912,8 +809,8 @@ finally {
         if ($exitCode -eq 0) { $exitCode = 2 }
     }
 
-    foreach ($name in $environmentNames) {
-        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+    foreach ($entry in $savedEnvironment.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
     }
 }
 

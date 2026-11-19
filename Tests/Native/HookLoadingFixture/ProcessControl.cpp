@@ -69,7 +69,7 @@ static BOOL WINAPI TestProcessSession(DWORD processId, DWORD* session)
     return TRUE;
 }
 
-BOOL WINAPI TestProcessImage(HANDLE process, DWORD flags, LPWSTR image, PDWORD size)
+static BOOL WINAPI TestProcessImage(HANDLE process, DWORD flags, LPWSTR image, PDWORD size)
 {
     return !queryFails && QueryFullProcessImageNameW(process, flags, image, size);
 }

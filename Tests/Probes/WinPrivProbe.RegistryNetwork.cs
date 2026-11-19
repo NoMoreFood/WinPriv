@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Globalization;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace WinPrivProbe
 {
@@ -15,8 +15,6 @@ namespace WinPrivProbe
         private const uint KEY_WOW64_64KEY = 0x0100;
         private const uint KEY_WOW64_32KEY = 0x0200;
         private const int ERROR_SUCCESS = 0;
-        private const int ERROR_NO_MORE_ITEMS = 259;
-        private const uint ERROR_BUFFER_OVERFLOW = 111;
         private const uint ERROR_NO_DATA = 232;
         private const int STATUS_SUCCESS = 0;
         private const int STATUS_BUFFER_OVERFLOW = unchecked((int)0x80000005);
@@ -31,89 +29,95 @@ namespace WinPrivProbe
         private const int AF_INET = 2;
         private const int AF_INET6 = 23;
         private const int SOCKET_ERROR = -1;
-        private const int WSAEFAULT = 10014;
         private const int NS_DNS = 12;
         private const uint LUP_RETURN_NAME = 0x0010;
         private const uint LUP_RETURN_ADDR = 0x0100;
         private const uint MAX_PREFERRED_LENGTH = 0xFFFFFFFF;
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct UNICODE_STRING
-        {
-            public ushort Length;
-            public ushort MaximumLength;
-            public IntPtr Buffer;
-        }
+        private struct UNICODE_STRING { public ushort Length, MaximumLength; public IntPtr Buffer; }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct WKSTA_TRANSPORT_INFO_0
         {
-            public uint wkti0_quality_of_service;
-            public uint wkti0_number_of_vcs;
-            public IntPtr wkti0_transport_name;
-            public IntPtr wkti0_transport_address;
+            public uint wkti0_quality_of_service, wkti0_number_of_vcs;
+            public IntPtr wkti0_transport_name, wkti0_transport_address;
             public int wkti0_wan_ish;
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct SOCKET_ADDRESS
+        private struct SOCKET_ADDRESS { public IntPtr lpSockaddr; public int iSockaddrLength; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CSADDR_INFO { public SOCKET_ADDRESS LocalAddr, RemoteAddr; public int iSocketType, iProtocol; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WSAQUERYSET
         {
-            public IntPtr lpSockaddr;
-            public int iSockaddrLength;
+            public uint dwSize;
+            public IntPtr lpszServiceInstanceName, lpServiceClassId, lpVersion, lpszComment;
+            public uint dwNameSpace;
+            public IntPtr lpNSProviderId, lpszContext;
+            public uint dwNumberOfProtocols;
+            public IntPtr lpafpProtocols, lpszQueryString;
+            public uint dwNumberOfCsAddrs;
+            public IntPtr lpcsaBuffer;
+            public uint dwOutputFlags;
+            public IntPtr lpBlob;
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct CSADDR_INFO
+        private struct HostAddrInfo
         {
-            public SOCKET_ADDRESS LocalAddr;
-            public SOCKET_ADDRESS RemoteAddr;
-            public int iSocketType;
-            public int iProtocol;
+            public int Flags, Family, SocketType, Protocol;
+            public UIntPtr AddressLength;
+            public IntPtr CanonicalName, Address, Next;
         }
 
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct WSAQUERYSETW
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HostAddrInfoEx
         {
-            public uint dwSize;
-            [MarshalAs(UnmanagedType.LPWStr)] public string lpszServiceInstanceName;
-            public IntPtr lpServiceClassId;
-            public IntPtr lpVersion;
-            [MarshalAs(UnmanagedType.LPWStr)] public string lpszComment;
-            public uint dwNameSpace;
-            public IntPtr lpNSProviderId;
-            [MarshalAs(UnmanagedType.LPWStr)] public string lpszContext;
-            public uint dwNumberOfProtocols;
-            public IntPtr lpafpProtocols;
-            [MarshalAs(UnmanagedType.LPWStr)] public string lpszQueryString;
-            public uint dwNumberOfCsAddrs;
-            public IntPtr lpcsaBuffer;
-            public uint dwOutputFlags;
-            public IntPtr lpBlob;
+            public int Flags, Family, SocketType, Protocol;
+            public UIntPtr AddressLength;
+            public IntPtr CanonicalName, Address, Blob;
+            public UIntPtr BlobLength;
+            public IntPtr Provider, Next;
         }
 
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-        private struct WSAQUERYSETA
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HostDnsRecord
         {
-            public uint dwSize;
-            [MarshalAs(UnmanagedType.LPStr)] public string lpszServiceInstanceName;
-            public IntPtr lpServiceClassId;
-            public IntPtr lpVersion;
-            [MarshalAs(UnmanagedType.LPStr)] public string lpszComment;
-            public uint dwNameSpace;
-            public IntPtr lpNSProviderId;
-            [MarshalAs(UnmanagedType.LPStr)] public string lpszContext;
-            public uint dwNumberOfProtocols;
-            public IntPtr lpafpProtocols;
-            [MarshalAs(UnmanagedType.LPStr)] public string lpszQueryString;
-            public uint dwNumberOfCsAddrs;
-            public IntPtr lpcsaBuffer;
-            public uint dwOutputFlags;
-            public IntPtr lpBlob;
+            public IntPtr Next, Name;
+            public ushort Type, DataLength;
+            public uint Flags, Ttl, Reserved;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HostDnsRequest
+        {
+            public uint Version;
+            public IntPtr Name;
+            public ushort Type;
+            public ulong Options;
+            public IntPtr Servers;
+            public uint Interface;
+            public IntPtr Callback, Context;
+            public int NetworkRequired;
+            public uint NetworkIndex, CustomServerCount;
+            public IntPtr CustomServers;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HostDnsResult { public uint Version, Status; public ulong Options; public IntPtr Records, Reserved; }
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        private delegate void HostDnsCallback(IntPtr context, IntPtr result);
+
+        [DllImport("kernel32.dll")]
+        private static extern void RtlZeroMemory(IntPtr destination, UIntPtr length);
 
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options,
-            uint desiredAccess, out IntPtr key);
+        private static extern int RegOpenKeyExW(IntPtr root, string subKey, uint options, uint desiredAccess, out IntPtr key);
 
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern int RegQueryValueExW(IntPtr key, string valueName, IntPtr reserved,
@@ -138,9 +142,8 @@ namespace WinPrivProbe
             IntPtr adapterAddresses, ref uint sizePointer);
 
         [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
-        private static extern uint NetWkstaTransportEnum(string serverName, uint level,
-            out IntPtr buffer, uint preferredMaximumLength, out uint entriesRead,
-            out uint totalEntries, ref uint resumeHandle);
+        private static extern uint NetWkstaTransportEnum(string serverName, uint level, out IntPtr buffer,
+            uint preferredMaximumLength, out uint entriesRead, out uint totalEntries, ref uint resumeHandle);
 
         [DllImport("netapi32.dll")]
         private static extern uint NetApiBufferFree(IntPtr buffer);
@@ -154,24 +157,70 @@ namespace WinPrivProbe
         [DllImport("ws2_32.dll")]
         private static extern int WSAGetLastError();
 
-        [DllImport("ws2_32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern int WSALookupServiceBeginW(ref WSAQUERYSETW restrictions,
-            uint controlFlags, out IntPtr lookup);
+        [DllImport("ws2_32.dll", SetLastError = true)]
+        private static extern int WSALookupServiceBeginW(ref WSAQUERYSET restrictions, uint controlFlags, out IntPtr lookup);
 
-        [DllImport("ws2_32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-        private static extern int WSALookupServiceBeginA(ref WSAQUERYSETA restrictions,
-            uint controlFlags, out IntPtr lookup);
+        [DllImport("ws2_32.dll", SetLastError = true)]
+        private static extern int WSALookupServiceBeginA(ref WSAQUERYSET restrictions, uint controlFlags, out IntPtr lookup);
 
-        [DllImport("ws2_32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern int WSALookupServiceNextW(IntPtr lookup, uint controlFlags,
-            ref uint bufferLength, IntPtr results);
+        [DllImport("ws2_32.dll", SetLastError = true)]
+        private static extern int WSALookupServiceNextW(IntPtr lookup, uint controlFlags, ref uint bufferLength, IntPtr results);
 
-        [DllImport("ws2_32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-        private static extern int WSALookupServiceNextA(IntPtr lookup, uint controlFlags,
-            ref uint bufferLength, IntPtr results);
+        [DllImport("ws2_32.dll", SetLastError = true)]
+        private static extern int WSALookupServiceNextA(IntPtr lookup, uint controlFlags, ref uint bufferLength, IntPtr results);
 
         [DllImport("ws2_32.dll")]
         private static extern int WSALookupServiceEnd(IntPtr lookup);
+
+        [DllImport("ws2_32.dll", EntryPoint = "GetAddrInfoW", ExactSpelling = true, CharSet = CharSet.Unicode)]
+        private static extern int HostGetAddrInfoW(string name, IntPtr service, ref HostAddrInfo hints, out IntPtr result);
+
+        [DllImport("ws2_32.dll", EntryPoint = "getaddrinfo", ExactSpelling = true, CharSet = CharSet.Ansi)]
+        private static extern int HostGetAddrInfoA(string name, IntPtr service, ref HostAddrInfo hints, out IntPtr result);
+
+        [DllImport("ws2_32.dll", EntryPoint = "GetAddrInfoExW", ExactSpelling = true, CharSet = CharSet.Unicode)]
+        private static extern int HostGetAddrInfoEx(string name, IntPtr service, uint nameSpace, IntPtr provider,
+            ref HostAddrInfoEx hints, IntPtr result, IntPtr timeout, IntPtr overlapped, IntPtr callback, IntPtr cancel);
+
+        [DllImport("ws2_32.dll", EntryPoint = "GetAddrInfoExA", ExactSpelling = true, CharSet = CharSet.Ansi)]
+        private static extern int HostGetAddrInfoExA(string name, IntPtr service, uint nameSpace, IntPtr provider,
+            ref HostAddrInfoEx hints, IntPtr result, IntPtr timeout, IntPtr overlapped, IntPtr callback, IntPtr cancel);
+
+        [DllImport("ws2_32.dll", EntryPoint = "GetAddrInfoExOverlappedResult")]
+        private static extern int HostGetAddrInfoExResult(IntPtr overlapped);
+
+        [DllImport("ws2_32.dll", EntryPoint = "GetAddrInfoExCancel")]
+        private static extern int HostCancelAddrInfoEx(ref IntPtr cancel);
+
+        [DllImport("ws2_32.dll", EntryPoint = "FreeAddrInfoW")]
+        private static extern void HostFreeAddrInfoW(IntPtr result);
+
+        [DllImport("ws2_32.dll", EntryPoint = "freeaddrinfo")]
+        private static extern void HostFreeAddrInfoA(IntPtr result);
+
+        [DllImport("ws2_32.dll", EntryPoint = "FreeAddrInfoExW")]
+        private static extern void HostFreeAddrInfoEx(IntPtr result);
+
+        [DllImport("ws2_32.dll", EntryPoint = "FreeAddrInfoEx", ExactSpelling = true)]
+        private static extern void HostFreeAddrInfoExA(IntPtr result);
+
+        [DllImport("dnsapi.dll", EntryPoint = "DnsQuery_W", ExactSpelling = true, CharSet = CharSet.Unicode)]
+        private static extern uint HostDnsQueryW(string name, ushort type, uint options, IntPtr extra, out IntPtr result, IntPtr reserved);
+
+        [DllImport("dnsapi.dll", EntryPoint = "DnsQuery_A", ExactSpelling = true, CharSet = CharSet.Ansi)]
+        private static extern uint HostDnsQueryA(string name, ushort type, uint options, IntPtr extra, out IntPtr result, IntPtr reserved);
+
+        [DllImport("dnsapi.dll", EntryPoint = "DnsQuery_UTF8", ExactSpelling = true)]
+        private static extern uint HostDnsQueryUtf8(byte[] name, ushort type, uint options, IntPtr extra, out IntPtr result, IntPtr reserved);
+
+        [DllImport("dnsapi.dll", EntryPoint = "DnsQueryEx")]
+        private static extern uint HostDnsQueryEx(ref HostDnsRequest request, IntPtr result, IntPtr cancel);
+
+        [DllImport("dnsapi.dll", EntryPoint = "DnsCancelQuery")]
+        private static extern uint HostCancelDnsQuery(IntPtr cancel);
+
+        [DllImport("dnsapi.dll", EntryPoint = "DnsRecordListFree")]
+        private static extern void HostFreeDnsRecords(IntPtr result, int freeType);
 
         [DllImport("amsi.dll", CharSet = CharSet.Unicode)]
         private static extern int AmsiInitialize(string applicationName, out IntPtr context);
@@ -186,46 +235,44 @@ namespace WinPrivProbe
         private static extern void AmsiCloseSession(IntPtr context, IntPtr session);
 
         [DllImport("amsi.dll", CharSet = CharSet.Unicode)]
-        private static extern int AmsiScanString(IntPtr context, string value, string contentName,
-            IntPtr session, out int result);
+        private static extern int AmsiScanString(IntPtr context, string value, string contentName, IntPtr session, out int result);
 
         [DllImport("amsi.dll", CharSet = CharSet.Unicode)]
-        private static extern int AmsiScanBuffer(IntPtr context, byte[] value, uint length,
-            string contentName, IntPtr session, out int result);
+        private static extern int AmsiScanBuffer(IntPtr context, byte[] value, uint length, string contentName, IntPtr session, out int result);
 
         private static IntPtr RegistryRoot(string root)
         {
-            if (String.Equals(root, "HKCR", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(root, "HKEY_CLASSES_ROOT", StringComparison.OrdinalIgnoreCase))
-                return new IntPtr(unchecked((int)0x80000000));
-            if (String.Equals(root, "HKCU", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(root, "HKEY_CURRENT_USER", StringComparison.OrdinalIgnoreCase))
-                return new IntPtr(unchecked((int)0x80000001));
-            if (String.Equals(root, "HKLM", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(root, "HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase))
-                return new IntPtr(unchecked((int)0x80000002));
-            if (String.Equals(root, "HKU", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(root, "HKEY_USERS", StringComparison.OrdinalIgnoreCase))
-                return new IntPtr(unchecked((int)0x80000003));
-            if (String.Equals(root, "HKCC", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(root, "HKEY_CURRENT_CONFIG", StringComparison.OrdinalIgnoreCase))
-                return new IntPtr(unchecked((int)0x80000005));
-            throw new ArgumentException("Unsupported registry root: " + root);
+            switch (root == null ? "" : root.ToUpperInvariant())
+            {
+                case "HKCR": case "HKEY_CLASSES_ROOT": return new IntPtr(unchecked((int)0x80000000));
+                case "HKCU": case "HKEY_CURRENT_USER": return new IntPtr(unchecked((int)0x80000001));
+                case "HKLM": case "HKEY_LOCAL_MACHINE": return new IntPtr(unchecked((int)0x80000002));
+                case "HKU": case "HKEY_USERS": return new IntPtr(unchecked((int)0x80000003));
+                case "HKCC": case "HKEY_CURRENT_CONFIG": return new IntPtr(unchecked((int)0x80000005));
+                default: throw new ArgumentException("Unsupported registry root: " + root);
+            }
         }
 
         private static uint RegistryViewAccess(string view)
         {
-            if (String.Equals(view, "32", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(view, "x86", StringComparison.OrdinalIgnoreCase)) return KEY_WOW64_32KEY;
-            if (String.Equals(view, "64", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(view, "x64", StringComparison.OrdinalIgnoreCase)) return KEY_WOW64_64KEY;
+            if (String.Equals(view, "32", StringComparison.OrdinalIgnoreCase) || String.Equals(view, "x86", StringComparison.OrdinalIgnoreCase)) return KEY_WOW64_32KEY;
+            if (String.Equals(view, "64", StringComparison.OrdinalIgnoreCase) || String.Equals(view, "x64", StringComparison.OrdinalIgnoreCase)) return KEY_WOW64_64KEY;
             return 0;
+        }
+
+        private static object DecodeRegistryValue(uint type, byte[] data)
+        {
+            if (data == null) return null;
+            if (type == 1 || type == 2) return Encoding.Unicode.GetString(data).TrimEnd('\0');
+            if (type == 4 && data.Length >= 4) return BitConverter.ToUInt32(data, 0);
+            if (type == 11 && data.Length >= 8) return BitConverter.ToUInt64(data, 0);
+            if (type == 7) return Encoding.Unicode.GetString(data).TrimEnd('\0').Split(new char[] { '\0' });
+            return Convert.ToBase64String(data);
         }
 
         private static Dictionary<string, object> RegistryData(int status, uint type, byte[] data)
         {
-            Dictionary<string, object> result = MethodResult(true, status == ERROR_SUCCESS,
-                status == ERROR_SUCCESS ? null : Win32Message(status));
+            Dictionary<string, object> result = MethodResult(true, status == ERROR_SUCCESS, status == ERROR_SUCCESS ? null : Win32Message(status));
             result["status"] = status;
             result["statusHex"] = Hex32(status);
             result["type"] = type;
@@ -235,22 +282,9 @@ namespace WinPrivProbe
             return result;
         }
 
-        private static object DecodeRegistryValue(uint type, byte[] data)
-        {
-            if (data == null) return null;
-            if (type == 1 || type == 2)
-                return Encoding.Unicode.GetString(data).TrimEnd('\0');
-            if (type == 4 && data.Length >= 4) return BitConverter.ToUInt32(data, 0);
-            if (type == 11 && data.Length >= 8) return BitConverter.ToUInt64(data, 0);
-            if (type == 7)
-                return Encoding.Unicode.GetString(data).TrimEnd('\0').Split(new char[] { '\0' });
-            return Convert.ToBase64String(data);
-        }
-
         public static Dictionary<string, object> ReadRegistryMethod(string root, string subKey,
             string valueName, string view, string method)
         {
-            Dictionary<string, object> result = MethodResult(true, false, null);
             IntPtr key = IntPtr.Zero;
             try
             {
@@ -258,63 +292,37 @@ namespace WinPrivProbe
                     KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | RegistryViewAccess(view), out key);
                 if (open != ERROR_SUCCESS)
                 {
-                    result["openStatus"] = open;
-                    result["reason"] = Win32Message(open);
-                    return result;
+                    Dictionary<string, object> failed = MethodResult(true, false, Win32Message(open));
+                    failed["openStatus"] = open;
+                    return failed;
                 }
-                if (String.Equals(method, "win32", StringComparison.OrdinalIgnoreCase))
-                    return ReadRegistryWin32(key, valueName);
-                if (String.Equals(method, "ntPartial", StringComparison.OrdinalIgnoreCase))
+                switch ((method ?? "").ToLowerInvariant())
                 {
-                    Dictionary<string, object> partial = ReadRegistryNt(key, valueName, KeyValuePartialInformation);
-                    partial["invalidHandleStatusHex"] = ReadRegistryNt(
-                        new IntPtr(0x1234), valueName, KeyValuePartialInformation)["statusHex"];
-                    return partial;
+                    case "win32": return ReadRegistryWin32(key, valueName);
+                    case "ntpartial":
+                        Dictionary<string, object> partial = ReadRegistryNt(key, valueName, KeyValuePartialInformation);
+                        partial["invalidHandleStatusHex"] = ReadRegistryNt(new IntPtr(0x1234), valueName, KeyValuePartialInformation)["statusHex"];
+                        return partial;
+                    case "ntpartialalign64": return ReadRegistryNt(key, valueName, KeyValuePartialInformationAlign64);
+                    case "ntfull": return ReadRegistryNt(key, valueName, KeyValueFullInformation);
+                    case "ntfullalign64": return ReadRegistryNt(key, valueName, KeyValueFullInformationAlign64);
+                    case "ntenumerate": return EnumerateRegistryNt(key, KeyValueFullInformation);
+                    case "ntenumeratebasic": return EnumerateRegistryNt(key, KeyValueBasicInformation);
+                    case "ntenumeratepartial": return EnumerateRegistryNt(key, KeyValuePartialInformation);
+                    case "ntenumeratepartialalign64": return EnumerateRegistryNt(key, KeyValuePartialInformationAlign64);
+                    case "ntenumeratefullalign64": return EnumerateRegistryNt(key, KeyValueFullInformationAlign64);
+                    default: return MethodResult(true, false, "Unsupported registry method: " + method);
                 }
-                if (String.Equals(method, "ntBasic", StringComparison.OrdinalIgnoreCase))
-                    return ReadRegistryNt(key, valueName, KeyValueBasicInformation);
-                if (String.Equals(method, "ntPartialAlign64", StringComparison.OrdinalIgnoreCase))
-                    return ReadRegistryNt(key, valueName, KeyValuePartialInformationAlign64);
-                if (String.Equals(method, "ntFull", StringComparison.OrdinalIgnoreCase))
-                    return ReadRegistryNt(key, valueName, KeyValueFullInformation);
-                if (String.Equals(method, "ntFullAlign64", StringComparison.OrdinalIgnoreCase))
-                    return ReadRegistryNt(key, valueName, KeyValueFullInformationAlign64);
-                if (String.Equals(method, "ntEnumerate", StringComparison.OrdinalIgnoreCase))
-                    return EnumerateRegistryNt(key);
-                if (String.Equals(method, "ntEnumerateBasic", StringComparison.OrdinalIgnoreCase))
-                    return EnumerateRegistryNt(key, KeyValueBasicInformation);
-                if (String.Equals(method, "ntEnumeratePartial", StringComparison.OrdinalIgnoreCase))
-                    return EnumerateRegistryNt(key, KeyValuePartialInformation);
-                if (String.Equals(method, "ntEnumeratePartialAlign64", StringComparison.OrdinalIgnoreCase))
-                    return EnumerateRegistryNt(key, KeyValuePartialInformationAlign64);
-                if (String.Equals(method, "ntEnumerateFullAlign64", StringComparison.OrdinalIgnoreCase))
-                    return EnumerateRegistryNt(key, KeyValueFullInformationAlign64);
-                result["reason"] = "Unsupported registry method: " + method;
-                return result;
             }
-            catch (EntryPointNotFoundException error)
-            {
-                result["supported"] = false;
-                result["reason"] = error.Message;
-                return result;
-            }
-            catch (Exception error)
-            {
-                result["reason"] = error.GetType().FullName + ": " + error.Message;
-                return result;
-            }
-            finally
-            {
-                if (key != IntPtr.Zero) RegCloseKey(key);
-            }
+            catch (EntryPointNotFoundException error) { return MethodResult(false, false, error.Message); }
+            catch (Exception error) { return MethodResult(true, false, error.GetType().FullName + ": " + error.Message); }
+            finally { if (key != IntPtr.Zero) RegCloseKey(key); }
         }
 
         private static Dictionary<string, object> ReadRegistryWin32(IntPtr key, string valueName)
         {
-            uint type;
-            uint required = 0;
-            int sizeStatus = RegQueryValueExW(key, valueName, IntPtr.Zero, out type,
-                IntPtr.Zero, ref required);
+            uint type, required = 0;
+            int sizeStatus = RegQueryValueExW(key, valueName, IntPtr.Zero, out type, IntPtr.Zero, ref required);
             if (sizeStatus != ERROR_SUCCESS)
             {
                 Dictionary<string, object> failed = RegistryData(sizeStatus, type, null);
@@ -326,8 +334,7 @@ namespace WinPrivProbe
             try
             {
                 uint actual = required;
-                int status = RegQueryValueExW(key, valueName, IntPtr.Zero, out type,
-                    buffer, ref actual);
+                int status = RegQueryValueExW(key, valueName, IntPtr.Zero, out type, buffer, ref actual);
                 byte[] data = null;
                 if (status == ERROR_SUCCESS)
                 {
@@ -339,77 +346,75 @@ namespace WinPrivProbe
                 result["requiredLength"] = required;
                 return result;
             }
-            finally
-            {
-                if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-            }
+            finally { if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer); }
         }
 
-        private static Dictionary<string, object> ReadRegistryNt(IntPtr key, string valueName,
-            int informationClass)
+        private delegate int NtBufferQuery(IntPtr buffer, uint capacity, out uint returned);
+
+        private static int QueryNtBuffer(uint initialRequired, NtBufferQuery query,
+            out IntPtr buffer, out uint returned, out uint capacity)
         {
-            IntPtr nameBuffer = Marshal.StringToHGlobalUni(valueName == null ? String.Empty : valueName);
+            buffer = IntPtr.Zero;
+            returned = initialRequired;
+            capacity = initialRequired;
+            uint required = initialRequired;
+            int status = STATUS_BUFFER_TOO_SMALL;
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                if (buffer != IntPtr.Zero) { Marshal.FreeHGlobal(buffer); buffer = IntPtr.Zero; }
+                capacity = checked(required + 64);
+                buffer = Marshal.AllocHGlobal((int)capacity);
+                RtlZeroMemory(buffer, new UIntPtr(capacity));
+                status = query(buffer, capacity, out returned);
+                if ((status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW) &&
+                    returned > capacity && returned <= 16 * 1024 * 1024)
+                {
+                    required = returned;
+                    continue;
+                }
+                break;
+            }
+            return status;
+        }
+
+        private static Dictionary<string, object> ReadRegistryNt(IntPtr key, string valueName, int informationClass)
+        {
+            IntPtr nameBuffer = Marshal.StringToHGlobalUni(valueName ?? String.Empty);
             try
             {
-                UNICODE_STRING name = new UNICODE_STRING();
-                name.Length = (ushort)((valueName == null ? 0 : valueName.Length) * 2);
+                UNICODE_STRING name = new UNICODE_STRING
+                {
+                    Length = (ushort)((valueName == null ? 0 : valueName.Length) * 2),
+                    Buffer = nameBuffer
+                };
                 name.MaximumLength = (ushort)(name.Length + 2);
-                name.Buffer = nameBuffer;
                 uint required;
-                // A null/zero-length call is the normal NT size-query contract and
-                // catches serializers that accidentally dereference their output.
-                int sizeStatus = NtQueryValueKey(key, ref name, informationClass,
-                    IntPtr.Zero, 0, out required);
+                int sizeStatus = NtQueryValueKey(key, ref name, informationClass, IntPtr.Zero, 0, out required);
                 if (required == 0 || required > 16 * 1024 * 1024)
                 {
                     Dictionary<string, object> failed = MethodResult(true, sizeStatus == STATUS_SUCCESS,
                         sizeStatus == STATUS_SUCCESS ? null : "NtQueryValueKey returned " + Hex32(sizeStatus));
-                    failed["sizeStatus"] = sizeStatus;
-                    failed["sizeStatusHex"] = Hex32(sizeStatus);
-                    failed["status"] = sizeStatus;
-                    failed["statusHex"] = Hex32(sizeStatus);
+                    failed["sizeStatus"] = sizeStatus; failed["sizeStatusHex"] = Hex32(sizeStatus);
+                    failed["status"] = sizeStatus; failed["statusHex"] = Hex32(sizeStatus);
                     failed["requiredLength"] = required;
                     return failed;
                 }
-                int status = sizeStatus;
                 IntPtr buffer = IntPtr.Zero;
                 try
                 {
-                    uint capacity = required;
-                    for (int attempt = 0; attempt < 3; attempt++)
-                    {
-                        if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-                        capacity = checked(required + 64);
-                        buffer = Marshal.AllocHGlobal((int)capacity);
-                        ZeroMemory(buffer, (int)capacity);
-                        uint returned;
-                        status = NtQueryValueKey(key, ref name, informationClass,
-                            buffer, capacity, out returned);
-                        if ((status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW) &&
-                            returned > capacity && returned <= 16 * 1024 * 1024)
-                        {
-                            required = returned;
-                            continue;
-                        }
-                        required = returned;
-                        break;
-                    }
-                    Dictionary<string, object> parsed = ParseNtRegistry(informationClass,
-                        status, buffer, required, capacity);
+                    uint returned, capacity;
+                    int status = QueryNtBuffer(required,
+                        delegate(IntPtr b, uint c, out uint r) { return NtQueryValueKey(key, ref name, informationClass, b, c, out r); },
+                        out buffer, out returned, out capacity);
+                    Dictionary<string, object> parsed = ParseNtRegistry(informationClass, status, buffer, returned, capacity);
                     parsed["sizeStatus"] = sizeStatus;
                     parsed["sizeStatusHex"] = Hex32(sizeStatus);
-                    parsed["requiredLength"] = required;
+                    parsed["requiredLength"] = returned;
                     return parsed;
                 }
-                finally
-                {
-                    if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-                }
+                finally { if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer); }
             }
-            finally
-            {
-                Marshal.FreeHGlobal(nameBuffer);
-            }
+            finally { Marshal.FreeHGlobal(nameBuffer); }
         }
 
         private static Dictionary<string, object> ParseNtRegistry(int informationClass,
@@ -422,8 +427,7 @@ namespace WinPrivProbe
             result["informationClass"] = informationClass;
             result["returnedLength"] = returnedLength;
             if (buffer == IntPtr.Zero || returnedLength < 8) return result;
-            uint type;
-            uint dataLength;
+            uint type, dataLength;
             int dataOffset;
             if (informationClass == KeyValueBasicInformation)
             {
@@ -436,8 +440,7 @@ namespace WinPrivProbe
                 result["nameLength"] = nameLength;
                 return result;
             }
-            if (informationClass == KeyValueFullInformation ||
-                informationClass == KeyValueFullInformationAlign64)
+            if (informationClass == KeyValueFullInformation || informationClass == KeyValueFullInformationAlign64)
             {
                 if (returnedLength < 20) return result;
                 type = unchecked((uint)Marshal.ReadInt32(buffer, 4));
@@ -449,7 +452,6 @@ namespace WinPrivProbe
             }
             else if (informationClass == KeyValuePartialInformationAlign64)
             {
-                if (returnedLength < 8) return result;
                 type = unchecked((uint)Marshal.ReadInt32(buffer, 0));
                 dataLength = unchecked((uint)Marshal.ReadInt32(buffer, 4));
                 dataOffset = 8;
@@ -475,8 +477,7 @@ namespace WinPrivProbe
             return result;
         }
 
-        private static Dictionary<string, object> EnumerateRegistryNt(IntPtr key,
-            int informationClass = KeyValueFullInformation)
+        private static Dictionary<string, object> EnumerateRegistryNt(IntPtr key, int informationClass)
         {
             Dictionary<string, object> result = MethodResult(true, false, null);
             List<Dictionary<string, object>> values = new List<Dictionary<string, object>>();
@@ -484,92 +485,48 @@ namespace WinPrivProbe
             for (uint index = 0; index < 1024; index++)
             {
                 uint required;
-                int sizeStatus = NtEnumerateValueKey(key, index, informationClass,
-                    IntPtr.Zero, 0, out required);
-                if (sizeStatus == STATUS_NO_MORE_ENTRIES)
-                {
-                    finalStatus = sizeStatus;
-                    break;
-                }
+                int sizeStatus = NtEnumerateValueKey(key, index, informationClass, IntPtr.Zero, 0, out required);
+                if (sizeStatus == STATUS_NO_MORE_ENTRIES) { finalStatus = sizeStatus; break; }
                 if (required == 0 || required > 16 * 1024 * 1024)
                 {
                     finalStatus = sizeStatus;
-                    Dictionary<string, object> failed = MethodResult(true, false,
-                        "Enumeration size query returned " + Hex32(sizeStatus));
-                    failed["index"] = index;
-                    failed["status"] = sizeStatus;
-                    failed["statusHex"] = Hex32(sizeStatus);
+                    Dictionary<string, object> failed = MethodResult(true, false, "Enumeration size query returned " + Hex32(sizeStatus));
+                    failed["index"] = index; failed["status"] = sizeStatus; failed["statusHex"] = Hex32(sizeStatus);
                     values.Add(failed);
                     break;
                 }
                 IntPtr buffer = IntPtr.Zero;
                 try
                 {
-                    int status = sizeStatus;
-                    uint returned = required;
-                    uint capacity = required;
-                    for (int attempt = 0; attempt < 3; attempt++)
-                    {
-                        if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-                        capacity = checked(required + 64);
-                        buffer = Marshal.AllocHGlobal((int)capacity);
-                        ZeroMemory(buffer, (int)capacity);
-                        status = NtEnumerateValueKey(key, index, informationClass,
-                            buffer, capacity, out returned);
-                        if ((status == STATUS_BUFFER_TOO_SMALL || status == STATUS_BUFFER_OVERFLOW) &&
-                            returned > capacity && returned <= 16 * 1024 * 1024)
-                        {
-                            required = returned;
-                            continue;
-                        }
-                        break;
-                    }
-                    Dictionary<string, object> item = ParseNtRegistry(informationClass,
-                        status, buffer, returned, capacity);
+                    uint returned, capacity;
+                    uint currentIndex = index;
+                    int status = QueryNtBuffer(required,
+                        delegate(IntPtr b, uint c, out uint r) { return NtEnumerateValueKey(key, currentIndex, informationClass, b, c, out r); },
+                        out buffer, out returned, out capacity);
+                    Dictionary<string, object> item = ParseNtRegistry(informationClass, status, buffer, returned, capacity);
                     item["index"] = index;
                     item["sizeStatus"] = sizeStatus;
                     item["sizeRequiredLength"] = required;
                     item["requiredLength"] = returned;
-                    uint shortCapacity = informationClass == KeyValueFullInformation ||
-                        informationClass == KeyValueFullInformationAlign64 ? 22u :
-                        informationClass == KeyValuePartialInformationAlign64 ? 10u : 14u;
+                    uint shortCapacity = informationClass == KeyValueFullInformation || informationClass == KeyValueFullInformationAlign64 ? 22u
+                        : informationClass == KeyValuePartialInformationAlign64 ? 10u : 14u;
                     uint shortRequired;
-                    int shortStatus = NtEnumerateValueKey(key, index, informationClass,
-                        buffer, Math.Min(shortCapacity, capacity), out shortRequired);
-                    item["shortStatusHex"] = Hex32(shortStatus);
+                    item["shortStatusHex"] = Hex32(NtEnumerateValueKey(key, index, informationClass, buffer, Math.Min(shortCapacity, capacity), out shortRequired));
                     item["shortRequiredLength"] = shortRequired;
-                    item["shortType"] = unchecked((uint)Marshal.ReadInt32(buffer,
-                        informationClass == KeyValuePartialInformationAlign64 ? 0 : 4));
+                    item["shortType"] = unchecked((uint)Marshal.ReadInt32(buffer, informationClass == KeyValuePartialInformationAlign64 ? 0 : 4));
                     values.Add(item);
                     finalStatus = status;
                     if (status != STATUS_SUCCESS) break;
                 }
-                finally
-                {
-                    if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-                }
+                finally { if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer); }
             }
             result["values"] = values;
             result["count"] = values.Count;
             result["finalStatus"] = finalStatus;
             result["finalStatusHex"] = Hex32(finalStatus);
-            bool success = finalStatus == STATUS_NO_MORE_ENTRIES;
-            result["success"] = success;
-            if (!success)
-                result["reason"] = "NtEnumerateValueKey ended with " + Hex32(finalStatus);
+            result["success"] = finalStatus == STATUS_NO_MORE_ENTRIES;
+            if (!(bool)result["success"]) result["reason"] = "NtEnumerateValueKey ended with " + Hex32(finalStatus);
             return result;
-        }
-
-        private static void ZeroMemory(IntPtr pointer, int length)
-        {
-            byte[] zeros = new byte[Math.Min(length, 8192)];
-            int offset = 0;
-            while (offset < length)
-            {
-                int count = Math.Min(zeros.Length, length - offset);
-                Marshal.Copy(zeros, 0, IntPtr.Add(pointer, offset), count);
-                offset += count;
-            }
         }
 
         public static Dictionary<string, object> GetAdaptersState()
@@ -588,57 +545,37 @@ namespace WinPrivProbe
             uint first = GetAdaptersInfo(IntPtr.Zero, ref size);
             result["sizeStatus"] = first;
             result["requiredLength"] = size;
-            if (first == ERROR_NO_DATA)
-            {
-                result["success"] = true;
-                result["adapters"] = new List<Dictionary<string, object>>();
-                return result;
-            }
-            if (size == 0 || size > 64 * 1024 * 1024)
-            {
-                result["reason"] = "GetAdaptersInfo did not return a usable buffer size.";
-                return result;
-            }
+            if (first == ERROR_NO_DATA) { result["success"] = true; result["adapters"] = new List<Dictionary<string, object>>(); return result; }
+            if (size == 0 || size > 64 * 1024 * 1024) { result["reason"] = "GetAdaptersInfo did not return a usable buffer size."; return result; }
             IntPtr buffer = Marshal.AllocHGlobal((int)size);
             try
             {
                 uint status = GetAdaptersInfo(buffer, ref size);
                 result["status"] = status;
-                if (status != 0)
-                {
-                    result["reason"] = Win32Message(unchecked((int)status));
-                    return result;
-                }
+                if (status != 0) { result["reason"] = Win32Message(unchecked((int)status)); return result; }
                 List<Dictionary<string, object>> adapters = new List<Dictionary<string, object>>();
                 HashSet<long> visited = new HashSet<long>();
-                IntPtr current = buffer;
-                while (current != IntPtr.Zero && adapters.Count < 256 && visited.Add(current.ToInt64()))
+                for (IntPtr current = buffer; current != IntPtr.Zero && adapters.Count < 256 && visited.Add(current.ToInt64());
+                    current = Marshal.ReadIntPtr(current, 0))
                 {
                     int baseOffset = IntPtr.Size + 4;
-                    string name = Marshal.PtrToStringAnsi(IntPtr.Add(current, baseOffset), 260).TrimEnd('\0');
-                    string description = Marshal.PtrToStringAnsi(IntPtr.Add(current, baseOffset + 260), 132).TrimEnd('\0');
                     int lengthOffset = baseOffset + 260 + 132;
                     uint addressLength = unchecked((uint)Marshal.ReadInt32(current, lengthOffset));
-                    int safeLength = (int)Math.Min(addressLength, 8);
-                    byte[] address = new byte[safeLength];
-                    if (safeLength != 0) Marshal.Copy(IntPtr.Add(current, lengthOffset + 4), address, 0, safeLength);
+                    byte[] address = new byte[(int)Math.Min(addressLength, 8)];
+                    if (address.Length != 0) Marshal.Copy(IntPtr.Add(current, lengthOffset + 4), address, 0, address.Length);
                     Dictionary<string, object> item = new Dictionary<string, object>();
-                    item["name"] = name;
-                    item["description"] = description;
+                    item["name"] = Marshal.PtrToStringAnsi(IntPtr.Add(current, baseOffset), 260).TrimEnd('\0');
+                    item["description"] = Marshal.PtrToStringAnsi(IntPtr.Add(current, baseOffset + 260), 132).TrimEnd('\0');
                     item["addressLength"] = addressLength;
                     item["addressBase64"] = Convert.ToBase64String(address);
-                    item["addressHex"] = HexBytes(address);
+                    item["addressHex"] = BitConverter.ToString(address).Replace("-", "");
                     adapters.Add(item);
-                    current = Marshal.ReadIntPtr(current, 0);
                 }
                 result["adapters"] = adapters;
                 result["success"] = true;
                 return result;
             }
-            finally
-            {
-                Marshal.FreeHGlobal(buffer);
-            }
+            finally { Marshal.FreeHGlobal(buffer); }
         }
 
         private static Dictionary<string, object> ReadAdaptersAddresses()
@@ -648,78 +585,55 @@ namespace WinPrivProbe
             uint first = GetAdaptersAddresses(AF_UNSPEC, 0, IntPtr.Zero, IntPtr.Zero, ref size);
             result["sizeStatus"] = first;
             result["requiredLength"] = size;
-            if (size == 0 || size > 64 * 1024 * 1024)
-            {
-                result["reason"] = "GetAdaptersAddresses did not return a usable buffer size.";
-                return result;
-            }
+            if (size == 0 || size > 64 * 1024 * 1024) { result["reason"] = "GetAdaptersAddresses did not return a usable buffer size."; return result; }
             IntPtr buffer = Marshal.AllocHGlobal((int)size);
             try
             {
                 uint status = GetAdaptersAddresses(AF_UNSPEC, 0, IntPtr.Zero, buffer, ref size);
                 result["status"] = status;
-                if (status != 0)
-                {
-                    result["reason"] = Win32Message(unchecked((int)status));
-                    return result;
-                }
+                if (status != 0) { result["reason"] = Win32Message(unchecked((int)status)); return result; }
                 List<Dictionary<string, object>> adapters = new List<Dictionary<string, object>>();
                 HashSet<long> visited = new HashSet<long>();
-                IntPtr current = buffer;
-                while (current != IntPtr.Zero && adapters.Count < 256 && visited.Add(current.ToInt64()))
+                for (IntPtr current = buffer; current != IntPtr.Zero && adapters.Count < 256 && visited.Add(current.ToInt64());
+                    current = Marshal.ReadIntPtr(current, 8))
                 {
                     IntPtr namePointer = Marshal.ReadIntPtr(current, 8 + IntPtr.Size);
                     int physicalOffset = 8 + (9 * IntPtr.Size);
                     uint addressLength = unchecked((uint)Marshal.ReadInt32(current, physicalOffset + 8));
-                    int safeLength = (int)Math.Min(addressLength, 8);
-                    byte[] address = new byte[safeLength];
-                    if (safeLength != 0) Marshal.Copy(IntPtr.Add(current, physicalOffset), address, 0, safeLength);
-                    int dnsSuffixPointerOffset = 8 + (6 * IntPtr.Size);
-                    int descriptionPointerOffset = 8 + (7 * IntPtr.Size);
-                    int friendlyPointerOffset = 8 + (8 * IntPtr.Size);
+                    byte[] address = new byte[(int)Math.Min(addressLength, 8)];
+                    if (address.Length != 0) Marshal.Copy(IntPtr.Add(current, physicalOffset), address, 0, address.Length);
+                    IntPtr dns = Marshal.ReadIntPtr(current, 8 + (6 * IntPtr.Size));
+                    IntPtr description = Marshal.ReadIntPtr(current, 8 + (7 * IntPtr.Size));
+                    IntPtr friendly = Marshal.ReadIntPtr(current, 8 + (8 * IntPtr.Size));
                     Dictionary<string, object> item = new Dictionary<string, object>();
                     item["name"] = namePointer == IntPtr.Zero ? null : Marshal.PtrToStringAnsi(namePointer);
-                    IntPtr dns = Marshal.ReadIntPtr(current, dnsSuffixPointerOffset);
-                    IntPtr description = Marshal.ReadIntPtr(current, descriptionPointerOffset);
-                    IntPtr friendly = Marshal.ReadIntPtr(current, friendlyPointerOffset);
                     item["dnsSuffix"] = dns == IntPtr.Zero ? null : Marshal.PtrToStringUni(dns);
                     item["description"] = description == IntPtr.Zero ? null : Marshal.PtrToStringUni(description);
                     item["friendlyName"] = friendly == IntPtr.Zero ? null : Marshal.PtrToStringUni(friendly);
                     item["addressLength"] = addressLength;
                     item["addressBase64"] = Convert.ToBase64String(address);
-                    item["addressHex"] = HexBytes(address);
+                    item["addressHex"] = BitConverter.ToString(address).Replace("-", "");
                     adapters.Add(item);
-                    current = Marshal.ReadIntPtr(current, 8);
                 }
                 result["adapters"] = adapters;
                 result["success"] = true;
                 return result;
             }
-            finally
-            {
-                Marshal.FreeHGlobal(buffer);
-            }
+            finally { Marshal.FreeHGlobal(buffer); }
         }
 
         private static Dictionary<string, object> ReadWkstaTransports()
         {
             Dictionary<string, object> result = MethodResult(true, false, null);
             IntPtr buffer;
-            uint read;
-            uint total;
-            uint resume = 0;
-            uint status = NetWkstaTransportEnum(null, 0, out buffer, MAX_PREFERRED_LENGTH,
-                out read, out total, ref resume);
+            uint read, total, resume = 0;
+            uint status = NetWkstaTransportEnum(null, 0, out buffer, MAX_PREFERRED_LENGTH, out read, out total, ref resume);
             result["status"] = status;
             result["entriesRead"] = read;
             result["totalEntries"] = total;
             try
             {
-                if (status != 0 && status != 234)
-                {
-                    result["reason"] = Win32Message(unchecked((int)status));
-                    return result;
-                }
+                if (status != 0 && status != 234) { result["reason"] = Win32Message(unchecked((int)status)); return result; }
                 List<Dictionary<string, object>> transports = new List<Dictionary<string, object>>();
                 int elementSize = Marshal.SizeOf(typeof(WKSTA_TRANSPORT_INFO_0));
                 for (uint index = 0; index < read; index++)
@@ -738,151 +652,98 @@ namespace WinPrivProbe
                 result["success"] = true;
                 return result;
             }
-            finally
-            {
-                if (buffer != IntPtr.Zero) NetApiBufferFree(buffer);
-            }
+            finally { if (buffer != IntPtr.Zero) NetApiBufferFree(buffer); }
         }
 
-        private static string HexBytes(byte[] value)
+        private static Dictionary<string, object> WithWsa(Action<Dictionary<string, object>> action)
         {
-            StringBuilder result = new StringBuilder(value.Length * 2);
-            for (int i = 0; i < value.Length; i++)
-                result.Append(value[i].ToString("X2", CultureInfo.InvariantCulture));
-            return result.ToString();
+            return RunSafe(delegate(Dictionary<string, object> result)
+            {
+                IntPtr data = Marshal.AllocHGlobal(1024);
+                bool started = false;
+                try
+                {
+                    int startup = WSAStartup(0x0202, data);
+                    result["startupStatus"] = startup;
+                    if (startup != 0) { result["reason"] = "WSAStartup returned " + startup.ToString(CultureInfo.InvariantCulture); return; }
+                    started = true;
+                    action(result);
+                    result["success"] = true;
+                }
+                finally
+                {
+                    if (started) try { WSACleanup(); } catch { }
+                    Marshal.FreeHGlobal(data);
+                }
+            });
         }
 
         public static Dictionary<string, object> LookupWsa(string name)
         {
-            Dictionary<string, object> result = MethodResult(true, false, null);
-            IntPtr data = Marshal.AllocHGlobal(1024);
-            try
+            return WithWsa(delegate(Dictionary<string, object> result)
             {
-                int startup = WSAStartup(0x0202, data);
-                result["startupStatus"] = startup;
-                if (startup != 0)
-                {
-                    result["reason"] = "WSAStartup returned " + startup.ToString(CultureInfo.InvariantCulture);
-                    return result;
-                }
                 result["unicode"] = LookupWsaOne(name, true);
                 result["ansi"] = LookupWsaOne(name, false);
-                result["success"] = true;
-                return result;
-            }
-            catch (Exception error)
-            {
-                result["reason"] = error.GetType().FullName + ": " + error.Message;
-                return result;
-            }
-            finally
-            {
-                try { WSACleanup(); } catch { }
-                Marshal.FreeHGlobal(data);
-            }
+            });
         }
 
         private static Dictionary<string, object> LookupWsaOne(string name, bool unicode)
         {
             Dictionary<string, object> result = MethodResult(true, false, null);
             uint lookupFlags = LUP_RETURN_NAME | LUP_RETURN_ADDR;
-            Guid serviceClass = new Guid("0002A800-0000-0000-C000-000000000046");
             IntPtr guidPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Guid)));
+            IntPtr namePointer = unicode ? Marshal.StringToHGlobalUni(name) : Marshal.StringToHGlobalAnsi(name);
             IntPtr lookup = IntPtr.Zero;
             IntPtr buffer = IntPtr.Zero;
             try
             {
-                Marshal.StructureToPtr(serviceClass, guidPointer, false);
-                int begin;
-                if (unicode)
+                Marshal.StructureToPtr(new Guid("0002A800-0000-0000-C000-000000000046"), guidPointer, false);
+                WSAQUERYSET query = new WSAQUERYSET
                 {
-                    WSAQUERYSETW query = new WSAQUERYSETW();
-                    query.dwSize = (uint)Marshal.SizeOf(typeof(WSAQUERYSETW));
-                    query.lpszServiceInstanceName = name;
-                    query.lpServiceClassId = guidPointer;
-                    query.dwNameSpace = NS_DNS;
-                    begin = WSALookupServiceBeginW(ref query, lookupFlags, out lookup);
-                }
-                else
-                {
-                    WSAQUERYSETA query = new WSAQUERYSETA();
-                    query.dwSize = (uint)Marshal.SizeOf(typeof(WSAQUERYSETA));
-                    query.lpszServiceInstanceName = name;
-                    query.lpServiceClassId = guidPointer;
-                    query.dwNameSpace = NS_DNS;
-                    begin = WSALookupServiceBeginA(ref query, lookupFlags, out lookup);
-                }
+                    dwSize = (uint)Marshal.SizeOf(typeof(WSAQUERYSET)),
+                    lpszServiceInstanceName = namePointer,
+                    lpServiceClassId = guidPointer,
+                    dwNameSpace = NS_DNS
+                };
+                int begin = unicode ? WSALookupServiceBeginW(ref query, lookupFlags, out lookup)
+                    : WSALookupServiceBeginA(ref query, lookupFlags, out lookup);
                 int beginError = begin == SOCKET_ERROR ? WSAGetLastError() : 0;
-                result["beginStatus"] = begin;
-                result["beginError"] = beginError;
-                if (begin == SOCKET_ERROR)
-                {
-                    result["reason"] = "WSALookupServiceBegin returned " + beginError.ToString(CultureInfo.InvariantCulture);
-                    return result;
-                }
+                result["beginStatus"] = begin; result["beginError"] = beginError;
+                if (begin == SOCKET_ERROR) { result["reason"] = "WSALookupServiceBegin returned " + beginError.ToString(CultureInfo.InvariantCulture); return result; }
 
                 uint required = 0;
-                int first = unicode
-                    ? WSALookupServiceNextW(lookup, lookupFlags, ref required, IntPtr.Zero)
+                int first = unicode ? WSALookupServiceNextW(lookup, lookupFlags, ref required, IntPtr.Zero)
                     : WSALookupServiceNextA(lookup, lookupFlags, ref required, IntPtr.Zero);
-                int firstError = first == SOCKET_ERROR ? WSAGetLastError() : 0;
                 result["sizeStatus"] = first;
-                result["sizeError"] = firstError;
+                result["sizeError"] = first == SOCKET_ERROR ? WSAGetLastError() : 0;
                 result["requiredLength"] = required;
-                if (required == 0 || required > 16 * 1024 * 1024)
-                {
-                    result["reason"] = "WSALookupServiceNext did not return a usable buffer size.";
-                    return result;
-                }
+                if (required == 0 || required > 16 * 1024 * 1024) { result["reason"] = "WSALookupServiceNext did not return a usable buffer size."; return result; }
+
                 buffer = Marshal.AllocHGlobal((int)required);
-                ZeroMemory(buffer, (int)required);
-                int next = unicode
-                    ? WSALookupServiceNextW(lookup, lookupFlags, ref required, buffer)
+                RtlZeroMemory(buffer, new UIntPtr(required));
+                int next = unicode ? WSALookupServiceNextW(lookup, lookupFlags, ref required, buffer)
                     : WSALookupServiceNextA(lookup, lookupFlags, ref required, buffer);
                 int nextError = next == SOCKET_ERROR ? WSAGetLastError() : 0;
-                result["nextStatus"] = next;
-                result["nextError"] = nextError;
-                if (next == SOCKET_ERROR)
-                {
-                    result["reason"] = "WSALookupServiceNext returned " + nextError.ToString(CultureInfo.InvariantCulture);
-                    return result;
-                }
-                string returnedName;
-                uint count;
-                IntPtr addresses;
-                if (unicode)
-                {
-                    WSAQUERYSETW query = (WSAQUERYSETW)Marshal.PtrToStructure(buffer, typeof(WSAQUERYSETW));
-                    returnedName = query.lpszServiceInstanceName;
-                    count = query.dwNumberOfCsAddrs;
-                    addresses = query.lpcsaBuffer;
-                }
-                else
-                {
-                    WSAQUERYSETA query = (WSAQUERYSETA)Marshal.PtrToStructure(buffer, typeof(WSAQUERYSETA));
-                    returnedName = query.lpszServiceInstanceName;
-                    count = query.dwNumberOfCsAddrs;
-                    addresses = query.lpcsaBuffer;
-                }
-                result["name"] = returnedName;
-                result["addressCount"] = count;
+                result["nextStatus"] = next; result["nextError"] = nextError;
+                if (next == SOCKET_ERROR) { result["reason"] = "WSALookupServiceNext returned " + nextError.ToString(CultureInfo.InvariantCulture); return result; }
+
+                WSAQUERYSET output = (WSAQUERYSET)Marshal.PtrToStructure(buffer, typeof(WSAQUERYSET));
+                result["name"] = output.lpszServiceInstanceName == IntPtr.Zero ? null
+                    : (unicode ? Marshal.PtrToStringUni(output.lpszServiceInstanceName) : Marshal.PtrToStringAnsi(output.lpszServiceInstanceName));
+                result["addressCount"] = output.dwNumberOfCsAddrs;
                 List<Dictionary<string, object>> parsed = new List<Dictionary<string, object>>();
                 int elementSize = Marshal.SizeOf(typeof(CSADDR_INFO));
-                for (uint index = 0; index < count && index < 256; index++)
+                for (uint index = 0; index < output.dwNumberOfCsAddrs && index < 256; index++)
                 {
                     CSADDR_INFO info = (CSADDR_INFO)Marshal.PtrToStructure(
-                        IntPtr.Add(addresses, checked((int)(index * elementSize))), typeof(CSADDR_INFO));
+                        IntPtr.Add(output.lpcsaBuffer, checked((int)(index * elementSize))), typeof(CSADDR_INFO));
                     Dictionary<string, object> address = ParseSocketAddress(info.RemoteAddr);
                     address["socketType"] = info.iSocketType;
                     address["protocol"] = info.iProtocol;
                     parsed.Add(address);
                 }
                 result["addresses"] = parsed;
-                if (parsed.Count != 0)
-                {
-                    result["address"] = parsed[0].ContainsKey("address") ? parsed[0]["address"] : null;
-                    result["family"] = parsed[0].ContainsKey("family") ? parsed[0]["family"] : null;
-                }
+                if (parsed.Count != 0) { result["address"] = parsed[0]["address"]; result["family"] = parsed[0]["family"]; }
                 result["success"] = true;
                 return result;
             }
@@ -890,6 +751,7 @@ namespace WinPrivProbe
             {
                 if (lookup != IntPtr.Zero) WSALookupServiceEnd(lookup);
                 if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+                Marshal.FreeHGlobal(namePointer);
                 Marshal.FreeHGlobal(guidPointer);
             }
         }
@@ -899,9 +761,7 @@ namespace WinPrivProbe
             Dictionary<string, object> result = new Dictionary<string, object>();
             if (socketAddress.lpSockaddr == IntPtr.Zero || socketAddress.iSockaddrLength < 2)
             {
-                result["family"] = 0;
-                result["address"] = null;
-                return result;
+                result["family"] = 0; result["address"] = null; return result;
             }
             int family = Marshal.ReadInt16(socketAddress.lpSockaddr, 0);
             result["family"] = family;
@@ -921,81 +781,226 @@ namespace WinPrivProbe
             return result;
         }
 
+        public static Dictionary<string, object> LookupHostResolvers(string name, int family, ushort type)
+        {
+            return WithWsa(delegate(Dictionary<string, object> result)
+            {
+                foreach (string api in new string[] { "addrWide", "addrAnsi", "addrEx", "addrExAnsi", "addrExAsync" })
+                    result[api] = LookupHostAddress(name, family, api);
+                foreach (string api in new string[] { "dnsWide", "dnsAnsi", "dnsUtf8", "dnsEx", "dnsExAsync", "dnsEx3" })
+                    result[api] = LookupHostDns(name, type, api);
+            });
+        }
+
+        private static Dictionary<string, object> LookupHostAddress(string name, int family, string api)
+        {
+            bool extended = api.StartsWith("addrEx", StringComparison.Ordinal);
+            bool asynchronous = api == "addrExAsync";
+            bool ansi = api == "addrAnsi" || api == "addrExAnsi";
+            IntPtr addresses = IntPtr.Zero, overlapped = IntPtr.Zero, resultPointer = IntPtr.Zero, cancelPointer = IntPtr.Zero;
+            using (ManualResetEvent completed = new ManualResetEvent(false))
+            {
+                try
+                {
+                    int status;
+                    if (extended)
+                    {
+                        HostAddrInfoEx hints = new HostAddrInfoEx { Family = family, Flags = 2 };
+                        if (asynchronous)
+                        {
+                            NativeOverlapped nativeOverlapped = new NativeOverlapped { EventHandle = completed.SafeWaitHandle.DangerousGetHandle() };
+                            overlapped = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(NativeOverlapped)));
+                            Marshal.StructureToPtr(nativeOverlapped, overlapped, false);
+                            cancelPointer = Marshal.AllocHGlobal(IntPtr.Size);
+                            Marshal.WriteIntPtr(cancelPointer, IntPtr.Zero);
+                        }
+                        resultPointer = Marshal.AllocHGlobal(IntPtr.Size);
+                        Marshal.WriteIntPtr(resultPointer, IntPtr.Zero);
+                        status = ansi
+                            ? HostGetAddrInfoExA(name, IntPtr.Zero, NS_DNS, IntPtr.Zero, ref hints, resultPointer, IntPtr.Zero, overlapped, IntPtr.Zero, cancelPointer)
+                            : HostGetAddrInfoEx(name, IntPtr.Zero, NS_DNS, IntPtr.Zero, ref hints, resultPointer, IntPtr.Zero, overlapped, IntPtr.Zero, cancelPointer);
+                        if (status == 997)
+                        {
+                            if (!completed.WaitOne(5000)) { IntPtr cancel = Marshal.ReadIntPtr(cancelPointer); HostCancelAddrInfoEx(ref cancel); }
+                            completed.WaitOne();
+                            status = HostGetAddrInfoExResult(overlapped);
+                        }
+                        addresses = Marshal.ReadIntPtr(resultPointer);
+                    }
+                    else
+                    {
+                        HostAddrInfo hints = new HostAddrInfo { Family = family, Flags = 2 };
+                        status = api == "addrWide" ? HostGetAddrInfoW(name, IntPtr.Zero, ref hints, out addresses)
+                            : HostGetAddrInfoA(name, IntPtr.Zero, ref hints, out addresses);
+                    }
+
+                    Dictionary<string, object> result = MethodResult(true, status == 0, null);
+                    result["status"] = status;
+                    List<Dictionary<string, object>> parsed = new List<Dictionary<string, object>>();
+                    for (IntPtr current = addresses; current != IntPtr.Zero && parsed.Count < 256; )
+                    {
+                        IntPtr canonical, address, next;
+                        int length;
+                        if (extended)
+                        {
+                            HostAddrInfoEx info = (HostAddrInfoEx)Marshal.PtrToStructure(current, typeof(HostAddrInfoEx));
+                            canonical = info.CanonicalName; address = info.Address; next = info.Next;
+                            length = checked((int)info.AddressLength.ToUInt64());
+                        }
+                        else
+                        {
+                            HostAddrInfo info = (HostAddrInfo)Marshal.PtrToStructure(current, typeof(HostAddrInfo));
+                            canonical = info.CanonicalName; address = info.Address; next = info.Next;
+                            length = checked((int)info.AddressLength.ToUInt64());
+                        }
+                        if (canonical != IntPtr.Zero)
+                            result["canonicalName"] = ansi ? Marshal.PtrToStringAnsi(canonical) : Marshal.PtrToStringUni(canonical);
+                        parsed.Add(ParseSocketAddress(new SOCKET_ADDRESS { lpSockaddr = address, iSockaddrLength = length }));
+                        current = next;
+                    }
+                    result["addresses"] = parsed;
+                    return result;
+                }
+                finally
+                {
+                    if (addresses != IntPtr.Zero)
+                    {
+                        if (extended && ansi) HostFreeAddrInfoExA(addresses);
+                        else if (extended) HostFreeAddrInfoEx(addresses);
+                        else if (api == "addrWide") HostFreeAddrInfoW(addresses);
+                        else HostFreeAddrInfoA(addresses);
+                    }
+                    if (overlapped != IntPtr.Zero) Marshal.FreeHGlobal(overlapped);
+                    if (resultPointer != IntPtr.Zero) Marshal.FreeHGlobal(resultPointer);
+                    if (cancelPointer != IntPtr.Zero) Marshal.FreeHGlobal(cancelPointer);
+                }
+            }
+        }
+
+        private static Dictionary<string, object> LookupHostDns(string name, ushort type, string api)
+        {
+            bool extended = api.StartsWith("dnsEx", StringComparison.Ordinal);
+            bool asynchronous = api == "dnsExAsync";
+            bool wide = extended || api == "dnsWide";
+            IntPtr records = IntPtr.Zero, nativeResult = IntPtr.Zero, cancel = IntPtr.Zero, nativeName = IntPtr.Zero;
+            bool callbackSeen = false, contextPreserved = true, pending = false;
+            HostDnsCallback callback = null;
+            using (ManualResetEvent completed = new ManualResetEvent(false))
+            {
+                try
+                {
+                    uint status;
+                    if (extended)
+                    {
+                        nativeName = Marshal.StringToHGlobalUni(name);
+                        HostDnsRequest request = new HostDnsRequest
+                        {
+                            Version = api == "dnsEx3" ? 3u : 1u, Name = nativeName, Type = type, Options = 0x10, Context = new IntPtr(1234)
+                        };
+                        if (asynchronous)
+                        {
+                            callback = delegate(IntPtr context, IntPtr queryResult)
+                            {
+                                contextPreserved = context == new IntPtr(1234);
+                                callbackSeen = true;
+                                completed.Set();
+                            };
+                            request.Callback = Marshal.GetFunctionPointerForDelegate(callback);
+                        }
+                        HostDnsResult response = new HostDnsResult { Version = 1 };
+                        nativeResult = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(HostDnsResult)));
+                        Marshal.StructureToPtr(response, nativeResult, false);
+                        cancel = Marshal.AllocHGlobal(32);
+                        RtlZeroMemory(cancel, new UIntPtr(32));
+                        status = HostDnsQueryEx(ref request, nativeResult, cancel);
+                        pending = status == 9506;
+                        if (pending)
+                        {
+                            if (!completed.WaitOne(5000)) HostCancelDnsQuery(cancel);
+                            completed.WaitOne();
+                        }
+                        response = (HostDnsResult)Marshal.PtrToStructure(nativeResult, typeof(HostDnsResult));
+                        records = response.Records;
+                        if (pending) status = response.Status;
+                        if (request.Name != nativeName || request.Context != new IntPtr(1234))
+                            throw new InvalidOperationException("The caller's DNS query was modified.");
+                    }
+                    else if (api == "dnsWide") status = HostDnsQueryW(name, type, 0x10, IntPtr.Zero, out records, IntPtr.Zero);
+                    else if (api == "dnsAnsi") status = HostDnsQueryA(name, type, 0x10, IntPtr.Zero, out records, IntPtr.Zero);
+                    else status = HostDnsQueryUtf8(Encoding.UTF8.GetBytes(name + "\0"), type, 0x10, IntPtr.Zero, out records, IntPtr.Zero);
+
+                    Dictionary<string, object> result = MethodResult(true, status == 0, null);
+                    result["status"] = status; result["pending"] = pending;
+                    result["callbackSeen"] = callbackSeen; result["contextPreserved"] = contextPreserved;
+                    List<Dictionary<string, object>> parsed = new List<Dictionary<string, object>>();
+                    int headerSize = Marshal.SizeOf(typeof(HostDnsRecord));
+                    for (IntPtr current = records; current != IntPtr.Zero && parsed.Count < 256; )
+                    {
+                        HostDnsRecord record = (HostDnsRecord)Marshal.PtrToStructure(current, typeof(HostDnsRecord));
+                        Dictionary<string, object> item = new Dictionary<string, object>();
+                        item["type"] = record.Type; item["ttl"] = record.Ttl;
+                        item["name"] = wide ? Marshal.PtrToStringUni(record.Name) : Marshal.PtrToStringAnsi(record.Name);
+                        if (record.Type == 1 || record.Type == 28)
+                        {
+                            byte[] bytes = new byte[record.Type == 1 ? 4 : 16];
+                            Marshal.Copy(IntPtr.Add(current, headerSize), bytes, 0, bytes.Length);
+                            item["address"] = new IPAddress(bytes).ToString();
+                        }
+                        parsed.Add(item);
+                        current = record.Next;
+                    }
+                    result["records"] = parsed;
+                    return result;
+                }
+                finally
+                {
+                    if (records != IntPtr.Zero) HostFreeDnsRecords(records, 1);
+                    if (nativeResult != IntPtr.Zero) Marshal.FreeHGlobal(nativeResult);
+                    if (cancel != IntPtr.Zero) Marshal.FreeHGlobal(cancel);
+                    if (nativeName != IntPtr.Zero) Marshal.FreeHGlobal(nativeName);
+                    GC.KeepAlive(callback);
+                }
+            }
+        }
+
+        private static Dictionary<string, object> AmsiCallResult(int hresult, int scanResult)
+        {
+            Dictionary<string, object> result = MethodResult(true, hresult >= 0, hresult >= 0 ? null : "AMSI HRESULT " + Hex32(hresult));
+            result["hresult"] = hresult;
+            result["hresultHex"] = Hex32(hresult);
+            result["result"] = scanResult;
+            return result;
+        }
+
         public static Dictionary<string, object> ScanAmsi(string content, string contentName)
         {
-            Dictionary<string, object> result = MethodResult(true, false, null);
-            IntPtr context = IntPtr.Zero;
-            IntPtr session = IntPtr.Zero;
-            try
+            return RunSafe(delegate(Dictionary<string, object> result)
             {
-                int initialize = AmsiInitialize("WinPrivProbe", out context);
-                result["initializeHresult"] = initialize;
-                result["initializeHresultHex"] = Hex32(initialize);
-                if (initialize < 0)
+                IntPtr context = IntPtr.Zero, session = IntPtr.Zero;
+                try
                 {
-                    result["reason"] = "AmsiInitialize returned " + Hex32(initialize);
+                    int initialize = AmsiInitialize("WinPrivProbe", out context);
+                    result["initializeHresult"] = initialize;
+                    result["initializeHresultHex"] = Hex32(initialize);
+                    if (initialize < 0) result["reason"] = "AmsiInitialize returned " + Hex32(initialize);
+                    int open = context == IntPtr.Zero ? unchecked((int)0x80070057) : AmsiOpenSession(context, out session);
+                    result["openSessionHresult"] = open;
+                    result["openSessionHresultHex"] = Hex32(open);
+                    string text = content ?? String.Empty;
+                    byte[] bytes = Encoding.Unicode.GetBytes(text);
+                    int scan;
+                    result["stringValid"] = AmsiCallResult(AmsiScanString(context, text, contentName, session, out scan), scan);
+                    result["bufferValid"] = AmsiCallResult(AmsiScanBuffer(context, bytes, (uint)bytes.Length, contentName, session, out scan), scan);
+                    result["stringInvalid"] = AmsiCallResult(AmsiScanString(IntPtr.Zero, text, contentName, IntPtr.Zero, out scan), scan);
+                    result["bufferInvalid"] = AmsiCallResult(AmsiScanBuffer(IntPtr.Zero, bytes, (uint)bytes.Length, contentName, IntPtr.Zero, out scan), scan);
+                    result["success"] = true;
                 }
-                int open = context == IntPtr.Zero ? unchecked((int)0x80070057) : AmsiOpenSession(context, out session);
-                result["openSessionHresult"] = open;
-                result["openSessionHresultHex"] = Hex32(open);
-                byte[] bytes = Encoding.Unicode.GetBytes(content == null ? String.Empty : content);
-                result["stringValid"] = AmsiStringCall(context, content, contentName, session);
-                result["bufferValid"] = AmsiBufferCall(context, bytes, contentName, session);
-                result["stringInvalid"] = AmsiStringCall(IntPtr.Zero, content, contentName, IntPtr.Zero);
-                result["bufferInvalid"] = AmsiBufferCall(IntPtr.Zero, bytes, contentName, IntPtr.Zero);
-                result["success"] = true;
-                return result;
-            }
-            catch (DllNotFoundException error)
-            {
-                result["supported"] = false;
-                result["reason"] = error.Message;
-                return result;
-            }
-            catch (EntryPointNotFoundException error)
-            {
-                result["supported"] = false;
-                result["reason"] = error.Message;
-                return result;
-            }
-            catch (Exception error)
-            {
-                result["reason"] = error.GetType().FullName + ": " + error.Message;
-                return result;
-            }
-            finally
-            {
-                if (context != IntPtr.Zero && session != IntPtr.Zero) AmsiCloseSession(context, session);
-                if (context != IntPtr.Zero) AmsiUninitialize(context);
-            }
-        }
-
-        private static Dictionary<string, object> AmsiStringCall(IntPtr context, string content,
-            string contentName, IntPtr session)
-        {
-            int scanResult;
-            int hresult = AmsiScanString(context, content == null ? String.Empty : content,
-                contentName, session, out scanResult);
-            Dictionary<string, object> result = MethodResult(true, hresult >= 0,
-                hresult >= 0 ? null : "AMSI HRESULT " + Hex32(hresult));
-            result["hresult"] = hresult;
-            result["hresultHex"] = Hex32(hresult);
-            result["result"] = scanResult;
-            return result;
-        }
-
-        private static Dictionary<string, object> AmsiBufferCall(IntPtr context, byte[] content,
-            string contentName, IntPtr session)
-        {
-            int scanResult;
-            int hresult = AmsiScanBuffer(context, content, (uint)content.Length,
-                contentName, session, out scanResult);
-            Dictionary<string, object> result = MethodResult(true, hresult >= 0,
-                hresult >= 0 ? null : "AMSI HRESULT " + Hex32(hresult));
-            result["hresult"] = hresult;
-            result["hresultHex"] = Hex32(hresult);
-            result["result"] = scanResult;
-            return result;
+                finally
+                {
+                    if (context != IntPtr.Zero && session != IntPtr.Zero) AmsiCloseSession(context, session);
+                    if (context != IntPtr.Zero) AmsiUninitialize(context);
+                }
+            });
         }
     }
 }

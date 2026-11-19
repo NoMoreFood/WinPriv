@@ -76,8 +76,6 @@ FOR %%P IN (
     WinPrivLibrary\WinPrivLibrary.vcxproj
     WinPriv\WinPriv.vcxproj
     WinPrivCmd\WinPrivCmd.vcxproj
-    Tests\Native\HookLoadingFixture\HookLoadingFixture.Probe.vcxproj
-    Tests\Native\HookLoadingFixture\HookLoadingFixture.Lifecycle.vcxproj
     Tests\Native\HookLoadingFixture\HookLoadingFixture.Import.vcxproj
     Tests\Native\HookLoadingFixture\HookLoadingFixture.DelayLoad.vcxproj
     Tests\Native\HookLoadingFixture\HookLoadingFixture.Dynamic.vcxproj

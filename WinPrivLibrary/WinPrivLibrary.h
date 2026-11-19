@@ -14,6 +14,7 @@ bool AttachHostHooks(winpriv::detours::transaction& transaction);
 bool AttachLogonHooks(winpriv::detours::transaction& transaction);
 bool AttachSmartCardHooks(winpriv::detours::transaction& transaction);
 void AttachTimeHooks(winpriv::detours::transaction& transaction);
+bool ParseEnvironmentArguments(LPCWSTR variableName, std::vector<std::wstring>& arguments);
 
 inline const auto RtlInitUnicodeStringEx = LoadNtFunction<NTSTATUS(NTAPI*)(PUNICODE_STRING, PCWSTR)>(
 	"RtlInitUnicodeStringEx");

@@ -12,8 +12,6 @@
         'Add-WinPrivCleanupJournalEntry'
         'Clear-WinPrivCapabilityResults'
         'Complete-WinPrivCapabilityReport'
-        'Get-WinPrivCapabilityResults'
-        'Get-WinPrivCleanupJournal'
         'Get-WinPrivPeArchitecture'
         'Get-WinPrivTestArchitectures'
         'Get-WinPrivTestHost'
