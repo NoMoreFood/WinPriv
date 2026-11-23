@@ -33,7 +33,7 @@ namespace winpriv::loader
 	// Fixed-width handles keep the child payload identical across architectures.
 	struct LibraryBundle
 	{
-		// The extended UNC prefix adds six characters to a conventional UNC path.
+		// Allow six extra characters beyond MAX_PATH for longer sibling DLL names or extended prefixes.
 		static constexpr size_t pathCapacity = MAX_PATH + 1 + 6;
 		CHAR paths[3][pathCapacity]{};
 		ULONGLONG handles[4]{}; // Three locked DLL files and a cleanup mutex used only for temporary copies.

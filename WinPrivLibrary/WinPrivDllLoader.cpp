@@ -64,7 +64,8 @@ namespace winpriv::loader
 		return true;
 	}
 
-	bool VerifyLibraryPath(HANDLE file, LibraryImage resource, CHAR (&destination)[LibraryBundle::pathCapacity])
+	bool VerifyLibraryPath(HANDLE file, std::wstring_view path, LibraryImage resource,
+		CHAR (&destination)[LibraryBundle::pathCapacity])
 	{
 		// Match the Authenticode digest to reject DLLs from a different build.
 		if (resource.data == nullptr || resource.size <= digestSize)
@@ -90,27 +91,12 @@ namespace winpriv::loader
 			return false;
 		}
 
-		// Resolve junctions and symbolic links before publishing the locked file's name.
-		const DWORD capacity = GetFinalPathNameByHandleW(file, nullptr, 0, FILE_NAME_NORMALIZED);
-		if (capacity == 0) return false;
-		std::wstring path(capacity, L'\0');
-		const DWORD length = GetFinalPathNameByHandleW(file, path.data(), capacity, FILE_NAME_NORMALIZED);
-		if (length == 0) return false;
-		if (length >= capacity)
-		{
-			SetLastError(ERROR_INSUFFICIENT_BUFFER);
-			return false;
-		}
-		path.resize(length);
-		const size_t separator = path.find_last_of(L'\\');
-		std::wstring directory = path.substr(0, separator);
-		if (!AsciiDirectory(directory) || !std::ranges::all_of(std::wstring_view(path).substr(separator),
-			[](WCHAR value) { return value <= 0x7f; }))
+		// Retain the opened path so DFS namespaces and other aliases remain intact for loader policy checks.
+		if (!std::ranges::all_of(path, [](WCHAR value) { return value <= 0x7f; }))
 		{
 			SetLastError(ERROR_NO_UNICODE_TRANSLATION);
 			return false;
 		}
-		path.replace(0, separator, directory);
 		if (path.size() >= std::size(destination))
 		{
 			SetLastError(ERROR_FILENAME_EXCED_RANGE);
@@ -175,9 +161,10 @@ namespace winpriv::loader
 				for (size_t index = 0; index < resources.size(); ++index)
 				{
 					const HANDLE file = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(bundle.handles[index]));
-					if (!VerifyLibraryPath(file, resources[index], bundle.paths[index])) return false;
+					if (!VerifyLibraryPath(file, base + libraryNames[index], resources[index], bundle.paths[index]))
+						return false;
 				}
-				extract = GetModuleHandleA(bundle.paths[currentLibrary]) != nullptr;
+				extract = GetModuleHandleW(libraryNames[currentLibrary]) != nullptr;
 			}
 
 			// A separate copy gives nested launchers independent hook state and supports standalone executables.
@@ -187,7 +174,10 @@ namespace winpriv::loader
 				WCHAR temporary[MAX_PATH + 1];
 				DWORD length = GetTempPathW(static_cast<DWORD>(std::size(temporary)), temporary);
 				if (length == 0 || length >= std::size(temporary)) return false;
-				base.assign(temporary, length);
+				WCHAR full[MAX_PATH + 1];
+				length = GetFullPathNameW(temporary, static_cast<DWORD>(std::size(full)), full, nullptr);
+				if (length == 0 || length >= std::size(full)) return false;
+				base.assign(full, length);
 				if (!AsciiDirectory(base))
 				{
 					length = GetSystemWindowsDirectoryW(temporary, static_cast<UINT>(std::size(temporary)));
@@ -215,13 +205,13 @@ namespace winpriv::loader
 				// Write embedded copies before reopening them under their lifetime locks.
 				for (size_t index = 0; index < resources.size(); ++index)
 				{
-					std::wstring path = base + L"WinPriv-" + prefix + (libraryNames[index] + 8);
+					const std::wstring path = base + L"WinPriv-" + prefix + (libraryNames[index] + 8);
 					std::vector<BYTE> bytes;
 					if (!DecompressLibrary(resources[index], bytes)) return false;
 					SmartPointer<HANDLE> output(CloseHandle, CreateFileW(path.c_str(), GENERIC_WRITE,
 						0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
 					if (output == INVALID_HANDLE_VALUE) return false;
-					pendingFile.swap(path);
+					pendingFile = path;
 					DWORD written = 0;
 					if (!WriteFile(output, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr)) return false;
 					if (written != bytes.size())
@@ -230,12 +220,12 @@ namespace winpriv::loader
 						return false;
 					}
 					output.Cleanup();
-					const HANDLE file = CreateFileW(pendingFile.c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ,
+					const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ,
 						nullptr, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
 					if (file == INVALID_HANDLE_VALUE) return false;
 					bundle.handles[index] = reinterpret_cast<ULONG_PTR>(file);
 					pendingFile.clear();
-					if (!VerifyLibraryPath(file, resources[index], bundle.paths[index])) return false;
+					if (!VerifyLibraryPath(file, path, resources[index], bundle.paths[index])) return false;
 					FILE_DISPOSITION_INFO_EX disposition{
 						FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | FILE_DISPOSITION_FLAG_ON_CLOSE };
 					if (!SetFileInformationByHandle(file, FileDispositionInfoEx, &disposition, sizeof(disposition)))

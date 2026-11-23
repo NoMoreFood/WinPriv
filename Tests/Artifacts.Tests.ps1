@@ -111,7 +111,28 @@ Describe 'WinPriv library payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
             Assert-WinPrivInvocationSucceeded $probe
             foreach ($state in @($probe.ProbeResult.result.parentState, $probe.ProbeResult.result.childResult.result)) {
                 @($state.winPrivLibraryModules) | Should -HaveCount 1
-                ($state.winPrivLibraryModules[0] -replace '^\\\\\?\\', '') | Should -Be $expectedPath
+                $state.winPrivLibraryModules[0] | Should -Be $expectedPath
+            }
+
+            $aliasRoot = Join-Path $sandbox.Working 'launcher-alias'
+            $aliasLibrary = Join-Path $aliasRoot "WinPriv-$Architecture.dll"
+            $originalLauncher = $sandbox.Launchers.$Architecture.WinPrivCmd
+            [void](New-Item -ItemType Junction -Path $aliasRoot -Target $sandbox.Launchers.$Architecture.Root)
+            try {
+                $sandbox.Launchers.$Architecture.WinPrivCmd = Join-Path $aliasRoot 'WinPrivCmd.exe'
+                $aliasedProbe = Invoke-WinPrivProbe -Architecture $Architecture -Operation create-process `
+                    -Arguments @{ api = 'W'; depth = 1; childOperation = 'state'; childArguments = @{} } `
+                    -Sandbox $sandbox -TimeoutSeconds 35
+                Assert-WinPrivInvocationSucceeded $aliasedProbe
+                foreach ($state in @($aliasedProbe.ProbeResult.result.parentState,
+                    $aliasedProbe.ProbeResult.result.childResult.result)) {
+                    @($state.winPrivLibraryModules) | Should -HaveCount 1
+                    $state.winPrivLibraryModules[0] | Should -Be $aliasLibrary
+                }
+            }
+            finally {
+                $sandbox.Launchers.$Architecture.WinPrivCmd = $originalLauncher
+                [IO.Directory]::Delete($aliasRoot)
             }
 
             [IO.File]::WriteAllText($expectedPath, 'This file is not a WinPriv DLL.')
@@ -138,8 +159,7 @@ Describe 'WinPriv library payloads (<Architecture>)' -Tag 'Safe' -ForEach (Get-W
             Assert-WinPrivInvocationSucceeded $probe
             foreach ($state in @($probe.ProbeResult.result.parentState, $probe.ProbeResult.result.childResult.result)) {
                 @($state.winPrivLibraryModules) | Should -HaveCount 1
-                ($state.winPrivLibraryModules[0] -replace '^\\\\\?\\', '') |
-                    Should -BeLike (Join-Path $sandbox.Temp "WinPriv-*-$Architecture.dll")
+                $state.winPrivLibraryModules[0] | Should -BeLike (Join-Path $sandbox.Temp "WinPriv-*-$Architecture.dll")
                 $state.winPrivLibraryModules[0] | Should -Not -Exist
             }
             @(Get-ChildItem -LiteralPath $sandbox.Temp -Filter '*.dll' -File) | Should -HaveCount 0
